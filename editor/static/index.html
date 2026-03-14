@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>opacity_toke — score editor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #111;
+    color: #ccc;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: #181818;
+    border-bottom: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  #header h1 {
+    font-size: 14px;
+    color: #888;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  #path-input {
+    flex: 1;
+    background: #222;
+    border: 1px solid #333;
+    color: #ddd;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 8px;
+    outline: none;
+  }
+  #path-input:focus { border-color: #555; }
+  button {
+    background: #222;
+    border: 1px solid #444;
+    color: #aaa;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+  button:hover { background: #2e2e2e; color: #eee; }
+  button.active { background: #2a3a2a; border-color: #4a7a4a; color: #8fdb8f; }
+
+  /* ── Middle row: left-col (frame+waveform) + score info panel ── */
+  #mid {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    overflow: hidden;
+  }
+  #left-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #frame-container {
+    flex: 1;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    cursor: crosshair;
+  }
+  #frame-canvas {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    cursor: crosshair;
+  }
+  #frame-vid {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+  }
+  #frame-placeholder {
+    color: #333;
+    font-size: 11px;
+    text-align: center;
+    padding: 10px;
+  }
+  #time-overlay {
+    position: absolute;
+    bottom: 8px;
+    left: 10px;
+    font-size: 11px;
+    color: #9ab;
+    background: rgba(0,0,0,0.55);
+    padding: 2px 7px;
+    pointer-events: none;
+  }
+  #score-info-panel {
+    width: 220px;
+    flex-shrink: 0;
+    background: #141414;
+    border-left: 1px solid #2a2a2a;
+    overflow-y: auto;
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.7;
+    color: #555;
+  }
+  #score-info-panel h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #444;
+    margin-bottom: 6px;
+    margin-top: 12px;
+    border-bottom: 1px solid #1e1e1e;
+    padding-bottom: 3px;
+  }
+  #score-info-panel h3:first-child { margin-top: 0; }
+  .info-item { color: #666; padding: 1px 0; }
+  .info-item span { color: #8ab; }
+
+  /* ── Palette toolbar ── */
+  #palette {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    background: #161616;
+    border-bottom: 1px solid #2a2a2a;
+    border-top: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  #palette label {
+    font-size: 10px;
+    color: #444;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-right: 4px;
+  }
+
+  /* ── Waveform canvas strip ── */
+  #canvas-wrap {
+    height: 110px;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+    background: #111;
+  }
+  #waveform-canvas {
+    display: block;
+    cursor: crosshair;
+    position: absolute;
+    top: 0; left: 0;
+  }
+
+  /* ── Export bar ── */
+  #export-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    background: #161616;
+    border-top: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  #score-name {
+    background: #1e1e1e;
+    border: 1px solid #333;
+    color: #bbb;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 3px 8px;
+    width: 160px;
+    outline: none;
+  }
+  #export-status {
+    font-size: 11px;
+    color: #5a7a5a;
+    flex: 1;
+  }
+
+  /* ── Popup modal ── */
+  #popup-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #popup-overlay.visible { display: flex; }
+  #popup {
+    background: #1a1a1a;
+    border: 1px solid #3a3a3a;
+    min-width: 280px;
+    max-width: 380px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #popup h2 {
+    font-size: 12px;
+    color: #777;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #2a2a2a;
+    padding: 18px 22px 8px;
+    flex-shrink: 0;
+  }
+  #popup-body {
+    overflow-y: auto;
+    padding: 10px 22px 4px;
+    flex: 1;
+  }
+  .popup-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 10px 22px 14px;
+    flex-shrink: 0;
+    border-top: 1px solid #222;
+  }
+  .popup-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 9px;
+  }
+  .popup-row label {
+    font-size: 11px;
+    color: #666;
+    width: 90px;
+    flex-shrink: 0;
+  }
+  .popup-row input, .popup-row select {
+    flex: 1;
+    background: #222;
+    border: 1px solid #333;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 3px 6px;
+    outline: none;
+  }
+  .popup-row input[type=checkbox] {
+    width: 14px; height: 14px;
+    flex: none;
+  }
+  .popup-row input[type=range] {
+    flex: 1;
+    accent-color: #5a9a5a;
+  }
+  .popup-row .val-display {
+    width: 34px;
+    flex: none;
+    text-align: right;
+    font-size: 11px;
+    color: #8ab;
+  }
+  #p-fx-params {
+    padding-left: 6px;
+    border-left: 2px solid #2a2a2a;
+    margin-bottom: 6px;
+  }
+  button.confirm {
+    background: #1e2e1e;
+    border-color: #3a5a3a;
+    color: #8db88d;
+  }
+  button.confirm:hover { background: #253525; }
+  button.cancel-btn {
+    background: #1e1e1e;
+    border-color: #333;
+    color: #666;
+  }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: #111; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>score editor</h1>
+  <input id="path-input" type="text" placeholder="/path/to/file.wav or .mp4" />
+  <button id="load-btn">Load</button>
+</div>
+
+<div id="mid">
+  <div id="left-col">
+    <div id="canvas-wrap">
+      <canvas id="waveform-canvas"></canvas>
+    </div>
+    <div id="frame-container">
+      <div id="frame-placeholder">no media loaded</div>
+      <video id="frame-vid" muted preload="metadata" style="display:none;"></video>
+      <audio id="base-audio" preload="none" style="display:none;"></audio>
+      <audio id="mix-audio"  preload="none" style="display:none;"></audio>
+      <canvas id="frame-canvas"></canvas>
+      <div id="time-overlay">t = <span id="cur-time">0.000</span>s / <span id="dur-display">—</span>s</div>
+    </div>
+  </div>
+  <div id="score-info-panel">
+    <div style="color:#333;font-size:11px;">load a file to begin</div>
+  </div>
+</div>
+
+<div id="palette">
+  <label>tool:</label>
+  <button id="tool-sample" class="active" data-tool="sample">[ Sample ]</button>
+  <button id="tool-event" data-tool="event">&#9654; Event</button>
+  <button id="tool-dynamics" data-tool="dynamics">~ Dynamics</button>
+  <button id="tool-tempo" data-tool="tempo">&#9201; Tempo</button>
+  <button id="tool-fx" data-tool="fx">&#9670; FX</button>
+  <div style="flex:1"></div>
+  <button id="play-base-btn" title="Play original (Space)" onclick="toggleBase()">&#9654; Base</button>
+  <button id="play-mix-btn" title="Render &amp; play composition" onclick="renderAndPlay()">&#9654; Mix</button>
+  <button id="undo-btn" style="color:#664;">&#8592; Undo</button>
+</div>
+
+<div id="export-bar">
+  <label style="font-size:11px;color:#555;">name:</label>
+  <input id="score-name" type="text" value="untitled" />
+  <button id="base-fx-btn" title="FX applied to the base audio track">Base FX: <span id="base-fx-label">none</span></button>
+  <button id="export-btn">Export YAML</button>
+  <span id="export-status"></span>
+</div>
+
+<!-- Popup -->
+<div id="popup-overlay">
+  <div id="popup">
+    <h2 id="popup-title">Configure</h2>
+    <div id="popup-body"></div>
+    <div class="popup-buttons">
+      <button class="cancel-btn" id="popup-cancel">Cancel</button>
+      <button class="confirm" id="popup-confirm">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+const state = {
+  waveform: [],       // 2000 peak values
+  duration: 0,
+  filePath: "",
+  currentTime: 0,
+  samples: {},        // name → {from, to, color}
+  dynamics: [],       // [{t, mark}] or [{from, to, mark}]
+  events: [],         // [{sample, t, speed, gain_db, loop, reverse, fx, speeds}]
+  tempo: [],          // [{from, to, mark, factor}]
+  baseFx: [],         // [{type, ...params}] — fx on the base audio track
+  fxRanges: [],       // [{from, to, fx: [...]}] — fx on a time range of the base
+  history: [],        // for undo
+};
+
+const DYNAMIC_COLORS = {
+  ppp: "#2244aa", pp: "#3355bb", p: "#5577cc",
+  mp: "#7799bb", mf: "#99aaaa", f: "#bbbb88",
+  ff: "#ddcc66", fff: "#eeeeee"
+};
+const PALETTE_COLORS = [
+  "#c87070","#c8a470","#c8c870","#70c870","#70c8c8","#7070c8","#c870c8","#a0a0a0"
+];
+let colorIdx = 0;
+function nextColor() { return PALETTE_COLORS[colorIdx++ % PALETTE_COLORS.length]; }
+
+// ─── Canvas setup ─────────────────────────────────────────────────────────────
+const canvasWrap   = document.getElementById("canvas-wrap");
+const canvas       = document.getElementById("waveform-canvas");
+const ctx          = canvas.getContext("2d");
+const frameCanvas  = document.getElementById("frame-canvas");
+const frameCtx     = frameCanvas.getContext("2d");
+const vid          = document.getElementById("frame-vid");
+const baseAudio    = document.getElementById("base-audio");
+const mixAudio     = document.getElementById("mix-audio");
+
+function activeBasePlayer() {
+  return (vid.src && vid.readyState > 0) ? vid : baseAudio;
+}
+
+vid.addEventListener("loadedmetadata", () => {
+  vid.style.display = "block";
+  document.getElementById("frame-placeholder").style.display = "none";
+  if (state.duration > 0) vid.currentTime = state.currentTime;
+});
+const RULER_H = 22;
+
+function resizeCanvas() {
+  const r = canvasWrap.getBoundingClientRect();
+  canvas.width  = r.width;
+  canvas.height = r.height;
+  // frame canvas is sized by ResizeObserver below
+  draw();
+}
+window.addEventListener("resize", resizeCanvas);
+setTimeout(resizeCanvas, 50);
+
+// Size the frame canvas whenever its container changes (handles initial layout)
+const frameResizeObserver = new ResizeObserver(() => {
+  const p = frameCanvas.parentElement;
+  if (p.offsetWidth > 0) {
+    frameCanvas.width  = p.offsetWidth;
+    frameCanvas.height = p.offsetHeight;
+    drawFrameOverlay();
+  }
+});
+frameResizeObserver.observe(frameCanvas.parentElement);
+
+// Scale-corrected mouse X for the frame canvas
+function frameMouseX(e) {
+  const r = frameCanvas.getBoundingClientRect();
+  if (!r.width || !frameCanvas.width) return 0;
+  return (e.clientX - r.left) * (frameCanvas.width / r.width);
+}
+
+// ─── Tool state ───────────────────────────────────────────────────────────────
+let activeTool = "sample";
+document.querySelectorAll("[data-tool]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    activeTool = btn.dataset.tool;
+    document.querySelectorAll("[data-tool]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+});
+
+// ─── Load ────────────────────────────────────────────────────────────────────
+document.getElementById("load-btn").addEventListener("click", loadFile);
+document.getElementById("path-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") loadFile();
+});
+
+async function loadFile() {
+  const path = document.getElementById("path-input").value.trim();
+  if (!path) return;
+  document.getElementById("load-btn").textContent = "Loading…";
+  try {
+    const res = await fetch("/load", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({path})
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    state.waveform = data.waveform;
+    state.duration = data.duration;
+    state.filePath = path;
+    document.getElementById("dur-display").textContent = data.duration.toFixed(3);
+    const ph = document.getElementById("frame-placeholder");
+    if (data.frame) {
+      vid.src = "/video?path=" + encodeURIComponent(path);
+      vid.style.display = "none";   // hidden until loadedmetadata fires
+      ph.style.display = "block";
+      ph.textContent = "loading…";
+      vid.load();
+    } else {
+      vid.src = "";
+      vid.style.display = "none";
+      baseAudio.src = "/video?path=" + encodeURIComponent(path);
+      ph.style.display = "block";
+      ph.textContent = "audio only";
+    }
+    draw();
+  } catch(e) {
+    alert("Load failed: " + e);
+  } finally {
+    document.getElementById("load-btn").textContent = "Load";
+  }
+}
+
+// ─── Time → pixel helpers ──────────────────────────────────────────────────
+function tToX(t) {
+  if (!state.duration) return 0;
+  return (t / state.duration) * canvas.width;
+}
+function xToT(x) {
+  if (!state.duration) return 0;
+  return Math.max(0, Math.min(state.duration, (x / canvas.width) * state.duration));
+}
+
+// ─── Draw ─────────────────────────────────────────────────────────────────────
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, W, H);
+
+  // Ruler
+  ctx.fillStyle = "#161616";
+  ctx.fillRect(0, 0, W, RULER_H);
+  ctx.strokeStyle = "#2a2a2a";
+  ctx.beginPath(); ctx.moveTo(0, RULER_H); ctx.lineTo(W, RULER_H); ctx.stroke();
+  drawRuler(W);
+
+  const wH = H - RULER_H;
+  const midY = RULER_H + wH / 2;
+
+  // Sample regions
+  for (const [name, s] of Object.entries(state.samples)) {
+    const x1 = tToX(s.from), x2 = tToX(s.to);
+    ctx.fillStyle = hexAlpha(s.color, 0.12);
+    ctx.fillRect(x1, RULER_H, x2 - x1, wH);
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.fillStyle = hexAlpha(s.color, 0.8);
+    ctx.font = "10px 'Courier New', monospace";
+    ctx.fillText("[" + name + "]", x1 + 3, RULER_H + 13);
+  }
+
+  // Dynamic ranges (crescendo/decrescendo)
+  for (const d of state.dynamics) {
+    if (d.from !== undefined && d.to !== undefined) {
+      const x1 = tToX(d.from), x2 = tToX(d.to);
+      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      ctx.fillStyle = hexAlpha(col, 0.18);
+      ctx.fillRect(x1, RULER_H, x2 - x1, wH);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(x1, midY); ctx.lineTo(x2, midY); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = hexAlpha(col, 0.9);
+      ctx.font = "10px 'Courier New', monospace";
+      ctx.fillText(d.mark, x1 + 3, midY - 4);
+    }
+  }
+
+  // Tempo ranges
+  for (const tp of state.tempo) {
+    const x1 = tToX(tp.from), x2 = tToX(tp.to);
+    const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
+    ctx.fillStyle = hexAlpha(col, 0.16);
+    ctx.fillRect(x1, RULER_H, x2 - x1, wH);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H + 6); ctx.lineTo(x2, RULER_H + 6); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = hexAlpha(col, 0.9);
+    ctx.font = "10px 'Courier New', monospace";
+    ctx.fillText(tp.mark + (tp.factor ? " ×" + tp.factor : ""), x1 + 3, RULER_H + 17);
+  }
+
+  // FX zones
+  for (const fz of state.fxRanges) {
+    const x1 = tToX(fz.from), x2 = tToX(fz.to);
+    const col = "#8844cc";
+    ctx.fillStyle = hexAlpha(col, 0.14);
+    ctx.fillRect(x1, RULER_H, x2 - x1, wH);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = hexAlpha(col, 0.9);
+    ctx.font = "10px 'Courier New', monospace";
+    const fxLabel = fz.fx.map(f => f.type).join("+");
+    ctx.fillText("fx:" + fxLabel, x1 + 3, H - 6);
+  }
+
+  // Waveform bars
+  if (state.waveform.length > 0) {
+    const barW = Math.max(1, W / state.waveform.length);
+    ctx.fillStyle = "#3a5a4a";
+    for (let i = 0; i < state.waveform.length; i++) {
+      const x = (i / state.waveform.length) * W;
+      const amp = state.waveform[i] * (wH * 0.45);
+      ctx.fillRect(x, midY - amp, barW, amp * 2);
+    }
+    // Center line
+    ctx.strokeStyle = "#2a3a30";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(W, midY); ctx.stroke();
+  } else {
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, midY - 1, W, 2);
+    ctx.fillStyle = "#2a2a2a";
+    ctx.font = "12px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("load a file to see waveform", W / 2, midY + 4);
+    ctx.textAlign = "left";
+  }
+
+  // Event markers
+  for (const ev of state.events) {
+    const x = tToX(ev.t);
+    const col = (state.samples[ev.sample] || {}).color || "#aaa";
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = col;
+    ctx.font = "9px 'Courier New', monospace";
+    ctx.fillText("▶" + ev.sample, x + 3, RULER_H + 22);
+  }
+
+  // Dynamic point marks
+  for (const d of state.dynamics) {
+    if (d.t !== undefined) {
+      const x = tToX(d.t);
+      const col = DYNAMIC_COLORS[d.mark] || "#aaa";
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.font = "10px 'Courier New', monospace";
+      ctx.fillText(d.mark, x + 3, H - 6);
+    }
+  }
+
+  // Cursor line
+  if (state.duration > 0) {
+    const cx = tToX(state.currentTime);
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(cx, RULER_H); ctx.lineTo(cx, H); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Frame overlay
+  drawFrameOverlay();
+
+  // Drag preview
+  if (dragState.active) {
+    const x1 = Math.min(dragState.startX, dragState.curX);
+    const x2 = Math.max(dragState.startX, dragState.curX);
+    ctx.fillStyle = "rgba(200,200,100,0.08)";
+    ctx.fillRect(x1, RULER_H, x2 - x1, wH);
+    ctx.strokeStyle = "rgba(200,200,100,0.5)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawRuler(W) {
+  if (!state.duration) return;
+  const step = niceStep(state.duration / 10);
+  ctx.fillStyle = "#555";
+  ctx.font = "9px 'Courier New', monospace";
+  for (let t = 0; t <= state.duration; t += step) {
+    const x = tToX(t);
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, RULER_H - 5); ctx.lineTo(x, RULER_H); ctx.stroke();
+    ctx.fillText(t.toFixed(1), x + 2, RULER_H - 8);
+  }
+}
+
+function niceStep(approx) {
+  const steps = [0.1,0.2,0.5,1,2,5,10,20,30,60,120];
+  for (const s of steps) if (s >= approx) return s;
+  return 120;
+}
+
+function hexAlpha(hex, a) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ─── Frame overlay draw ───────────────────────────────────────────────────────
+function tToXF(t) {
+  if (!state.duration) return 0;
+  return (t / state.duration) * frameCanvas.width;
+}
+
+function drawFrameOverlay() {
+  const W = frameCanvas.width, H = frameCanvas.height;
+  frameCtx.clearRect(0, 0, W, H);
+  if (!state.duration) return;
+
+  // Sample regions
+  for (const [name, s] of Object.entries(state.samples)) {
+    const x1 = tToXF(s.from), x2 = tToXF(s.to);
+    frameCtx.fillStyle = hexAlpha(s.color, 0.18);
+    frameCtx.fillRect(x1, 0, x2 - x1, H);
+    frameCtx.strokeStyle = hexAlpha(s.color, 0.7);
+    frameCtx.lineWidth = 1.5;
+    frameCtx.setLineDash([]);
+    frameCtx.beginPath(); frameCtx.moveTo(x1, 0); frameCtx.lineTo(x1, H); frameCtx.stroke();
+    frameCtx.beginPath(); frameCtx.moveTo(x2, 0); frameCtx.lineTo(x2, H); frameCtx.stroke();
+    frameCtx.fillStyle = hexAlpha(s.color, 0.85);
+    frameCtx.font = "11px 'Courier New', monospace";
+    frameCtx.fillText("[" + name + "]", x1 + 4, 16);
+  }
+
+  // Dynamic ranges
+  for (const d of state.dynamics) {
+    if (d.from !== undefined) {
+      const x1 = tToXF(d.from), x2 = tToXF(d.to);
+      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      frameCtx.fillStyle = hexAlpha(col, 0.15);
+      frameCtx.fillRect(x1, 0, x2 - x1, H);
+      frameCtx.strokeStyle = hexAlpha(col, 0.6);
+      frameCtx.lineWidth = 1; frameCtx.setLineDash([4,3]);
+      frameCtx.beginPath(); frameCtx.moveTo(x1, H/2); frameCtx.lineTo(x2, H/2); frameCtx.stroke();
+      frameCtx.setLineDash([]);
+      frameCtx.fillStyle = hexAlpha(col, 0.9);
+      frameCtx.font = "10px 'Courier New', monospace";
+      frameCtx.fillText(d.mark, x1 + 3, H/2 - 4);
+    }
+  }
+
+  // Tempo ranges
+  for (const tp of state.tempo) {
+    const x1 = tToXF(tp.from), x2 = tToXF(tp.to);
+    const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
+    frameCtx.fillStyle = hexAlpha(col, 0.13);
+    frameCtx.fillRect(x1, 0, x2 - x1, H);
+    frameCtx.strokeStyle = hexAlpha(col, 0.7);
+    frameCtx.lineWidth = 1; frameCtx.setLineDash([6,4]);
+    frameCtx.beginPath(); frameCtx.moveTo(x1, 24); frameCtx.lineTo(x2, 24); frameCtx.stroke();
+    frameCtx.setLineDash([]);
+    frameCtx.fillStyle = hexAlpha(col, 0.9);
+    frameCtx.font = "10px 'Courier New', monospace";
+    frameCtx.fillText(tp.mark, x1 + 3, 36);
+  }
+
+  // FX zones
+  for (const fz of state.fxRanges) {
+    const x1 = tToXF(fz.from), x2 = tToXF(fz.to);
+    frameCtx.fillStyle = hexAlpha("#8844cc", 0.12);
+    frameCtx.fillRect(x1, 0, x2 - x1, H);
+    frameCtx.strokeStyle = hexAlpha("#8844cc", 0.5);
+    frameCtx.lineWidth = 1; frameCtx.setLineDash([2,3]);
+    frameCtx.beginPath(); frameCtx.moveTo(x1, 0); frameCtx.lineTo(x1, H); frameCtx.stroke();
+    frameCtx.beginPath(); frameCtx.moveTo(x2, 0); frameCtx.lineTo(x2, H); frameCtx.stroke();
+    frameCtx.setLineDash([]);
+    frameCtx.fillStyle = hexAlpha("#8844cc", 0.9);
+    frameCtx.font = "10px 'Courier New', monospace";
+    frameCtx.fillText("fx:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
+  }
+
+  // Event markers
+  for (const ev of state.events) {
+    const x = tToXF(ev.t);
+    const col = (state.samples[ev.sample] || {}).color || "#aaa";
+    frameCtx.strokeStyle = hexAlpha(col, 0.8);
+    frameCtx.lineWidth = 1.5; frameCtx.setLineDash([3,2]);
+    frameCtx.beginPath(); frameCtx.moveTo(x, 0); frameCtx.lineTo(x, H); frameCtx.stroke();
+    frameCtx.setLineDash([]);
+    frameCtx.fillStyle = hexAlpha(col, 0.9);
+    frameCtx.font = "9px 'Courier New', monospace";
+    frameCtx.fillText("▶" + ev.sample, x + 3, 28);
+  }
+
+  // Dynamic point marks
+  for (const d of state.dynamics) {
+    if (d.t !== undefined) {
+      const x = tToXF(d.t);
+      const col = DYNAMIC_COLORS[d.mark] || "#aaa";
+      frameCtx.strokeStyle = hexAlpha(col, 0.8);
+      frameCtx.lineWidth = 2; frameCtx.setLineDash([]);
+      frameCtx.beginPath(); frameCtx.moveTo(x, 0); frameCtx.lineTo(x, H); frameCtx.stroke();
+      frameCtx.fillStyle = hexAlpha(col, 0.95);
+      frameCtx.font = "11px 'Courier New', monospace";
+      frameCtx.fillText(d.mark, x + 3, H - 10);
+    }
+  }
+
+  // Drag range preview
+  if (dragState.active) {
+    const x1F = (Math.min(dragState.startX, dragState.curX) / canvas.width) * W;
+    const x2F = (Math.max(dragState.startX, dragState.curX) / canvas.width) * W;
+    frameCtx.fillStyle = "rgba(200,200,100,0.08)";
+    frameCtx.fillRect(x1F, 0, x2F - x1F, H);
+    frameCtx.strokeStyle = "rgba(200,200,100,0.3)";
+    frameCtx.lineWidth = 1; frameCtx.setLineDash([4,3]);
+    frameCtx.beginPath(); frameCtx.moveTo(x1F, 0); frameCtx.lineTo(x1F, H); frameCtx.stroke();
+    frameCtx.beginPath(); frameCtx.moveTo(x2F, 0); frameCtx.lineTo(x2F, H); frameCtx.stroke();
+    frameCtx.setLineDash([]);
+  }
+
+  // Cursor
+  const cx = tToXF(state.currentTime);
+  frameCtx.strokeStyle = "rgba(255,255,255,0.7)";
+  frameCtx.lineWidth = 1; frameCtx.setLineDash([4,3]);
+  frameCtx.beginPath(); frameCtx.moveTo(cx, 0); frameCtx.lineTo(cx, H); frameCtx.stroke();
+  frameCtx.setLineDash([]);
+}
+
+// ─── Drag state ───────────────────────────────────────────────────────────────
+const dragState = { active: false, startX: 0, curX: 0, startT: 0 };
+let mouseIsDown = false;
+
+canvas.addEventListener("mousemove", e => {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const t = xToT(x);
+  if (dragState.active) {
+    dragState.curX = x;
+    draw();
+  }
+  if (mouseIsDown) {
+    const pl = activeBasePlayer();
+    if (pl && pl.src && pl.readyState >= 1 && pl.paused) pl.currentTime = t;
+    state.currentTime = t;
+  }
+  document.getElementById("cur-time").textContent = t.toFixed(3);
+});
+
+canvas.addEventListener("mousedown", e => {
+  mouseIsDown = true;
+  if (!state.duration) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const t = xToT(x);
+  if (activeTool === "sample" || activeTool === "dynamics" || activeTool === "tempo" || activeTool === "fx") {
+    dragState.active = true;
+    dragState.startX = x;
+    dragState.curX = x;
+    dragState.startT = t;
+  }
+});
+
+canvas.addEventListener("mouseup", e => {
+  mouseIsDown = false;
+  if (!state.duration) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const t = xToT(x);
+
+  if (dragState.active) {
+    dragState.active = false;
+    const t1 = Math.min(dragState.startT, t);
+    const t2 = Math.max(dragState.startT, t);
+    const dist = Math.abs(x - dragState.startX);
+
+    if (dist < 5) {
+      if (activeTool === "dynamics") openMarkPopup(t);
+      else seekTo(t);
+    } else {
+      if (activeTool === "sample")   openSamplePopup(t1, t2);
+      else if (activeTool === "dynamics") openRangePopup(t1, t2);
+      else if (activeTool === "tempo")    openTempoPopup(t1, t2);
+      else if (activeTool === "fx")       openFxZonePopup(t1, t2);
+    }
+  } else if (activeTool === "event") {
+    openEventPopup(t);
+  } else if (activeTool === "dynamics") {
+    openMarkPopup(t);
+  } else {
+    seekTo(t);
+  }
+  draw();
+});
+
+canvas.addEventListener("mouseleave", () => {
+  mouseIsDown = false;
+  if (dragState.active) { dragState.active = false; draw(); }
+});
+
+// ─── Frame canvas interaction (same tools, different canvas) ──────────────────
+function xToTF(x) {
+  if (!state.duration) return 0;
+  return Math.max(0, Math.min(state.duration, (x / frameCanvas.width) * state.duration));
+}
+
+frameCanvas.addEventListener("mousemove", e => {
+  const x = frameMouseX(e);
+  const t = xToTF(x);
+  if (dragState.active) {
+    dragState.curX = (x / frameCanvas.width) * canvas.width;
+    draw();
+  }
+  if (mouseIsDown) {
+    const pl = activeBasePlayer();
+    if (pl && pl.src && pl.readyState >= 1 && pl.paused) pl.currentTime = t;
+    state.currentTime = t;
+  }
+  document.getElementById("cur-time").textContent = t.toFixed(3);
+});
+
+frameCanvas.addEventListener("mousedown", e => {
+  mouseIsDown = true;
+  if (!state.duration) return;
+  const x = frameMouseX(e);
+  const t = xToTF(x);
+  if (activeTool === "sample" || activeTool === "dynamics" || activeTool === "tempo" || activeTool === "fx") {
+    dragState.active = true;
+    dragState.startX = (x / frameCanvas.width) * canvas.width;
+    dragState.curX   = dragState.startX;
+    dragState.startT = t;
+  }
+});
+
+frameCanvas.addEventListener("mouseup", e => {
+  mouseIsDown = false;
+  if (!state.duration) return;
+  const x = frameMouseX(e);
+  const t = xToTF(x);
+  if (dragState.active) {
+    dragState.active = false;
+    const t1 = Math.min(dragState.startT, t);
+    const t2 = Math.max(dragState.startT, t);
+    const waveX = (x / frameCanvas.width) * canvas.width;
+    const dist = Math.abs(waveX - dragState.startX);
+    if (dist >= 5) {
+      if (activeTool === "sample")        openSamplePopup(t1, t2);
+      else if (activeTool === "dynamics") openRangePopup(t1, t2);
+      else if (activeTool === "tempo")    openTempoPopup(t1, t2);
+      else if (activeTool === "fx")       openFxZonePopup(t1, t2);
+    } else {
+      if (activeTool === "dynamics") openMarkPopup(t);
+      else seekTo(t);
+    }
+  } else if (activeTool === "event") {
+    openEventPopup(t);
+  } else if (activeTool === "dynamics") {
+    openMarkPopup(t);
+  } else {
+    seekTo(t);
+  }
+  draw();
+});
+
+frameCanvas.addEventListener("mouseleave", () => {
+  mouseIsDown = false;
+  if (dragState.active) { dragState.active = false; draw(); }
+});
+
+frameCanvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  const x = frameMouseX(e) / frameCanvas.width * canvas.width;
+  const cr = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new MouseEvent("contextmenu", {
+    clientX: cr.left + x,
+    clientY: cr.top + canvas.height / 2,
+    bubbles: true, cancelable: true
+  }));
+});
+
+// ─── Cursor seek ──────────────────────────────────────────────────────────────
+function seekTo(t) {
+  state.currentTime = t;
+  document.getElementById("cur-time").textContent = t.toFixed(3);
+  const pl = activeBasePlayer();
+  if (pl && pl.src && pl.readyState >= 1) pl.currentTime = t;
+  draw();
+}
+
+// ─── Playback ─────────────────────────────────────────────────────────────────
+function toggleBase() {
+  const pl = activeBasePlayer();
+  if (!pl || !pl.src) return;
+  pl.paused ? pl.play() : pl.pause();
+}
+
+async function renderAndPlay() {
+  const btn = document.getElementById("play-mix-btn");
+  if (!mixAudio.paused) { mixAudio.pause(); return; }
+  if (!state.filePath) return;
+  btn.textContent = "⏳ rendering…";
+  btn.disabled = true;
+  try {
+    const samplesClean = {};
+    for (const [k, v] of Object.entries(state.samples))
+      samplesClean[k] = { from: v.from, to: v.to };
+    const score = {
+      samples: samplesClean,
+      dynamics: state.dynamics,
+      tempo: state.tempo,
+      base_fx: state.baseFx,
+      fx_ranges: state.fxRanges,
+      events: state.events
+    };
+    const res = await fetch("/preview", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ path: state.filePath, score })
+    });
+    const data = await res.json();
+    if (data.error) { alert("Render error: " + data.error); return; }
+    mixAudio.src = data.url;
+    await mixAudio.play();
+  } catch(e) {
+    alert("Render failed: " + e);
+  } finally {
+    btn.disabled = false;
+    if (mixAudio.paused) btn.textContent = "▶ Mix";
+  }
+}
+
+function playTick() {
+  const playing = (!vid.paused && !vid.ended)       ? vid
+                : (!baseAudio.paused && !baseAudio.ended) ? baseAudio
+                : (!mixAudio.paused  && !mixAudio.ended)  ? mixAudio
+                : null;
+  if (!playing) return;
+  state.currentTime = playing.currentTime;
+  document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+  draw();
+  requestAnimationFrame(playTick);
+}
+
+vid.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Base"; requestAnimationFrame(playTick); });
+vid.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Base"; });
+vid.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Base"; state.currentTime = vid.currentTime; draw(); });
+
+baseAudio.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Base"; requestAnimationFrame(playTick); });
+baseAudio.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Base"; });
+baseAudio.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Base"; state.currentTime = baseAudio.currentTime; draw(); });
+
+mixAudio.addEventListener("play",  () => { document.getElementById("play-mix-btn").textContent = "⏸ Mix"; requestAnimationFrame(playTick); });
+mixAudio.addEventListener("pause", () => { document.getElementById("play-mix-btn").textContent = "▶ Mix"; });
+mixAudio.addEventListener("ended", () => { document.getElementById("play-mix-btn").textContent = "▶ Mix"; state.currentTime = mixAudio.currentTime; draw(); });
+
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !e.target.matches("input, textarea, select")) {
+    e.preventDefault();
+    toggleBase();
+  }
+});
+
+// ─── Popup helpers ─────────────────────────────────────────────────────────────
+const overlay = document.getElementById("popup-overlay");
+const popupTitle = document.getElementById("popup-title");
+const popupBody = document.getElementById("popup-body");
+let popupResolve = null;
+
+document.getElementById("popup-cancel").addEventListener("click", () => {
+  overlay.classList.remove("visible");
+  if (popupResolve) popupResolve(null);
+});
+document.getElementById("popup-confirm").addEventListener("click", () => {
+  overlay.classList.remove("visible");
+  if (popupResolve) popupResolve("confirm");
+});
+
+function showPopup(title, bodyHTML) {
+  popupTitle.textContent = title;
+  popupBody.innerHTML = bodyHTML;
+  overlay.classList.add("visible");
+  return new Promise(res => { popupResolve = res; });
+}
+
+function row(label, inputHTML) {
+  return `<div class="popup-row"><label>${label}</label>${inputHTML}</div>`;
+}
+
+// ─── Probabilistic param widgets ──────────────────────────────────────────────
+function paramWidget(id, label, defaultVal, step, min) {
+  const minAttr = min != null ? `min="${min}"` : "";
+  return `<div class="popup-row">
+    <label>${label}</label>
+    <select id="${id}-mode" onchange="updateParamWidget('${id}')"
+      style="width:80px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
+      <option value="fixed">= fixed</option>
+      <option value="range">↔ range</option>
+      <option value="gauss">~ gauss</option>
+    </select>
+    <span id="${id}-inputs" style="display:flex;gap:4px;flex:1;">
+      <input id="${id}-v" type="number" value="${defaultVal}" step="${step}" ${minAttr} style="flex:1;" />
+    </span>
+  </div>`;
+}
+
+function updateParamWidget(id) {
+  const mode = document.getElementById(id + "-mode").value;
+  const el   = document.getElementById(id + "-inputs");
+  const prev = document.getElementById(id + "-v");
+  const val  = prev ? parseFloat(prev.value) : 1;
+  if (mode === "fixed") {
+    el.innerHTML = `<input id="${id}-v" type="number" value="${val}" step="0.1" style="flex:1;" />`;
+  } else if (mode === "range") {
+    const lo = (val * 0.75).toFixed(2), hi = (val * 1.25).toFixed(2);
+    el.innerHTML = `<input id="${id}-lo" type="number" value="${lo}" step="0.05" style="flex:1;" placeholder="min" />
+                    <span style="color:#444;align-self:center;">–</span>
+                    <input id="${id}-hi" type="number" value="${hi}" step="0.05" style="flex:1;" placeholder="max" />`;
+  } else {
+    el.innerHTML = `<input id="${id}-mean" type="number" value="${val}" step="0.05" style="flex:1;" placeholder="mean" />
+                    <span style="color:#444;align-self:center;">±</span>
+                    <input id="${id}-std"  type="number" value="0.1"  step="0.01" min="0" style="flex:1;" placeholder="std" />`;
+  }
+}
+
+function collectParam(id) {
+  const mode = document.getElementById(id + "-mode").value;
+  if (mode === "range") {
+    return [parseFloat(document.getElementById(id + "-lo").value),
+            parseFloat(document.getElementById(id + "-hi").value)];
+  } else if (mode === "gauss") {
+    return { distribution: "gaussian",
+             mean: parseFloat(document.getElementById(id + "-mean").value),
+             std:  parseFloat(document.getElementById(id + "-std").value) };
+  }
+  return parseFloat(document.getElementById(id + "-v").value);
+}
+
+// ─── Sample popup ─────────────────────────────────────────────────────────────
+async function openSamplePopup(t1, t2) {
+  const html = row("name", `<input id="p-name" type="text" value="s${Object.keys(state.samples).length + 1}" />`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
+  const res = await showPopup("[ Sample ] — define range", html);
+  if (!res) return;
+  const name = document.getElementById("p-name").value.trim() || ("s" + Date.now());
+  const color = nextColor();
+  pushHistory();
+  state.samples[name] = { from: t1, to: t2, color };
+  updateScoreInfo();
+  draw();
+}
+
+// ─── FX params helper ─────────────────────────────────────────────────────────
+function fxParamsHTML(fxType) {
+  if (fxType === "none") return "";
+  let html = "";
+  if (fxType === "reverb" || fxType === "reverb+delay") {
+    html += paramWidget("p-reverberance", "reverberance", 60, 5, 0);
+  }
+  if (fxType === "delay" || fxType === "reverb+delay") {
+    html += paramWidget("p-delay-sec", "delay_sec", 0.3, 0.05, 0);
+    html += paramWidget("p-feedback",  "feedback",  0.4, 0.05, 0);
+  }
+  return html;
+}
+
+function updateFxParams() {
+  const fxType = document.getElementById("p-fx").value;
+  document.getElementById("p-fx-params").innerHTML = fxParamsHTML(fxType);
+}
+
+function collectFx() {
+  const fxType = document.getElementById("p-fx").value;
+  if (fxType === "none") return [];
+  const result = [];
+  if (fxType === "reverb" || fxType === "reverb+delay") {
+    result.push({ type: "reverb", reverberance: collectParam("p-reverberance") });
+  }
+  if (fxType === "delay" || fxType === "reverb+delay") {
+    result.push({ type: "delay", delay_sec: collectParam("p-delay-sec"), feedback: collectParam("p-feedback") });
+  }
+  return result;
+}
+
+// ─── Event popup ──────────────────────────────────────────────────────────────
+async function openEventPopup(t) {
+  const sampleOptions = Object.keys(state.samples).map(n =>
+    `<option value="${n}">${n}</option>`).join("") || `<option value="">— no samples —</option>`;
+  const html = row("sample", `<select id="p-sample">${sampleOptions}</select>`)
+    + paramWidget("p-speed",  "speed",   "1.0", "0.1",  "0.01")
+    + row("speeds", `<input id="p-speeds" type="text" placeholder="0.5, 1.0, 2.0  (layers, overrides speed)" style="font-size:11px;" />`)
+    + paramWidget("p-gain",   "gain_db", "0",   "1",    null)
+    + row("loop", `<input id="p-loop" type="number" value="0" min="0" step="1" style="width:60px;" title="extra repeats (0 = play once)" />`)
+    + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
+        style="width:90px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
+        <option value="no">no</option>
+        <option value="yes">yes</option>
+        <option value="p">~ bernoulli</option>
+      </select><span id="p-rev-inputs" style="display:flex;gap:4px;flex:1;"></span>`)
+    + row("fx", `<select id="p-fx" onchange="updateFxParams()">
+        <option value="none">none</option>
+        <option value="reverb">reverb</option>
+        <option value="delay">delay</option>
+        <option value="reverb+delay">reverb+delay</option>
+      </select>`)
+    + `<div id="p-fx-params"></div>`
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">at: ${t.toFixed(3)}s</div>`;
+  const res = await showPopup("▶ Event — place playback", html);
+  if (!res) return;
+  const sample = document.getElementById("p-sample").value;
+  if (!sample) return;
+
+  // collect reverse
+  const revMode = document.getElementById("p-rev-mode").value;
+  let reverseVal;
+  if (revMode === "yes") reverseVal = true;
+  else if (revMode === "p") reverseVal = { distribution: "bernoulli", p: parseFloat(document.getElementById("p-rev-p").value) || 0.5 };
+  else reverseVal = false;
+
+  // parse speeds list (overrides speed if non-empty)
+  const speedsRaw = document.getElementById("p-speeds").value.trim();
+  const speedsArr = speedsRaw ? speedsRaw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n)) : [];
+
+  const ev = {
+    sample,
+    t,
+    gain_db: collectParam("p-gain"),
+    loop:    parseInt(document.getElementById("p-loop").value) || 0,
+    reverse: reverseVal,
+    fx:      collectFx()
+  };
+  if (speedsArr.length > 0) ev.speeds = speedsArr;
+  else ev.speed = collectParam("p-speed");
+
+  pushHistory();
+  state.events.push(ev);
+  updateScoreInfo();
+  draw();
+}
+
+function updateRevWidget() {
+  const mode = document.getElementById("p-rev-mode").value;
+  const el   = document.getElementById("p-rev-inputs");
+  el.innerHTML = mode === "p"
+    ? `<input id="p-rev-p" type="number" value="0.5" min="0" max="1" step="0.05" style="flex:1;" placeholder="probability" />`
+    : "";
+}
+
+// ─── Mark popup ───────────────────────────────────────────────────────────────
+async function openMarkPopup(t) {
+  const marks = ["ppp","pp","p","mp","mf","f","ff","fff"];
+  const opts = marks.map(m =>
+    `<option value="${m}" style="color:${DYNAMIC_COLORS[m]}">${m}</option>`).join("");
+  const html = row("mark", `<select id="p-mark">${opts}</select>`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">at: ${t.toFixed(3)}s</div>`;
+  const res = await showPopup("• Mark — dynamic point", html);
+  if (!res) return;
+  pushHistory();
+  state.dynamics.push({ t, mark: document.getElementById("p-mark").value });
+  updateScoreInfo();
+  draw();
+}
+
+// ─── Range popup ──────────────────────────────────────────────────────────────
+async function openRangePopup(t1, t2) {
+  const html = row("type", `<select id="p-rtype">
+      <option value="crescendo">crescendo</option>
+      <option value="decrescendo">decrescendo</option>
+    </select>`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
+  const res = await showPopup("~ Range — crescendo/decrescendo", html);
+  if (!res) return;
+  pushHistory();
+  state.dynamics.push({ from: t1, to: t2, mark: document.getElementById("p-rtype").value });
+  updateScoreInfo();
+  draw();
+}
+
+// ─── Tempo popup ──────────────────────────────────────────────────────────────
+async function openTempoPopup(t1, t2) {
+  const html = row("direction", `<select id="p-tdir">
+      <option value="accelerando">accelerando</option>
+      <option value="ritardando">ritardando</option>
+    </select>`)
+    + paramWidget("p-tfactor", "end factor", "2.0", "0.1", "0.01")
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s<br>factor = speed ratio at end of range</div>`;
+  const res = await showPopup("⏱ Tempo — accelerando/ritardando", html);
+  if (!res) return;
+  pushHistory();
+  state.tempo.push({
+    from: t1,
+    to: t2,
+    mark: document.getElementById("p-tdir").value,
+    factor: collectParam("p-tfactor")
+  });
+  updateScoreInfo();
+  draw();
+}
+
+// ─── FX Zone popup ────────────────────────────────────────────────────────────
+async function openFxZonePopup(t1, t2) {
+  const html = row("fx", `<select id="p-fx" onchange="updateFxParams()">
+      <option value="none">none</option>
+      <option value="reverb">reverb</option>
+      <option value="delay">delay</option>
+      <option value="reverb+delay">reverb+delay</option>
+    </select>`)
+    + `<div id="p-fx-params"></div>`
+    + `<div style="font-size:10px;color:#444;margin-top:6px;">applies to base audio ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
+  const res = await showPopup("◆ FX Zone — base audio range", html);
+  if (!res) return;
+  const fx = collectFx();
+  if (!fx.length) return;
+  pushHistory();
+  state.fxRanges.push({ from: t1, to: t2, fx });
+  updateScoreInfo();
+  draw();
+}
+
+// ─── Undo ─────────────────────────────────────────────────────────────────────
+function pushHistory() {
+  state.history.push(JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges }));
+  if (state.history.length > 50) state.history.shift();
+}
+
+document.getElementById("undo-btn").addEventListener("click", () => {
+  if (!state.history.length) return;
+  const prev = JSON.parse(state.history.pop());
+  state.samples = prev.samples;
+  state.dynamics = prev.dynamics;
+  state.events = prev.events;
+  state.tempo = prev.tempo || [];
+  state.baseFx = prev.baseFx || [];
+  state.fxRanges = prev.fxRanges || [];
+  document.getElementById("base-fx-label").textContent = state.baseFx.length ? state.baseFx.map(f => f.type).join("+") : "none";
+  updateScoreInfo();
+  draw();
+});
+
+// ─── Score info panel ─────────────────────────────────────────────────────────
+function updateScoreInfo() {
+  const el = document.getElementById("score-info-panel");
+  let html = "";
+
+  // Samples
+  const sNames = Object.keys(state.samples);
+  html += `<h3>samples (${sNames.length})</h3>`;
+  if (sNames.length === 0) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
+  for (const n of sNames) {
+    const s = state.samples[n];
+    html += `<div class="info-item"><span style="color:${s.color}">[${n}]</span> ${s.from.toFixed(2)}s → ${s.to.toFixed(2)}s</div>`;
+  }
+
+  // Events
+  html += `<h3>events (${state.events.length})</h3>`;
+  if (!state.events.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
+  for (const ev of state.events) {
+    const col = (state.samples[ev.sample] || {}).color || "#aaa";
+    html += `<div class="info-item">▶ <span style="color:${col}">${ev.sample}</span> @${ev.t.toFixed(2)}s`;
+    html += ` spd:${ev.speed} db:${ev.gain_db}`;
+    if (ev.loop) html += " loop";
+    if (ev.reverse) html += " rev";
+    if (ev.fx && ev.fx.length > 0) html += ` fx:${ev.fx.map(f => f.type).join("+")}`;
+    html += `</div>`;
+  }
+
+  // Dynamics
+  const pts = state.dynamics.filter(d => d.t !== undefined);
+  const ranges = state.dynamics.filter(d => d.from !== undefined);
+  html += `<h3>dynamics (${pts.length} pts, ${ranges.length} ranges)</h3>`;
+  if (!state.dynamics.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
+  for (const d of state.dynamics) {
+    if (d.t !== undefined) {
+      html += `<div class="info-item"><span style="color:${DYNAMIC_COLORS[d.mark]}">${d.mark}</span> @${d.t.toFixed(2)}s</div>`;
+    } else {
+      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      html += `<div class="info-item"><span style="color:${col}">${d.mark}</span> ${d.from.toFixed(2)}s → ${d.to.toFixed(2)}s</div>`;
+    }
+  }
+
+  // Tempo
+  html += `<h3>tempo (${state.tempo.length})</h3>`;
+  if (!state.tempo.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
+  for (const tp of state.tempo) {
+    const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
+    html += `<div class="info-item"><span style="color:${col}">${tp.mark}</span> ×${JSON.stringify(tp.factor)} ${tp.from.toFixed(2)}s → ${tp.to.toFixed(2)}s</div>`;
+  }
+
+  // FX zones
+  html += `<h3>fx zones (${state.fxRanges.length})</h3>`;
+  if (!state.fxRanges.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
+  for (const fz of state.fxRanges) {
+    html += `<div class="info-item"><span style="color:#8844cc">${fz.fx.map(f => f.type).join("+")}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ─── Base FX ──────────────────────────────────────────────────────────────────
+document.getElementById("base-fx-btn").addEventListener("click", openBaseFxPopup);
+
+async function openBaseFxPopup() {
+  const html = row("fx", `<select id="p-fx" onchange="updateFxParams()">
+      <option value="none">none</option>
+      <option value="reverb">reverb</option>
+      <option value="delay">delay</option>
+      <option value="reverb+delay">reverb+delay</option>
+    </select>`)
+    + `<div id="p-fx-params"></div>`;
+  const res = await showPopup("Base FX — applied to base audio", html);
+  if (!res) return;
+  pushHistory();
+  state.baseFx = collectFx();
+  const label = state.baseFx.length ? state.baseFx.map(f => f.type).join("+") : "none";
+  document.getElementById("base-fx-label").textContent = label;
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+document.getElementById("export-btn").addEventListener("click", async () => {
+  const name = document.getElementById("score-name").value.trim() || "untitled";
+
+  // Strip color from samples: only keep from and to
+  const samplesClean = {};
+  for (const [k, v] of Object.entries(state.samples)) {
+    samplesClean[k] = { from: v.from, to: v.to };
+  }
+
+  const score = {
+    _name: name,
+    samples: samplesClean,
+    dynamics: state.dynamics,
+    tempo: state.tempo,
+    base_fx: state.baseFx,
+    fx_ranges: state.fxRanges,
+    events: state.events
+  };
+  const statusEl = document.getElementById("export-status");
+  statusEl.textContent = "saving…";
+  try {
+    const res = await fetch("/export", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(score)
+    });
+    const data = await res.json();
+    statusEl.textContent = "saved → " + data.path;
+    setTimeout(() => { statusEl.textContent = ""; }, 4000);
+  } catch(e) {
+    statusEl.textContent = "export failed: " + e;
+  }
+});
+
+// ─── Right-click delete ───────────────────────────────────────────────────────
+canvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  if (!state.duration) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const t = xToT(x);
+  const PX_THRESH = 12;  // pixels within which we snap to an annotation
+
+  let best = null, bestDist = Infinity;
+
+  // Check event markers
+  state.events.forEach((ev, i) => {
+    const d = Math.abs(tToX(ev.t) - x);
+    if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "event", i }; }
+  });
+
+  // Check dynamic point marks
+  state.dynamics.forEach((d, i) => {
+    if (d.t !== undefined) {
+      const px = Math.abs(tToX(d.t) - x);
+      if (px < PX_THRESH && px < bestDist) { bestDist = px; best = { type: "dynamic", i }; }
+    }
+  });
+
+  // Check dynamic ranges (clicked inside a range)
+  state.dynamics.forEach((d, i) => {
+    if (d.from !== undefined) {
+      const x1 = tToX(d.from), x2 = tToX(d.to);
+      if (x >= x1 && x <= x2) {
+        const midDist = Math.abs(x - (x1 + x2) / 2);
+        if (midDist < bestDist) { bestDist = midDist; best = { type: "dynamic", i }; }
+      }
+    }
+  });
+
+  // Check sample boundaries (within PX_THRESH of from or to edge)
+  for (const [name, s] of Object.entries(state.samples)) {
+    const d1 = Math.abs(tToX(s.from) - x);
+    const d2 = Math.abs(tToX(s.to) - x);
+    const d = Math.min(d1, d2);
+    if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "sample", name }; }
+  }
+
+  // Check FX zones
+  state.fxRanges.forEach((fz, i) => {
+    const x1 = tToX(fz.from), x2 = tToX(fz.to);
+    if (x >= x1 && x <= x2) {
+      const midDist = Math.abs(x - (x1 + x2) / 2);
+      if (midDist < bestDist) { bestDist = midDist; best = { type: "fxzone", i }; }
+    }
+  });
+
+  // Check tempo ranges
+  state.tempo.forEach((tp, i) => {
+    const x1 = tToX(tp.from), x2 = tToX(tp.to);
+    if (x >= x1 && x <= x2) {
+      const midDist = Math.abs(x - (x1 + x2) / 2);
+      if (midDist < bestDist) { bestDist = midDist; best = { type: "tempo", i }; }
+    }
+    const d = Math.min(Math.abs(x1 - x), Math.abs(x2 - x));
+    if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "tempo", i }; }
+  });
+
+  if (!best) return;
+
+  pushHistory();
+  if (best.type === "event") {
+    state.events.splice(best.i, 1);
+  } else if (best.type === "dynamic") {
+    state.dynamics.splice(best.i, 1);
+  } else if (best.type === "sample") {
+    delete state.samples[best.name];
+  } else if (best.type === "tempo") {
+    state.tempo.splice(best.i, 1);
+  } else if (best.type === "fxzone") {
+    state.fxRanges.splice(best.i, 1);
+  }
+  updateScoreInfo();
+  draw();
+});
+
+// Initial draw
+draw();
+</script>
+</body>
+</html>

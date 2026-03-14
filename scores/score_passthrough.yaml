@@ -1,0 +1,16 @@
+# Passthrough: output is identical to input audio (no fx, no transformation)
+
+samples:
+  full:
+    from: 0.0
+    to: 9999.0   # beyond end is fine — numpy clips to actual length
+
+dynamics:
+  - t: 0.0
+    mark: f
+
+events:
+  - sample: full
+    t: 0.0
+    speed: 1.0
+    gain_db: 0

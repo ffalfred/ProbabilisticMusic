@@ -1,0 +1,60 @@
+samples:
+  stab_a:
+    from: 0.5
+    to: 2.0
+  texture_b:
+    from: 2.0
+    to: 4.0
+
+silence_start: 0.5
+silence_end: 1.0
+
+dynamics:
+  - t: 0.0
+    mark: pp
+  - from: 1.0
+    to: 3.5
+    mark: crescendo
+  - t: 3.5
+    mark: mf
+  - from: 8.0
+    to: 10.0
+    mark: decrescendo
+  - t: 10.0
+    mark: p
+
+tempo:
+  - from: 4.0
+    to: 6.5
+    mark: accelerando
+    factor: 1.4
+
+events:
+  # normal playback
+  - sample: stab_a
+    t: 1.0
+    speed: 1.0
+    gain_db: -6
+
+  # reversed, gaussian speed variation — different every render
+  - sample: stab_a
+    t: 3.5
+    reverse: true
+    speed:
+      distribution: gaussian
+      mean: 0.75
+      std: 0.08
+    gain_db: -9
+    fx:
+      - type: delay
+        delay_sec: 0.3
+        feedback: 0.4
+
+  # layered transpositions — three pitches simultaneously, with reverb
+  - sample: texture_b
+    t: 6.0
+    speeds: [0.5, 1.0, 2.0]
+    gain_db: -12
+    fx:
+      - type: reverb
+        reverberance: 60
