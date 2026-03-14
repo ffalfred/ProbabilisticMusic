@@ -1,0 +1,55 @@
+# --- Engine version ---
+# options: v1, v2
+engine: v2
+
+# --- Markov mode (v2 only) ---
+# symbolic: conditions only on previous score markings
+# joint:    conditions on previous markings AND previous rendered outputs
+markov_mode: joint
+
+# --- Markov order (v2 only) ---
+# how many previous steps to consider — recommended: start with 2
+markov_order: 2
+
+# --- Covariance structure (v2 only) ---
+# diagonal: parameters vary independently
+# full:     parameters co-vary (requires correlation coefficients in transition table)
+covariance: diagonal
+
+# --- Phrase boundary behaviour (v2 only) ---
+# reset:      Markov history resets at each phrase boundary
+# continuous: history accumulates across the whole piece
+phrase_boundary: reset
+
+# --- History decay weight (joint mode only) ---
+# how strongly older history influences current emission
+# 1.0 = all steps weighted equally
+# 0.5 = each step half as influential as the previous one
+history_decay: 0.7
+
+# --- Cold start defaults (v2 only) ---
+cold_start_marking: mf
+cold_start_outputs:
+  gain_db: -12.0
+  brightness: 0.5
+  timing_offset_ms: 0.0
+  attack_shape: 0.5
+  reverb_wet: 0.3
+
+# --- Output files ---
+# each run writes a new numbered file — output/output_<score>_<base>_001.wav etc.
+# set seed to an integer to reproduce a specific run, null for random
+seed: null
+
+# --- V1 stochastic parameters ---
+# which v1 parameters should vary randomly within a range each run
+v1_stochastic:
+  speed:    {enabled: true,  std: 0.05}
+  gain_db:  {enabled: true,  std: 1.0}
+  timing:   {enabled: false, std: 0.0}
+
+# --- Bayesian update (v2 only) ---
+# false: use expert priors only
+# true:  update priors with MAESTRO data (not yet implemented)
+bayesian_update: false
+maestro_path: null

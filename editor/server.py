@@ -11,10 +11,25 @@ import soundfile as sf
 import yaml
 from flask import Flask, request, jsonify, send_from_directory
 
-# Allow importing src.* from the parent beta_interpreter directory
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Allow importing src.* and v2.* from the parent beta_interpreter directory
+_BETA_DIR = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, os.path.abspath(_BETA_DIR))
 from src.sample_engine import build_bank
-from src.mixer import mix_events, normalise
+from src.scheduler     import get_events
+from src.mixer         import mix_events, normalise
+
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+
+
+def _load_server_config(override: dict = None) -> dict:
+    """Load config.yaml defaults, then apply any per-request override."""
+    cfg = {}
+    if os.path.exists(_CONFIG_PATH):
+        with open(_CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f) or {}
+    if override:
+        cfg.update(override)
+    return cfg
 
 PREVIEW_TMP = os.path.join(tempfile.gettempdir(), "opacity_toke_preview.wav")
 
@@ -149,9 +164,10 @@ def serve_video():
 
 @app.route("/preview", methods=["POST"])
 def preview():
-    data  = request.get_json()
-    path  = data.get("path", "")
-    score = data.get("score", {})
+    data   = request.get_json()
+    path   = data.get("path", "")
+    score  = data.get("score", {})
+    config = _load_server_config(data.get("_config"))
 
     if not os.path.exists(path):
         return jsonify({"error": f"File not found: {path}"}), 404
@@ -159,13 +175,20 @@ def preview():
     try:
         score["base_track"] = path
         bank, sr, base = build_bank(score)
-        events = sorted(score.get("events", []), key=lambda e: e["t"])
+
+        if config.get("engine") == "v2":
+            from v2.interpreter import interpret
+            events = interpret(score, config)
+        else:
+            events = get_events(score)
+
         mix = mix_events(events, bank, sr, score, base)
         mix = normalise(mix)
         sf.write(PREVIEW_TMP, mix, sr)
         return jsonify({"url": f"/preview_audio?v={int(_time.time())}"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
 
 
 @app.route("/preview_audio")
@@ -179,16 +202,21 @@ def preview_audio():
 
 @app.route("/export", methods=["POST"])
 def export():
-    score = request.get_json()
-    name = score.get("_name", "untitled")
+    data  = request.get_json()
+    name  = data.get("_name", "untitled")
+    v2cfg = data.get("_config")
     # Sanitize name
     safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip() or "untitled"
 
     os.makedirs(SCORES_DIR, exist_ok=True)
     out_path = os.path.join(SCORES_DIR, f"{safe_name}.yaml")
 
-    # Build clean score dict (exclude _name)
-    clean = {k: v for k, v in score.items() if k != "_name"}
+    # Build clean score dict (exclude editor metadata keys)
+    clean = {k: v for k, v in data.items() if not k.startswith("_")}
+    # Attach V2 config block if provided
+    if v2cfg:
+        clean["_v2_config"] = v2cfg
+
     yaml_str = yaml.dump(clean, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     with open(out_path, "w") as f:

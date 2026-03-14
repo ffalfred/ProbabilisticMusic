@@ -5,17 +5,24 @@ How the code works, module by module.
 ## Data flow
 
 ```
-score.yaml  +  base_track
-     │               │
-     ▼               ▼
-  parser.py      sample_engine.py
-  load_score()   build_bank()
-     │               │
-     │           bank: {name → np.array}
-     │           sr: int
-     │           base: np.array
-     │               │
-     ▼               ▼
+config.yaml     score.yaml  +  base_track
+     │               │               │
+     ▼               ▼               ▼
+  main.py        parser.py      sample_engine.py
+  engine?        load_score()   build_bank()
+     │               │               │
+     │           ┌───┘           bank: {name → np.array}
+     │           │               sr: int
+     │  V2 only  │               base: np.array
+     │     ▼     │
+     │  v2/interpreter.py
+     │  interpret(score, config)
+     │     ├── v2/context.py  — phrase boundaries, event density
+     │     ├── v2/emission.py — Gaussian sampling from transition table
+     │     ├── v2/markov_symbolic.py or markov_joint.py
+     │     └── enriched events (gain_db offsets, timing shifts, reverb, EQ)
+     │           │
+     └─────────── ▼
             mixer.py
             mix_events(events, bank, sr, score, base)
                 │
@@ -37,7 +44,7 @@ score.yaml  +  base_track
                 ├── build dynamics envelope (envelope.py)
                 ├── multiply envelope into mix
                 ├── normalise (mixer.normalise)
-                └── write output (soundfile / ffmpeg)
+                └── write output_<score>_<base>_NNN.wav (soundfile / ffmpeg)
 ```
 
 ---
@@ -149,6 +156,21 @@ Wraps the full pipeline for the CLI:
 
 ---
 
+## `v2/` package
+
+The V2 Expressive Interpretation Engine. Only active when `config.yaml` has `engine: v2`.
+
+| Module | Role |
+|--------|------|
+| `v2/interpreter.py` | Entry point: `interpret(score, config) → list[dict]`. Orchestrates all other modules. |
+| `v2/context.py` | Computes context vectors (phrase position, tempo direction, event density) and infers phrase boundaries. |
+| `v2/emission.py` | `sample_output()`: looks up transition table entry, builds Gaussian (diagonal or full covariance), draws o(t). |
+| `v2/markov_symbolic.py` | `SymbolicMarkov`: history tracks score markings only. |
+| `v2/markov_joint.py` | `JointMarkov`: history tracks markings + rendered outputs; history_decay weighting. |
+| `v2/transition_table.yaml` | Expert priors for every dynamic transition (mean, std per output parameter). |
+
+---
+
 ## `editor/server.py`
 
 Flask server that backs the web editor. Endpoints:
@@ -158,9 +180,9 @@ Flask server that backs the web editor. Endpoints:
 | `/` | GET | Serves `static/index.html` |
 | `/load` | POST | Reads audio/video, returns waveform peaks + first frame (base64 PNG) + duration |
 | `/video` | GET | Serves the raw media file for `<video>` / `<audio>` playback |
-| `/frame` | GET | Extracts a single video frame at time `t` via ffmpeg (currently unused by UI) |
-| `/preview` | POST | Renders a full mix from score JSON, writes to temp WAV, returns playback URL |
+| `/frame` | GET | Extracts a single video frame at time `t` via ffmpeg |
+| `/preview` | POST | Renders a full mix from score JSON; routes to V2 if `_config.engine == 'v2'`; returns playback URL |
 | `/preview_audio` | GET | Serves the last rendered preview WAV |
-| `/export` | POST | Saves score JSON as a YAML file to `scores/` |
+| `/export` | POST | Saves score JSON as YAML to `scores/`; includes `_v2_config:` block if V2 was active |
 
-The `/preview` endpoint runs the full pipeline (same as `main.py`) on the score state as sent by the editor.
+The `/preview` endpoint accepts an optional `_config` key in the POST body containing the engine/markov settings. If absent, it falls back to `config.yaml` defaults.

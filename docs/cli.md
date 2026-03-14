@@ -18,10 +18,25 @@ python main.py -i <input_file> -s <score_file>
 
 | Input type | Output |
 |------------|--------|
-| Audio file (`.wav`, etc.) | `output/output.wav` — the rendered mix |
-| Video file (`.mp4`) | `output/output.mp4` — original video with replaced audio track |
+| Audio file (`.wav`, etc.) | `output/output_<score>_<base>_001.wav` — numbered per run |
+| Video file (`.mp4`) | `output/output_<score>_<base>_001.mp4` — original video with replaced audio track |
 
-The output directory is created automatically if it does not exist.
+The output directory is created automatically. The run counter increments on each render — running the same command twice produces `_001` and `_002`. To reproduce a specific run, set `seed` in `config.yaml`.
+
+---
+
+## Engine mode and config.yaml
+
+`beta_interpreter/config.yaml` controls which engine runs and how:
+
+```yaml
+engine: v1    # v1 (default) or v2
+seed: null    # integer for reproducible runs, null for random
+```
+
+When `engine: v2`, V2's Expressive Interpretation Engine runs before V1. It reads the score's `dynamics:` markings and applies a Markov-sampled expressive offset to each event's gain, timing, reverb, attack, and brightness. See [v2.md](v2.md) for the full config reference.
+
+When `engine: v1` or no `config.yaml` exists, behaviour is identical to previous versions.
 
 After rendering, the terminal prints the output path and the total duration in seconds.
 

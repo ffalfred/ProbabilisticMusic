@@ -193,12 +193,35 @@ The **← Undo** button in the palette removes the last action. The history is p
 
 ---
 
+## Engine selector (V1 / V2 β)
+
+The **Engine** dropdown in the bottom bar controls which rendering engine is used when you press **▶ Mix**.
+
+| Setting | Behaviour |
+|---------|-----------|
+| **V1** | Deterministic render (default). Modulo probabilistic score parameters, the same score always sounds the same. |
+| **V2 β** | Expressive Interpretation Engine. Each press of **▶ Mix** produces a different but musically coherent result, driven by the score's `dynamics:` markings. |
+
+When **V2 β** is selected, a sub-panel appears:
+
+| Control | Effect |
+|---------|--------|
+| **mode** `joint` / `symbolic` | `joint`: V2's history includes what it previously rendered — runs develop their own performance character. `symbolic`: V2 only sees score markings — variation is independent between runs. |
+| **seed** | Leave blank for a fresh random performance. Enter an integer to reproduce the exact same render. |
+| **order** | How many past events to condition on (default 2). Higher values = longer memory, more coherent but less varied. |
+
+V2 requires a `dynamics:` block in the score (add dynamic markings with the **~ Dynamics** tool). Without dynamics, V2 falls back to neutral `mf` behaviour for all events.
+
+---
+
 ## Exporting the score
 
 1. Set a name in the `name:` field at the bottom.
 2. Click **Export YAML**.
 
 The score is saved to `beta_interpreter/scores/<name>.yaml`. The status bar shows the full path. This file can then be used directly with the CLI renderer.
+
+If V2 is active, the exported YAML includes a `_v2_config:` block recording the engine settings at the time of export. The CLI renderer reads `config.yaml` for its settings; use `_v2_config:` as a reference for which settings produced a given score file.
 
 ---
 

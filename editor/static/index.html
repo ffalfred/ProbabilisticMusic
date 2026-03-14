@@ -337,6 +337,27 @@
   <label style="font-size:11px;color:#555;">name:</label>
   <input id="score-name" type="text" value="untitled" />
   <button id="base-fx-btn" title="FX applied to the base audio track">Base FX: <span id="base-fx-label">none</span></button>
+
+  <!-- Engine selector -->
+  <span style="margin-left:12px;font-size:11px;color:#555;">engine:</span>
+  <select id="engine-select" title="Rendering engine" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 6px;font-size:11px;">
+    <option value="v1">V1</option>
+    <option value="v2">V2 β</option>
+  </select>
+
+  <!-- V2 config sub-panel (hidden when V1 active) -->
+  <span id="v2-panel" style="display:none;margin-left:8px;gap:6px;align-items:center;">
+    <span style="font-size:10px;color:#7b5ea7;font-weight:bold;">V2 β</span>
+    <select id="v2-mode" title="Markov mode" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 5px;font-size:11px;">
+      <option value="joint">joint</option>
+      <option value="symbolic">symbolic</option>
+    </select>
+    <label style="font-size:11px;color:#555;">seed:</label>
+    <input id="v2-seed" type="number" placeholder="random" title="Set integer for reproducible runs" style="width:72px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
+    <label style="font-size:11px;color:#555;">order:</label>
+    <input id="v2-order" type="number" value="2" min="1" max="4" title="Markov order (1–4)" style="width:40px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
+  </span>
+
   <button id="export-btn">Export YAML</button>
   <span id="export-status"></span>
 </div>
@@ -367,7 +388,45 @@ const state = {
   baseFx: [],         // [{type, ...params}] — fx on the base audio track
   fxRanges: [],       // [{from, to, fx: [...]}] — fx on a time range of the base
   history: [],        // for undo
+  v2config: {
+    engine: 'v1',
+    markov_mode: 'joint',
+    markov_order: 2,
+    covariance: 'diagonal',
+    phrase_boundary: 'reset',
+    history_decay: 0.7,
+    seed: null,
+  },
 };
+
+// ─── Engine selector wiring ───────────────────────────────────────────────────
+function _syncV2Config() {
+  const sel   = document.getElementById('engine-select');
+  const panel = document.getElementById('v2-panel');
+  const mode  = document.getElementById('v2-mode');
+  const seed  = document.getElementById('v2-seed');
+  const order = document.getElementById('v2-order');
+  if (!sel) return;
+  const isV2 = sel.value === 'v2';
+  panel.style.display = isV2 ? 'inline-flex' : 'none';
+  state.v2config.engine       = sel.value;
+  state.v2config.markov_mode  = mode  ? mode.value  : 'joint';
+  state.v2config.markov_order = order ? parseInt(order.value) || 2 : 2;
+  const rawSeed = seed ? seed.value.trim() : '';
+  state.v2config.seed = rawSeed === '' ? null : parseInt(rawSeed);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const sel   = document.getElementById('engine-select');
+  const mode  = document.getElementById('v2-mode');
+  const seed  = document.getElementById('v2-seed');
+  const order = document.getElementById('v2-order');
+  if (sel)   sel.addEventListener('change', _syncV2Config);
+  if (mode)  mode.addEventListener('change', _syncV2Config);
+  if (seed)  seed.addEventListener('input',  _syncV2Config);
+  if (order) order.addEventListener('input',  _syncV2Config);
+  _syncV2Config();
+});
 
 const DYNAMIC_COLORS = {
   ppp: "#2244aa", pp: "#3355bb", p: "#5577cc",
@@ -1032,10 +1091,10 @@ async function renderAndPlay() {
     const res = await fetch("/preview", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.filePath, score })
+      body: JSON.stringify({ path: state.filePath, score, _config: state.v2config })
     });
     const data = await res.json();
-    if (data.error) { alert("Render error: " + data.error); return; }
+    if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
     mixAudio.src = data.url;
     await mixAudio.play();
   } catch(e) {
@@ -1570,7 +1629,7 @@ document.getElementById("export-btn").addEventListener("click", async () => {
     const res = await fetch("/export", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(score)
+      body: JSON.stringify(Object.assign(score, { _config: state.v2config }))
     });
     const data = await res.json();
     statusEl.textContent = "saved → " + data.path;

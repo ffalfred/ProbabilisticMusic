@@ -27,6 +27,15 @@ Because parameters can be probabilistic (a speed drawn from a Gaussian, a loop c
 | [score_reference.md](score_reference.md) | Complete YAML score format reference |
 | [cli.md](cli.md) | Command-line renderer |
 | [pipeline.md](pipeline.md) | How the code works internally |
+| [v2.md](v2.md) | V2 Expressive Interpretation Engine (beta) |
+
+---
+
+## V2 — Expressive Interpretation Engine (beta)
+
+V2 adds musical expressiveness on top of V1. Instead of rendering the score as-written, V2 interprets the `dynamics:` markings through a higher-order Markov chain with Gaussian emissions — producing a different but musically coherent performance on every run.
+
+Set `engine: v2` in `config.yaml` (or select **V2 β** in the editor) and add a `dynamics:` section to your score. See [v2.md](v2.md) for full documentation.
 
 ---
 
