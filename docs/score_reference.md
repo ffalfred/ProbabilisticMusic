@@ -1,12 +1,14 @@
 # Score Format Reference
 
-Scores are YAML files. They fully describe a composition: which audio fragments to extract from the base track, when and how to play them back, how the dynamics should evolve, and what effects to apply.
+A score is a text file written in YAML format. It describes your composition completely: which fragments to cut from the source audio, when and how to play them, what effects to add, and how the volume should evolve over time.
 
-The editor can generate these files for you (Export YAML), but they are also human-readable and hand-editable.
+> **What is YAML?** It's a plain text format for structured data. Indentation matters — each level of indent means "this belongs inside the thing above it". The editor can generate score files for you (Export YAML), but they are also easy to read and edit by hand in any text editor.
 
 ---
 
-## Minimal example
+## Minimal working example
+
+The simplest possible score:
 
 ```yaml
 samples:
@@ -21,346 +23,344 @@ events:
     gain_db: -6
 ```
 
-`base_track` is not stored in the score file itself — it is supplied as a CLI argument when rendering. This keeps scores portable (the same score can be applied to different source files).
+This cuts a 1.5-second fragment from the source audio (from 0.5s to 2.0s), names it `stab_a`, and plays it back at 5 seconds into the composition at half amplitude.
+
+> The source audio file is **not** stored in the score. You supply it separately when rendering — this keeps scores reusable with different source files.
 
 ---
 
-## Top-level keys
+## All available sections
 
-| Key | Required | Description |
-|-----|----------|-------------|
-| `samples` | yes | Named audio fragments cut from the base track |
-| `events` | yes | Playback triggers referencing samples |
-| `dynamics` | no | Dynamic levels and crescendo/decrescendo curves |
-| `tempo` | no | Time-warp regions (accelerando / ritardando) |
-| `base_fx` | no | FX applied globally to the entire base track |
-| `fx_ranges` | no | FX applied to specific time regions of the base track |
-| `silence_start` | no | Seconds of silence prepended before events are placed |
-| `duration` | no | Used for validation — triggers assertions if events/samples exceed it |
+| Section | Required | What it does |
+|---------|----------|-------------|
+| `samples:` | yes | Names audio fragments cut from the source |
+| `events:` | yes | Triggers that play samples at specific times |
+| `dynamics:` | no | Volume levels and crescendo/decrescendo curves |
+| `tempo:` | no | Regions where timing is compressed or stretched |
+| `base_fx:` | no | Effects on the entire source track |
+| `fx_ranges:` | no | Effects on a specific time range of the source track |
+| `silence_start:` | no | Seconds of silence added before events are placed |
 
 ---
 
 ## `samples:`
 
-Defines named audio fragments by cutting time ranges from the base track. The base track always plays in full regardless of what samples are defined.
+Cuts named fragments from the source audio. Times are in seconds.
 
 ```yaml
 samples:
-  fragment_name:
-    from: 4.2      # start time in seconds (inclusive)
-    to: 7.8        # end time in seconds (exclusive)
+  kick:
+    from: 1.2    # start time in seconds
+    to: 1.8      # end time in seconds
+
+  texture:
+    from: 8.0
+    to: 12.5
 ```
 
-Sample names can be anything (letters, numbers, underscores). They are referenced by name in `events:`. Define as many or as few as you need — unused samples are harmless.
+- Names can be anything: letters, numbers, underscores (no spaces)
+- Define as many as you want — unused ones are harmless
+- The source audio always plays in full underneath, regardless of what you sample from it
 
 ---
 
 ## `events:`
 
-Each event is one playback trigger: "play this sample at this time with these transformations."
+Each event plays a sample at a specific time with specific settings.
 
 ```yaml
 events:
-  - sample: fragment_name    # required — must match a key in samples:
-    t: 10.0                  # required — playback start time in seconds
-
-    # --- optional parameters ---
-    speed: 1.0               # varispeed factor (default: 1.0)
-    speeds: [0.5, 1.0, 2.0]  # layered transpositions (see below)
-    gain_db: -6              # amplitude in dB (default: -6)
-    loop: 0                  # repeat count after first play (default: 0)
-    reverse: false           # play clip backwards (default: false)
-    fx:                      # list of effects applied to this event
-      - type: reverb
-        reverberance: 60
+  - sample: kick       # which sample to play (must match a name in samples:)
+    t: 4.0             # when to play it, in seconds
+    speed: 1.0         # playback speed (see below)
+    gain_db: -6        # volume (see below)
 ```
 
-### `speed`
-Varispeed factor. Changes both pitch and duration simultaneously, like tape varispeed.
+### `speed` — pitch and duration together
+
+Changes playback speed. Pitch and duration change together, like tape varispeed.
 
 | Value | Effect |
 |-------|--------|
-| `1.0` | original speed and pitch |
-| `0.5` | half speed, one octave down, twice as long |
-| `2.0` | double speed, one octave up, half as long |
-| `0.75` | slightly slower, slightly lower pitch |
+| `1.0` | Original speed and pitch |
+| `0.5` | Half speed — one octave lower, twice as long |
+| `2.0` | Double speed — one octave higher, half as long |
+| `0.75` | Slightly slower and lower |
+| `1.5` | Slightly faster and higher |
 
-### `speeds`
-A list of speed values played simultaneously as separate layers. The layers are summed before gain and FX are applied. Useful for:
-- **chords**: `[0.5, 0.595, 0.75]` plays three harmonic ratios at once
-- **clusters**: many closely-spaced values create a dense texture
-- **octave doublings**: `[0.5, 1.0, 2.0]`
+### `speeds` — multiple pitches at once
 
-When `speeds` is set, the `speed` key is ignored.
+Plays the same sample at multiple speeds simultaneously. All layers are summed together.
 
-### `gain_db`
-Amplitude gain in decibels. Negative values are quiet, positive values are louder than the original.
+```yaml
+  - sample: texture
+    t: 10.0
+    speeds: [0.5, 1.0, 2.0]    # three octaves at once
+    gain_db: -12
+```
 
-| Value | Amplitude |
-|-------|-----------|
-| `0` | unity gain (same as original) |
-| `-6` | half amplitude (−6 dB ≈ 0.5×) |
-| `-12` | quarter amplitude |
-| `-20` | quite quiet |
-| `-40` | barely audible |
+Useful for chords, clusters, and rich harmonic textures. When `speeds` is set, `speed` is ignored.
 
-### `loop`
-Number of additional repeats. `loop: 0` plays once. `loop: 3` plays the clip 4 times total. The entire looped clip (all repetitions) then has gain and FX applied to it as a unit.
+### `gain_db` — volume
 
-### `reverse`
-`true` or `false`. The clip is reversed before all other processing.
+Volume in decibels. Negative = quieter than original.
 
-### `fx`
-A list of effect objects. Applied to the event's clip after speed, loop, and gain. Currently supported: `reverb`, `delay` (see Effects Reference below).
+| Value | Loudness |
+|-------|---------|
+| `0` | Same as the original recording |
+| `-6` | About half as loud |
+| `-12` | About a quarter as loud |
+| `-20` | Quite quiet |
+| `-40` | Barely audible |
+
+### `loop` — repeat
+
+How many extra times to play the clip after the first time.
+
+```yaml
+loop: 0    # play once (default)
+loop: 3    # play 4 times total
+```
+
+### `reverse` — play backwards
+
+```yaml
+reverse: true    # play the sample backwards
+reverse: false   # normal direction (default)
+```
+
+### `fx` — effects
+
+A list of effects applied to this event. See the Effects section below.
+
+```yaml
+  - sample: kick
+    t: 4.0
+    gain_db: -9
+    fx:
+      - type: reverb
+        reverberance: 70
+      - type: delay
+        delay_sec: 0.3
+        feedback: 0.4
+```
+
+Multiple effects can be stacked — they are applied in order.
 
 ---
 
 ## `dynamics:`
 
-A list of dynamic markings. Two kinds are mixed freely in the same list:
+Controls the overall volume shape of the composition. Two kinds of entry:
 
-### Point marks
-Set the amplitude level at a moment in time. Holds until the next point mark.
-
-```yaml
-dynamics:
-  - t: 0.0
-    mark: pp        # starts very quiet
-
-  - t: 4.5
-    mark: mf        # jumps to medium-forte at 4.5s
-
-  - t: 12.0
-    mark: p         # drops back to piano
-```
-
-Available levels (quietest to loudest):
-
-| Mark | Amplitude | Name |
-|------|-----------|------|
-| `ppp` | 0.10 | pianississimo |
-| `pp` | 0.20 | pianissimo |
-| `p` | 0.35 | piano |
-| `mp` | 0.50 | mezzo-piano |
-| `mf` | 0.65 | mezzo-forte |
-| `f` | 0.80 | forte |
-| `ff` | 0.90 | fortissimo |
-| `fff` | 1.00 | fortississimo |
-
-### Range marks
-Define a crescendo or decrescendo across a time span. Linearly interpolates between the amplitude values of the surrounding point marks.
+### Point marks — volume at a moment
 
 ```yaml
 dynamics:
   - t: 0.0
-    mark: pp
+    mark: pp       # very quiet at the start
 
-  - from: 1.0
-    to: 4.0
-    mark: crescendo    # pp → mf over 3 seconds
+  - t: 8.0
+    mark: f        # suddenly louder at 8 seconds
 
-  - t: 4.0
-    mark: mf
+  - t: 15.0
+    mark: p        # back to quiet
 ```
 
-Range marks require surrounding point marks to know what values to interpolate between. A range without nearby point marks will interpolate from/to whatever the envelope holds at those positions (which defaults to 1.0 if no point marks have been set before it).
+The level holds until the next point mark. Available levels:
+
+| Mark | Meaning | Relative volume |
+|------|---------|----------------|
+| `ppp` | pianississimo | very very quiet |
+| `pp` | pianissimo | very quiet |
+| `p` | piano | quiet |
+| `mp` | mezzo-piano | medium quiet |
+| `mf` | mezzo-forte | medium loud |
+| `f` | forte | loud |
+| `ff` | fortissimo | very loud |
+| `fff` | fortississimo | maximum |
+
+### Range marks — gradual change
+
+```yaml
+dynamics:
+  - t: 0.0
+    mark: p
+
+  - from: 2.0
+    to: 6.0
+    mark: crescendo     # gradually get louder from p to whatever comes next
+
+  - t: 6.0
+    mark: f
+```
+
+The range smoothly interpolates between the levels of the surrounding point marks. `crescendo` and `decrescendo` (or `diminuendo`) are the valid range marks.
+
+You can mix point marks and ranges freely in the same list.
 
 ---
 
 ## `tempo:`
 
-Time-warp regions. These compress or expand the timeline for event placement — they do not affect the base track's playback speed or individual sample durations.
+Stretches or compresses when events are triggered. Does not affect the source track or the duration of individual clips.
 
 ```yaml
 tempo:
-  - from: 8.0
-    to: 11.0
-    mark: accelerando    # optional label (for editor display)
-    factor: 1.4          # > 1 = accelerando; < 1 = ritardando
+  - from: 4.0
+    to: 7.0
+    mark: accelerando    # label (optional, shown in editor)
+    factor: 1.4          # > 1 = accelerando, < 1 = ritardando
 ```
 
-A `factor` of `1.4` means events in this region are placed 1.4× sooner than their score time implies. A `factor` of `0.7` spreads them out — ritardando.
-
-Tempo ranges are applied to event `t` values only. They do not affect the base track or the duration of played samples.
+A `factor` of `1.4` means events in that region arrive 1.4× earlier than their `t` values imply. A `factor` of `0.7` spreads them out.
 
 ---
 
 ## `base_fx:`
 
-A list of effects applied to the entire base track before any samples are mixed in. Same format as per-event `fx:`.
+Effects on the entire source audio, applied before anything else.
 
 ```yaml
 base_fx:
   - type: reverb
-    reverberance: 30
+    reverberance: 25
 ```
-
-Applied once, at render time. Has no effect on the composed samples layered on top.
 
 ---
 
 ## `fx_ranges:`
 
-Effects applied to specific time segments of the base track. The segment is extracted, processed, replaced. Reverb tails can bleed past the zone's `to` boundary.
+Effects on a specific time segment of the source audio.
 
 ```yaml
 fx_ranges:
-  - from: 20.0
-    to: 28.0
+  - from: 10.0
+    to: 16.0
     fx:
       - type: reverb
         reverberance: 80
-
-  - from: 45.0
-    to: 50.0
-    fx:
-      - type: delay
-        delay_sec: 0.4
-        feedback: 0.5
 ```
-
-Applied after `base_fx` and before events are mixed in.
 
 ---
 
 ## Effects reference
 
 ### `reverb`
-
+Adds room reverberation.
 ```yaml
 - type: reverb
-  reverberance: 60    # 0 (dry) to 100 (maximum reverb)
+  reverberance: 60    # 0 = completely dry, 100 = maximum reverb
 ```
-
-Implemented via SoX `reverb`. A value of 50 gives a medium room. 80+ gives a long hall or cave-like tail.
 
 ### `delay`
-
+Repeating echoes.
 ```yaml
 - type: delay
-  delay_sec: 0.3      # gap between echoes, in seconds
-  feedback: 0.4       # echo decay per tap (0 = one echo, 0.9 = many)
+  delay_sec: 0.3    # time between echoes in seconds
+  feedback: 0.4     # 0 = one echo, 0.9 = many slowly-fading echoes
 ```
-
-Three echo taps are generated at `delay_sec`, `2 × delay_sec`, and `3 × delay_sec`, with amplitudes of `feedback`, `feedback²`, and `feedback³`. Implemented via SoX `echo`.
 
 ### `overdrive`
-
+Adds distortion.
 ```yaml
 - type: overdrive
-  gain: 20      # 0–100, drive amount (default 20)
-  colour: 20    # 0–100, harmonic character — 0 = hard clip, 100 = soft/warm (default 20)
+  gain: 20      # 0–100, how much distortion
+  colour: 20    # 0 = harsh, 100 = warm
 ```
-
-Soft distortion via SoX `overdrive`. Low `gain` values add subtle warmth; high values produce aggressive clipping. `colour` shapes the harmonic content: lower values are more transistor-like, higher values more tube-like.
 
 ### `flanger`
-
+Sweeping comb-filter effect.
 ```yaml
 - type: flanger
-  delay_ms: 0     # base delay in ms, 0–30 (default 0)
-  depth_ms: 2     # modulation depth in ms, 0–10 (default 2)
-  speed_hz: 0.5   # LFO speed in Hz, 0.1–10 (default 0.5)
+  delay_ms: 0     # 0–30
+  depth_ms: 2     # 0–10
+  speed_hz: 0.5   # 0.1–10
 ```
-
-Comb-filter sweep via SoX `flanger`. Slow speeds (0.1–0.5 Hz) give a classic sweeping effect; faster speeds (2–5 Hz) produce a more mechanical or ring-mod-like texture. All parameters accept probabilistic values.
 
 ### `pitch`
-
+Shifts pitch without changing duration.
 ```yaml
 - type: pitch
-  cents: 300    # semitones × 100 — positive = up, negative = down
+  cents: 300    # 100 = 1 semitone up, -100 = 1 semitone down, 1200 = 1 octave up
 ```
-
-Pitch shift without changing duration, via SoX `pitch`. 100 cents = 1 semitone. Common values: `1200` (+1 octave), `-1200` (−1 octave), `700` (+7 semitones / perfect fifth). Can be combined with `speed` for independent pitch and time control.
 
 ### `compress`
-
+Reduces the dynamic range.
 ```yaml
 - type: compress
-  threshold_db: -20   # level at which compression begins (default -20)
-  ratio: 4            # compression ratio — 4 means 4:1 (default 4)
-  attack: 0.01        # response time in seconds (default 0.01)
-  release: 0.3        # recovery time in seconds (default 0.3)
-  makeup_db: 0        # output gain after compression in dB (default 0)
+  threshold_db: -20   # compression starts here
+  ratio: 4            # 4:1 compression ratio
+  attack: 0.01        # response time in seconds
+  release: 0.3        # release time in seconds
+  makeup_db: 0        # gain after compressing
 ```
-
-Dynamic range compression via SoX `compand`. Reduces the difference between loud and quiet parts. A ratio of 2 is gentle; 10+ is limiting. Increase `makeup_db` to compensate for level reduction. Useful on event clips to bring out quieter textures or tighten percussive sounds.
 
 ### `eq`
-
+Boosts or cuts a specific frequency.
 ```yaml
 - type: eq
-  freq_hz: 1000   # centre frequency in Hz, 20–20000 (default 1000)
-  gain_db: 6      # boost (+) or cut (−) in dB (default 0)
-  q: 1.0          # bandwidth — higher Q = narrower band (default 1.0)
+  freq_hz: 5000    # which frequency (Hz)
+  gain_db: 6       # positive = boost, negative = cut
+  q: 1.0           # higher = narrower band
 ```
 
-Single parametric EQ band via SoX `equalizer`. Stack multiple `eq` entries on the same event for multi-band shaping. Common uses:
-
-| Intent | Settings |
-|--------|----------|
-| Remove low rumble | `freq_hz: 80, gain_db: -12, q: 0.7` |
-| Add body | `freq_hz: 200, gain_db: 4, q: 1.0` |
-| Presence boost | `freq_hz: 3000, gain_db: 3, q: 1.5` |
-| Air / brightness | `freq_hz: 10000, gain_db: 6, q: 0.8` |
-| Surgical cut | `freq_hz: 500, gain_db: -9, q: 4.0` |
+Stack multiple `eq` entries for multi-band shaping:
+```yaml
+fx:
+  - type: eq
+    freq_hz: 200
+    gain_db: 4
+    q: 1.0
+  - type: eq
+    freq_hz: 8000
+    gain_db: -3
+    q: 0.8
+```
 
 ---
 
 ## Probabilistic parameters
 
-Any numeric parameter in an event can be replaced with a probabilistic specification. The value is resolved fresh on each call to the renderer (or each press of **▶ Mix** in the editor). This means the same score produces a different performance every time.
+Any numeric value in an event can be replaced with a random distribution. The value is drawn fresh every time you render — so the same score produces a different performance each time.
 
-### Uniform range
-
+### Uniform range (simplest)
 ```yaml
-speed: [0.6, 1.4]    # drawn uniformly between 0.6 and 1.4
+speed: [0.8, 1.2]     # random value between 0.8 and 1.2
 ```
 
-### Gaussian distribution
-
+### Gaussian (bell curve around a centre)
 ```yaml
 speed:
   distribution: gaussian
-  mean: 0.75
-  std: 0.08
-```
-
-### Uniform distribution (explicit)
-
-```yaml
-gain_db:
-  distribution: uniform
-  low: -12
-  high: -3
+  mean: 0.75     # centre of the distribution
+  std: 0.08      # spread — smaller = closer to the mean
 ```
 
 ### Discrete choice
-
 ```yaml
 loop:
   distribution: discrete
   values: [0, 1, 2, 4]
-  weights: [0.5, 0.25, 0.15, 0.1]    # optional; uniform if omitted
+  weights: [0.5, 0.25, 0.15, 0.1]    # probabilities (must add up to 1.0)
 ```
 
-### Bernoulli (boolean)
+If `weights` is omitted, all choices are equally likely.
 
+### Bernoulli (random yes/no)
 ```yaml
 reverse:
   distribution: bernoulli
-  p: 0.3    # 30% chance of reversing
+  p: 0.3    # 30% chance of true
 ```
 
-Probabilistic parameters apply to: `speed`, `gain_db`, `loop`, `reverse`, and any FX parameter (`reverberance`, `delay_sec`, `feedback`). The `t` and `sample` fields are always fixed. The `speeds` list is resolved element-by-element (each entry can itself be probabilistic).
+Probabilistic parameters work on: `speed`, `gain_db`, `loop`, `reverse`, and any effect parameter (e.g. `reverberance`, `delay_sec`, `feedback`). The `t` (time) and `sample` fields are always fixed.
 
 ---
 
-## Complete annotated example
+## Complete example
 
 ```yaml
-# --- Samples: cut from the base track ---
 samples:
   stab_a:
     from: 0.5
@@ -369,42 +369,26 @@ samples:
     from: 2.0
     to: 4.0
 
-# --- Dynamics: overall composition amplitude ---
 dynamics:
   - t: 0.0
-    mark: pp                  # begin very quietly
+    mark: pp
   - from: 1.0
     to: 3.5
-    mark: crescendo           # swell from pp to mf
+    mark: crescendo
   - t: 3.5
     mark: mf
   - from: 8.0
     to: 10.0
-    mark: decrescendo         # fade out
+    mark: decrescendo
   - t: 10.0
     mark: p
 
-# --- Tempo: time-warp events into a brief acceleration ---
 tempo:
   - from: 4.0
     to: 6.5
     mark: accelerando
     factor: 1.4
 
-# --- Base FX: subtle reverb on the source material ---
-base_fx:
-  - type: reverb
-    reverberance: 20
-
-# --- FX Zones: heavy reverb on a specific passage ---
-fx_ranges:
-  - from: 7.0
-    to: 9.0
-    fx:
-      - type: reverb
-        reverberance: 85
-
-# --- Events: the composition ---
 events:
   # simple playback
   - sample: stab_a
@@ -412,7 +396,7 @@ events:
     speed: 1.0
     gain_db: -6
 
-  # reversed, with a randomised speed (different on every render)
+  # reversed with random speed, delay effect
   - sample: stab_a
     t: 3.5
     reverse: true
@@ -426,7 +410,7 @@ events:
         delay_sec: 0.3
         feedback: 0.4
 
-  # three simultaneous pitches via layered transpositions
+  # three octaves at once with reverb
   - sample: texture_b
     t: 6.0
     speeds: [0.5, 1.0, 2.0]

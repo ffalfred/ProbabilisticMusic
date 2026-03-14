@@ -1,235 +1,291 @@
-# The Score Editor
+# The Visual Editor
 
-The editor is a local web application. It lets you visually annotate a waveform and video frame, build a score by drawing directly on the timeline, and immediately preview or render the result — all without touching a YAML file.
+The editor is a web page that runs locally on your computer. You open it in your browser and use it to visually build a score by drawing on a waveform — no text file editing required.
 
-## Launching
+---
+
+## Launching the editor
+
+> Make sure you've completed [installation.md](installation.md) first.
+
+**1. Open a terminal and go to the project folder:**
 
 ```bash
-cd beta_interpreter/editor
-python server.py
-# → open http://localhost:5000
+cd /path/to/ProbabilisticMusic
 ```
+
+**2. Activate the virtual environment:**
+
+```bash
+source venv/bin/activate       # macOS / Linux
+venv\Scripts\activate          # Windows
+```
+
+**3. Go into the editor folder and start the server:**
+
+```bash
+cd editor
+python server.py
+```
+
+You should see something like:
+```
+ * Running on http://127.0.0.1:5000
+```
+
+**4. Open your browser and go to:**
+
+**http://localhost:5000**
+
+> `localhost` means "this computer". Port `5000` is where the editor is listening. This is not a website — it only works on your machine while `server.py` is running.
+
+Leave the terminal open while you use the editor. To stop the editor, press `Ctrl+C` in the terminal.
 
 ---
 
 ## Loading a file
 
-Type or paste the **absolute path** to a `.wav`, `.mp3`, `.flac`, or `.mp4` file into the path bar at the top and press **Load** (or Enter).
+At the top of the editor, there is a text bar. Type or paste the **full path** to your audio or video file and press **Load** (or Enter).
 
-- For audio files: the waveform is displayed. Playback uses an audio element.
-- For video files: the waveform is displayed and the first frame of the video is shown below it. Playback uses the video element.
+Examples:
+```
+/home/yourname/recordings/session.wav
+/Users/yourname/Desktop/performance.mp4
+```
+
+> **How to find the full path:** On macOS, right-click the file in Finder → Get Info → the path is shown under "Where". On Linux, drag the file into the terminal window and it will paste the path.
+
+Supported formats: `.wav`, `.mp3`, `.flac`, `.mp4`
+
+After loading:
+- **Audio files**: the waveform appears as a scrollable graph of the sound.
+- **Video files**: the waveform appears, and the first frame of the video is shown below it.
 
 ---
 
 ## Layout
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  path bar                                    [ Load ]    │
-├────────────────────────────────┬────────────────────────┤
-│  waveform canvas               │  score panel           │
-│  (annotations drawn here)      │  (sample list,        │
-│                                │   event list, etc.)    │
-│  video frame canvas            │                        │
-│  (same annotations mirrored)   │                        │
-├────────────────────────────────┴────────────────────────┤
-│  tool palette           [ ▶ Base ] [ ▶ Mix ]  [ Undo ]  │
-├─────────────────────────────────────────────────────────┤
-│  name: [untitled]  [ Base FX ]  [ Export YAML ]         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  [ full path to your file ]                      [ Load ]    │
+├─────────────────────────────────┬───────────────────────────┤
+│  waveform                       │  score panel              │
+│  (draw samples, events here)    │  (live list of everything │
+│                                 │   you've added)           │
+│  video frame                    │                           │
+│  (same tools work here too)     │                           │
+├─────────────────────────────────┴───────────────────────────┤
+│  [ Sample ] [ Event ] [ Dynamics ] [ Tempo ] [ FX ]         │
+│                        [ ▶ Base ]  [ ▶ Mix ]  [ ← Undo ]    │
+├─────────────────────────────────────────────────────────────┤
+│  name: [untitled]  [Base FX]  Engine: [V1▾]  [Export YAML]  │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-Both canvases are fully interactive. Whatever you draw on the waveform appears on the video frame and vice versa. The video frame canvas is particularly useful for marking musically significant moments that correspond to visual events.
 
 ---
 
-## Navigation and playback
+## Playing back
 
-| Action | Effect |
-|--------|--------|
-| Click on waveform or frame | Move the cursor to that time |
-| Drag on waveform or frame | Scrub the video/audio in real time |
-| **Space** | Play / pause the original file |
-| **▶ Base** button | Same as Space — plays the original unmodified |
-| **▶ Mix** button | Renders the full composition and plays it back |
-| The cursor (white dashed line) | Tracks `currentTime` on both canvases |
+| Button | What it does |
+|--------|-------------|
+| **▶ Base** | Plays the original file unchanged |
+| **Space** | Same as ▶ Base |
+| **▶ Mix** | Renders your full composition and plays it. This takes a second or two. |
 
-The **▶ Mix** button sends the current score to the server, runs the full pipeline (sample extraction → effects → mixing → normalisation), and plays the result in the browser. While rendering the button shows `⏳ rendering…`. Re-click to pause. Each press re-renders fresh from the current score state.
+Click on the waveform or video frame to jump to that point in time. Drag to scrub through.
 
-The time display (`t = X.XXXs / Ys`) is in the bottom-left corner of the video frame.
+The current time is shown in the bottom-left corner of the video frame area.
+
+Pressing **▶ Mix** again while audio is playing will pause it. Pressing it again re-renders and plays from the start.
 
 ---
 
 ## Tools
 
-Select a tool from the palette. The active tool determines what happens when you click or drag on either canvas.
+Click a tool button to select it. The selected tool determines what happens when you click or drag on the waveform or video frame.
 
 ### [ Sample ]
-**Drag** to define a named sample region. A popup opens asking for a name and color. The region is stored in the score's `samples:` block and can be referenced by events.
 
-The color is only for visual identification in the editor — it is stripped when exporting to YAML.
+**Drag** across a region to define a sample — a named piece of the audio that you can reuse in your composition.
+
+A popup will ask for:
+- **name** — what to call this sample (e.g. `kick`, `texture_a`)
+- **color** — just for visual identification in the editor
+
+The sample is stored as a start and end time. The name is what you use when placing events.
 
 ### ▶ Event
-**Click** to place a sample trigger at that time. A popup opens where you configure:
 
-- **sample** — which sample to play (dropdown of defined samples)
-- **speed** — playback rate. `1.0` = original speed. Values below 1 slow down and lower pitch; above 1 speed up and raise pitch. This is varispeed — pitch and time change together, like tape.
-- **speeds** — layered transpositions. A space-separated list of speed values (e.g. `0.5 1.0 2.0`) that are all played simultaneously. Useful for chords, clusters, or dense textures.
-- **gain_db** — volume in decibels. `-6` is half amplitude. `-20` is very quiet.
-- **loop** — how many times to repeat the clip after the first play. `0` = play once, `3` = play 4 times total.
-- **reverse** — play the clip backwards.
-- **fx** — apply reverb or delay to this event (see Effects below).
+**Click** anywhere on the timeline to place a trigger — a moment where a sample will play.
 
-All numeric parameters accept probabilistic values (see Probabilistic parameters).
+A popup opens with these options:
+
+| Option | What it does |
+|--------|-------------|
+| **sample** | Which sample to play (choose from a dropdown of samples you've defined) |
+| **time (s)** | Exact start time in seconds — you can type a precise value here |
+| **speed** | Playback speed. `1.0` = normal. `0.5` = half speed (lower pitch, slower). `2.0` = double speed (higher pitch, faster). This is varispeed — pitch and duration change together, like tape. |
+| **speeds** | Play multiple speeds at once (type space-separated values, e.g. `0.5 1.0 2.0`). Good for chords and clusters. |
+| **gain_db** | Volume. `0` = full volume. `-6` = half amplitude (quieter). `-20` = very quiet. |
+| **loop** | How many extra times to repeat. `0` = play once. `3` = play 4 times total. |
+| **reverse** | Play the sample backwards. |
+| **fx** | Add an effect to this event (see Effects below). |
+
+> **Editing an existing event:** Click on the event in the score panel on the right to reopen its popup and change any value.
 
 ### ~ Dynamics
-Dual-purpose tool depending on gesture:
 
-- **Click** → place a **dynamic mark** at a point in time. Sets the amplitude level from that point forward until the next mark. Available marks: `ppp pp p mp mf f ff fff`.
-- **Drag** → draw a **dynamic range** (crescendo or decrescendo). A popup asks whether to crescendo or decrescendo across the selected time span.
+Controls the overall loudness shape of the piece. Two gestures:
 
-Dynamic marks and ranges work together: point marks define levels, ranges interpolate linearly between the surrounding levels.
+- **Click** → place a **dynamic mark** at that moment. Sets the volume level from that point forward.
+  Available marks: `ppp` (very quiet) → `pp` → `p` → `mp` → `mf` → `f` → `ff` → `fff` (very loud)
+
+- **Drag** → draw a **crescendo or decrescendo** (gradual volume change) across that time span.
+
+Dynamic marks and ranges work together: marks define levels, ranges smoothly interpolate between surrounding levels.
 
 ### ⏱ Tempo
-**Drag** to define a tempo range — a region where playback is warped in time. A popup asks for:
 
-- **mark** — `accelerando` or `ritardando`
-- **factor** — for accelerando: a factor > 1 compresses time (events happen sooner). For ritardando: a factor < 1 expands time.
+**Drag** to define a region where time is stretched or compressed.
 
-Tempo ranges affect when events are triggered, not the pitch or duration of individual clips.
+- **accelerando** with factor > 1: events happen sooner (time compressed)
+- **ritardando** with factor < 1: events happen later (time stretched)
+
+This affects the *timing* of events, not the pitch or length of individual clips.
 
 ### ◆ FX
-**Drag** to define a time range over which the **base track itself** is processed with reverb or delay. This is applied before samples are mixed in, so the effect is heard under the composition, not over it. Configure the same effect parameters as per-event FX.
+
+**Drag** to apply an effect to the **base track itself** across a time range. For example, add reverb to a 3-second section of the original recording. This plays *under* your events, not on top.
 
 ---
 
 ## Effects
 
-Both per-event FX and FX zones support the following effect types. All numeric parameters accept probabilistic values (see score_reference.md).
+Effects can be added per-event (in the Event popup) or to a region of the base track (using the FX tool). The same effect types are available in both places.
 
 ### reverb
+Makes a sound feel like it's in a room.
 ```
-reverberance: 0–100    (0 = dry, 100 = maximum reverb)
+reverberance: 0–100    (0 = completely dry, 100 = maximum reverb)
 ```
-Processed via SoX `reverb`. The tail can bleed past the zone boundary.
 
 ### delay
+Repeating echoes.
 ```
-delay_sec: 0.1–2.0    (gap between echoes, in seconds)
-feedback:  0.0–1.0    (echo decay per tap, 0 = one echo, 0.9 = many)
+delay_sec: 0.1–2.0    (time between echoes, in seconds)
+feedback:  0.0–1.0    (how many echoes — 0 = one echo, 0.9 = many echoes that fade out slowly)
 ```
-Three taps at `delay`, `2×delay`, `3×delay` via SoX `echo`.
 
 ### overdrive
+Adds distortion and warmth, like turning an amp up too loud.
 ```
-gain:   0–100    (drive amount, default 20)
-colour: 0–100    (harmonic character — 0 = hard, 100 = warm, default 20)
+gain:   0–100    (how much drive — higher = more distortion)
+colour: 0–100    (0 = harsh and hard, 100 = warm and soft)
 ```
-Soft distortion via SoX `overdrive`.
 
 ### flanger
+A sweeping, whooshing comb-filter effect.
 ```
-delay_ms: 0–30     (base delay in ms, default 0)
-depth_ms: 0–10     (modulation depth in ms, default 2)
-speed_hz: 0.1–10   (LFO rate in Hz, default 0.5)
+delay_ms: 0–30     (base delay in milliseconds)
+depth_ms: 0–10     (how wide the sweep is)
+speed_hz: 0.1–10   (how fast the sweep moves, in cycles per second)
 ```
-Comb-filter sweep via SoX `flanger`.
 
 ### pitch
+Shifts pitch without changing duration.
 ```
-cents: any integer    (100 = +1 semitone, 1200 = +1 octave, negative = down)
+cents: any integer    (100 = +1 semitone up, 1200 = +1 octave up, -100 = 1 semitone down)
 ```
-Pitch shift without changing duration via SoX `pitch`.
 
 ### compress
+Reduces the difference between loud and quiet parts. Makes the sound more consistent.
 ```
-threshold_db: onset of compression in dB (default -20)
-ratio:        compression ratio, e.g. 4 means 4:1 (default 4)
-attack:       response time in seconds (default 0.01)
-release:      recovery time in seconds (default 0.3)
-makeup_db:    output gain after compression (default 0)
+threshold_db: where compression starts, in dB (e.g. -20)
+ratio:        how much to compress (4 means 4:1 — for every 4dB above threshold, output rises 1dB)
+attack:       how quickly compression kicks in, in seconds (default 0.01)
+release:      how quickly it releases, in seconds (default 0.3)
+makeup_db:    add gain after compressing to bring the level back up (default 0)
 ```
-Dynamic range compression via SoX `compand`.
 
 ### eq
+Boosts or cuts a specific frequency range.
 ```
-freq_hz: centre frequency in Hz, 20–20000 (default 1000)
-gain_db: boost (+) or cut (−) in dB (default 0)
-q:       bandwidth — higher = narrower band (default 1.0)
+freq_hz: which frequency to target, in Hz (e.g. 200 for bass, 5000 for brightness, 10000 for air)
+gain_db: how much to boost (positive) or cut (negative), in dB
+q:       how narrow the band is — higher = more focused, lower = wider
 ```
-Single parametric EQ band via SoX `equalizer`. Stack multiple `eq` entries to build multi-band shapes.
+
+You can add multiple EQ entries to the same event to build a multi-band shape.
 
 ---
 
 ## Base FX
 
-The **Base FX** button (export bar, bottom) opens a global FX panel that applies effects to the entire base track — not a specific time range. This is applied first, before any FX zones or event FX. Useful for adding a global room reverb or gentle delay to the source material.
+The **Base FX** button in the bottom bar opens a panel to apply effects to the **entire base track** — not just a region. This runs before everything else, so your events and FX zones sit on top of the processed base. Useful for a global room reverb or a slight compression on the source.
 
 ---
 
 ## Probabilistic parameters
 
-Any numeric parameter in the event popup can be set to a fixed value, a uniform range, or a Gaussian distribution. Click the dropdown next to any field to switch modes:
+Any number field in the event popup can be switched from a fixed value to a range or a distribution. Click the small dropdown next to any field to change the mode:
 
 | Mode | What it does |
 |------|-------------|
-| **fixed** | Always uses exactly this value |
-| **range** | Picks a random value uniformly between min and max on each render |
-| **gaussian** | Picks a value from a normal distribution with given mean and std |
+| **fixed** | Always uses exactly this value — same every render |
+| **range** | Picks a random value between min and max each time you render |
+| **gaussian** | Picks a value near the mean, with random variation controlled by std |
 
-This means the same score can produce a different performance every time you press **▶ Mix**. The probabilistic choices are resolved fresh on each render call.
-
----
-
-## Right-click to delete
-
-Right-click on any annotation (sample region boundary, event marker, dynamic mark, tempo zone, FX zone) on either canvas to delete the nearest one within a ~12px threshold.
-
----
-
-## Undo
-
-The **← Undo** button in the palette removes the last action. The history is per-session and is lost on page refresh.
+This means the same score can sound different every time you press **▶ Mix**. See [score_reference.md](score_reference.md) for how to write these in YAML.
 
 ---
 
 ## Engine selector (V1 / V2 β)
 
-The **Engine** dropdown in the bottom bar controls which rendering engine is used when you press **▶ Mix**.
+The **Engine** dropdown in the bottom bar selects the rendering mode:
 
-| Setting | Behaviour |
-|---------|-----------|
-| **V1** | Deterministic render (default). Modulo probabilistic score parameters, the same score always sounds the same. |
-| **V2 β** | Expressive Interpretation Engine. Each press of **▶ Mix** produces a different but musically coherent result, driven by the score's `dynamics:` markings. |
+| Option | What it does |
+|--------|-------------|
+| **V1** | Standard render. Same score → same result (unless you use probabilistic parameters). |
+| **V2 β** | Expressive Interpretation Engine. Reads the `dynamics:` marks and adds musical variation — different phrasing, timing, and loudness each run. |
 
-When **V2 β** is selected, a sub-panel appears:
+When **V2 β** is selected, extra controls appear:
+- **mode**: `joint` (the engine remembers its own previous choices — more organic) or `symbolic` (just reacts to the score marks — more neutral)
+- **seed**: type a number to get the exact same render every time; leave blank for random
+- **order**: how many past events to consider (default 2 — don't change this unless you know what you're doing)
 
-| Control | Effect |
-|---------|--------|
-| **mode** `joint` / `symbolic` | `joint`: V2's history includes what it previously rendered — runs develop their own performance character. `symbolic`: V2 only sees score markings — variation is independent between runs. |
-| **seed** | Leave blank for a fresh random performance. Enter an integer to reproduce the exact same render. |
-| **order** | How many past events to condition on (default 2). Higher values = longer memory, more coherent but less varied. |
+V2 needs at least one `dynamics:` marking in your score, otherwise it uses a neutral default.
 
-V2 requires a `dynamics:` block in the score (add dynamic markings with the **~ Dynamics** tool). Without dynamics, V2 falls back to neutral `mf` behaviour for all events.
+See [v2.md](v2.md) for the full V2 documentation.
+
+---
+
+## Right-click to delete
+
+Right-click on any annotation on either canvas — a sample boundary, event marker, dynamic mark, tempo zone, or FX zone — to delete the nearest one.
+
+---
+
+## Undo
+
+The **← Undo** button removes the last action. Undo history is lost when you refresh the page.
 
 ---
 
 ## Exporting the score
 
-1. Set a name in the `name:` field at the bottom.
-2. Click **Export YAML**.
+When you're happy with your composition:
 
-The score is saved to `beta_interpreter/scores/<name>.yaml`. The status bar shows the full path. This file can then be used directly with the CLI renderer.
+1. Type a name in the **name:** field at the bottom (e.g. `my_composition`)
+2. Click **Export YAML**
 
-If V2 is active, the exported YAML includes a `_v2_config:` block recording the engine settings at the time of export. The CLI renderer reads `config.yaml` for its settings; use `_v2_config:` as a reference for which settings produced a given score file.
+The score is saved as `scores/my_composition.yaml` inside the ProbabilisticMusic folder. The full path is shown in the status bar.
+
+This file can then be used with the [command-line renderer](cli.md) to render without opening the editor.
 
 ---
 
 ## Score panel
 
-The right-hand panel shows a live summary of:
-- All defined samples (name, time range)
-- All events (sample, time, key parameters)
-- Dynamics, tempo ranges, FX zones
+The right-hand panel shows a live summary of everything in your score: samples, events, dynamics, tempo regions, and FX zones. Click on any event in the list to edit it.
 
-It updates automatically as you annotate.
+It updates automatically as you draw.

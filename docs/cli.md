@@ -1,75 +1,127 @@
-# CLI Renderer
+# Rendering from the terminal
 
-The command-line renderer takes a source file and a score file and produces a rendered output.
-
-## Usage
-
-```bash
-cd beta_interpreter
-python main.py -i <input_file> -s <score_file>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `-i` / `--input` | Path to the base audio or video file (`.wav`, `.mp3`, `.flac`, `.mp4`) |
-| `-s` / `--score` | Path to the YAML score file |
-
-## Output
-
-| Input type | Output |
-|------------|--------|
-| Audio file (`.wav`, etc.) | `output/output_<score>_<base>_001.wav` — numbered per run |
-| Video file (`.mp4`) | `output/output_<score>_<base>_001.mp4` — original video with replaced audio track |
-
-The output directory is created automatically. The run counter increments on each render — running the same command twice produces `_001` and `_002`. To reproduce a specific run, set `seed` in `config.yaml`.
+You can render a score without opening the editor by running `main.py` directly from a terminal. This is useful for batch rendering, scripting, or working on a machine without a browser.
 
 ---
 
-## Engine mode and config.yaml
+## Before you start
 
-`beta_interpreter/config.yaml` controls which engine runs and how:
+Make sure you have:
+- Completed [installation.md](installation.md)
+- A score file (`.yaml`) in the `scores/` folder, or anywhere on your computer
+- A source audio or video file
 
-```yaml
-engine: v1    # v1 (default) or v2
-seed: null    # integer for reproducible runs, null for random
+---
+
+## How to run a render
+
+**1. Open a terminal and go to the project folder:**
+
+```bash
+cd /path/to/ProbabilisticMusic
 ```
 
-When `engine: v2`, V2's Expressive Interpretation Engine runs before V1. It reads the score's `dynamics:` markings and applies a Markov-sampled expressive offset to each event's gain, timing, reverb, attack, and brightness. See [v2.md](v2.md) for the full config reference.
+**2. Activate the virtual environment:**
 
-When `engine: v1` or no `config.yaml` exists, behaviour is identical to previous versions.
+```bash
+source venv/bin/activate       # macOS / Linux
+venv\Scripts\activate          # Windows
+```
 
-After rendering, the terminal prints the output path and the total duration in seconds.
+You should see `(venv)` at the start of the prompt.
+
+**3. Run the renderer:**
+
+```bash
+python main.py -i /path/to/your/audio.wav -s scores/your_score.yaml
+```
+
+| Argument | What it does |
+|----------|-------------|
+| `-i` / `--input` | Path to the source audio or video file (`.wav`, `.mp3`, `.flac`, `.mp4`) |
+| `-s` / `--score` | Path to the YAML score file |
+
+---
+
+## Output files
+
+Rendered files are saved in the `output/` folder inside ProbabilisticMusic. The filename is built automatically:
+
+```
+output/output_<score_name>_<source_name>_001.wav
+```
+
+For example, if your score is `scores/piano.yaml` and your source is `recordings/session.wav`, the output will be:
+
+```
+output/output_piano_session_001.wav
+```
+
+Each time you render, the number increments:
+```
+output/output_piano_session_001.wav   ← first render
+output/output_piano_session_002.wav   ← second render
+output/output_piano_session_003.wav   ← third render
+```
+
+This way you never overwrite a previous take.
+
+For video input (`.mp4`), the output is a `.mp4` file with the original video and your rendered audio replacing the original audio track.
+
+---
 
 ## Examples
 
 ```bash
-# Render with a WAV source
+# Render an audio file
 python main.py -i /home/user/recordings/session.wav -s scores/score1.yaml
 
-# Render with a video source (output will be .mp4 with new audio)
+# Render with a video file (output will be a .mp4)
 python main.py -i /home/user/videos/performance.mp4 -s scores/score_reverb.yaml
 ```
 
-## Probabilistic scores
-
-If the score contains probabilistic parameters (Gaussian speeds, discrete loop counts, Bernoulli reverses), they are resolved fresh on every run. Running the same command twice produces two different performances:
-
-```bash
-python main.py -i session.wav -s scores/stochastic_score.yaml
-# → output/output.wav  (performance A)
-
-python main.py -i session.wav -s scores/stochastic_score.yaml
-# → output/output.wav  (performance B — different)
+After rendering, the terminal prints the output path and total duration:
+```
+rendered → output/output_score1_session_001.wav  (14.3s)
 ```
 
-To keep multiple takes, rename or move `output/output.wav` between runs.
+---
+
+## Engine mode (V1 vs V2)
+
+The file `config.yaml` (in the ProbabilisticMusic root folder) controls which engine runs:
+
+```yaml
+engine: v1    # use v1 for standard rendering
+engine: v2    # use v2 for expressive interpretation
+```
+
+Open `config.yaml` with any text editor (TextEdit on Mac, gedit on Linux, Notepad on Windows) and change the `engine:` line.
+
+When `engine: v2`, the renderer reads the `dynamics:` section of your score and adds musical variation — different loudness, timing, and effects on each render. See [v2.md](v2.md) for how to use this.
+
+---
+
+## Reproducible renders with a seed
+
+By default, renders with probabilistic parameters or V2 are different every time. To get the same result every time, set a seed in `config.yaml`:
+
+```yaml
+seed: 42       # any integer — always produces the same result
+seed: null     # null means random — different every time
+```
+
+---
 
 ## What happens during a render
 
-1. **Parse** — the score YAML is loaded and probabilistic parameters are resolved.
-2. **Build bank** — the base track is read, and each `samples:` entry is sliced into a named numpy array.
-3. **Schedule** — events are sorted by time.
-4. **Mix** — for each event: the clip is varispeed-resampled, reversed (if set), looped, faded, gained, and FX-processed. Then placed on the mix timeline at its warped time position.
-5. **Dynamics** — the dynamics envelope is built from point marks and crescendo/decrescendo ranges, and multiplied into the mix.
-6. **Normalise** — the mix is normalised to 0.9 peak amplitude.
-7. **Write** — for audio input: writes `output/output.wav`. For video input: muxes the rendered WAV back into the original video container using ffmpeg, keeping the original video stream untouched.
+For reference, here is what the program does when you run it:
+
+1. **Parse** — reads the score YAML file and resolves any probabilistic parameters (ranges, gaussians, etc.)
+2. **Build bank** — reads the source audio and cuts out each named sample
+3. **Schedule** — sorts events by time
+4. **V2** (if enabled) — interprets dynamics markings and adds expressive offsets to each event
+5. **Mix** — places each event on the timeline: resamples for speed, reverses if set, loops, applies fade, applies gain and effects
+6. **Dynamics** — builds the amplitude envelope from dynamic marks and crescendo/decrescendo ranges, and multiplies it into the mix
+7. **Normalise** — adjusts the overall level to 0.9 peak amplitude
+8. **Write** — saves the output file
