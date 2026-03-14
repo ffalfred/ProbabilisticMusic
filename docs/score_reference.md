@@ -244,6 +244,68 @@ Implemented via SoX `reverb`. A value of 50 gives a medium room. 80+ gives a lon
 
 Three echo taps are generated at `delay_sec`, `2 × delay_sec`, and `3 × delay_sec`, with amplitudes of `feedback`, `feedback²`, and `feedback³`. Implemented via SoX `echo`.
 
+### `overdrive`
+
+```yaml
+- type: overdrive
+  gain: 20      # 0–100, drive amount (default 20)
+  colour: 20    # 0–100, harmonic character — 0 = hard clip, 100 = soft/warm (default 20)
+```
+
+Soft distortion via SoX `overdrive`. Low `gain` values add subtle warmth; high values produce aggressive clipping. `colour` shapes the harmonic content: lower values are more transistor-like, higher values more tube-like.
+
+### `flanger`
+
+```yaml
+- type: flanger
+  delay_ms: 0     # base delay in ms, 0–30 (default 0)
+  depth_ms: 2     # modulation depth in ms, 0–10 (default 2)
+  speed_hz: 0.5   # LFO speed in Hz, 0.1–10 (default 0.5)
+```
+
+Comb-filter sweep via SoX `flanger`. Slow speeds (0.1–0.5 Hz) give a classic sweeping effect; faster speeds (2–5 Hz) produce a more mechanical or ring-mod-like texture. All parameters accept probabilistic values.
+
+### `pitch`
+
+```yaml
+- type: pitch
+  cents: 300    # semitones × 100 — positive = up, negative = down
+```
+
+Pitch shift without changing duration, via SoX `pitch`. 100 cents = 1 semitone. Common values: `1200` (+1 octave), `-1200` (−1 octave), `700` (+7 semitones / perfect fifth). Can be combined with `speed` for independent pitch and time control.
+
+### `compress`
+
+```yaml
+- type: compress
+  threshold_db: -20   # level at which compression begins (default -20)
+  ratio: 4            # compression ratio — 4 means 4:1 (default 4)
+  attack: 0.01        # response time in seconds (default 0.01)
+  release: 0.3        # recovery time in seconds (default 0.3)
+  makeup_db: 0        # output gain after compression in dB (default 0)
+```
+
+Dynamic range compression via SoX `compand`. Reduces the difference between loud and quiet parts. A ratio of 2 is gentle; 10+ is limiting. Increase `makeup_db` to compensate for level reduction. Useful on event clips to bring out quieter textures or tighten percussive sounds.
+
+### `eq`
+
+```yaml
+- type: eq
+  freq_hz: 1000   # centre frequency in Hz, 20–20000 (default 1000)
+  gain_db: 6      # boost (+) or cut (−) in dB (default 0)
+  q: 1.0          # bandwidth — higher Q = narrower band (default 1.0)
+```
+
+Single parametric EQ band via SoX `equalizer`. Stack multiple `eq` entries on the same event for multi-band shaping. Common uses:
+
+| Intent | Settings |
+|--------|----------|
+| Remove low rumble | `freq_hz: 80, gain_db: -12, q: 0.7` |
+| Add body | `freq_hz: 200, gain_db: 4, q: 1.0` |
+| Presence boost | `freq_hz: 3000, gain_db: 3, q: 1.5` |
+| Air / brightness | `freq_hz: 10000, gain_db: 6, q: 0.8` |
+| Surgical cut | `freq_hz: 500, gain_db: -9, q: 4.0` |
+
 ---
 
 ## Probabilistic parameters

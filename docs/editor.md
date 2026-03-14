@@ -105,20 +105,59 @@ Tempo ranges affect when events are triggered, not the pitch or duration of indi
 
 ## Effects
 
-Both per-event FX and FX zones support two effect types:
+Both per-event FX and FX zones support the following effect types. All numeric parameters accept probabilistic values (see score_reference.md).
 
 ### reverb
 ```
 reverberance: 0–100    (0 = dry, 100 = maximum reverb)
 ```
-Processed via SoX's `reverb` command. The tail can bleed past the zone boundary.
+Processed via SoX `reverb`. The tail can bleed past the zone boundary.
 
 ### delay
 ```
 delay_sec: 0.1–2.0    (gap between echoes, in seconds)
-feedback:  0.0–1.0    (echo decay, 0 = one echo, 0.9 = many)
+feedback:  0.0–1.0    (echo decay per tap, 0 = one echo, 0.9 = many)
 ```
-Processed via SoX's `echo` command with three taps at `delay`, `2×delay`, `3×delay`.
+Three taps at `delay`, `2×delay`, `3×delay` via SoX `echo`.
+
+### overdrive
+```
+gain:   0–100    (drive amount, default 20)
+colour: 0–100    (harmonic character — 0 = hard, 100 = warm, default 20)
+```
+Soft distortion via SoX `overdrive`.
+
+### flanger
+```
+delay_ms: 0–30     (base delay in ms, default 0)
+depth_ms: 0–10     (modulation depth in ms, default 2)
+speed_hz: 0.1–10   (LFO rate in Hz, default 0.5)
+```
+Comb-filter sweep via SoX `flanger`.
+
+### pitch
+```
+cents: any integer    (100 = +1 semitone, 1200 = +1 octave, negative = down)
+```
+Pitch shift without changing duration via SoX `pitch`.
+
+### compress
+```
+threshold_db: onset of compression in dB (default -20)
+ratio:        compression ratio, e.g. 4 means 4:1 (default 4)
+attack:       response time in seconds (default 0.01)
+release:      recovery time in seconds (default 0.3)
+makeup_db:    output gain after compression (default 0)
+```
+Dynamic range compression via SoX `compand`.
+
+### eq
+```
+freq_hz: centre frequency in Hz, 20–20000 (default 1000)
+gain_db: boost (+) or cut (−) in dB (default 0)
+q:       bandwidth — higher = narrower band (default 1.0)
+```
+Single parametric EQ band via SoX `equalizer`. Stack multiple `eq` entries to build multi-band shapes.
 
 ---
 

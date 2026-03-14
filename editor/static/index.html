@@ -130,6 +130,8 @@
   #score-info-panel h3:first-child { margin-top: 0; }
   .info-item { color: #666; padding: 1px 0; }
   .info-item span { color: #8ab; }
+  .info-clickable { cursor: pointer; border-radius: 2px; padding: 2px 3px; margin: 0 -3px; }
+  .info-clickable:hover { color: #bbb; background: #1e1e1e; }
 
   /* ── Palette toolbar ── */
   #palette {
@@ -398,6 +400,7 @@ vid.addEventListener("loadedmetadata", () => {
   if (state.duration > 0) vid.currentTime = state.currentTime;
 });
 const RULER_H = 22;
+const EVENT_LANE_H = 30;
 
 function resizeCanvas() {
   const r = canvasWrap.getBoundingClientRect();
@@ -507,8 +510,27 @@ function draw() {
   ctx.beginPath(); ctx.moveTo(0, RULER_H); ctx.lineTo(W, RULER_H); ctx.stroke();
   drawRuler(W);
 
-  const wH = H - RULER_H;
+  // Event lane (bottom strip)
+  const laneY = H - EVENT_LANE_H;
+  ctx.fillStyle = "#0e0e0e";
+  ctx.fillRect(0, laneY, W, EVENT_LANE_H);
+  ctx.strokeStyle = "#222";
+  ctx.lineWidth = 1; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(0, laneY); ctx.lineTo(W, laneY); ctx.stroke();
+
+  const wH = H - RULER_H - EVENT_LANE_H;
   const midY = RULER_H + wH / 2;
+
+  // Time grid (behind everything, aligned to ruler ticks)
+  if (state.duration) {
+    const step = niceStep(state.duration / 10);
+    ctx.strokeStyle = "#191919";
+    ctx.lineWidth = 1; ctx.setLineDash([]);
+    for (let t = step; t < state.duration; t += step) {
+      const x = tToX(t);
+      ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
+    }
+  }
 
   // Sample regions
   for (const [name, s] of Object.entries(state.samples)) {
@@ -518,8 +540,8 @@ function draw() {
     ctx.strokeStyle = s.color;
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, laneY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, laneY); ctx.stroke();
     ctx.fillStyle = hexAlpha(s.color, 0.8);
     ctx.font = "10px 'Courier New', monospace";
     ctx.fillText("[" + name + "]", x1 + 3, RULER_H + 13);
@@ -568,13 +590,13 @@ function draw() {
     ctx.strokeStyle = col;
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
-    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, laneY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, RULER_H); ctx.lineTo(x2, laneY); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = hexAlpha(col, 0.9);
     ctx.font = "10px 'Courier New', monospace";
     const fxLabel = fz.fx.map(f => f.type).join("+");
-    ctx.fillText("fx:" + fxLabel, x1 + 3, H - 6);
+    ctx.fillText("fx:" + fxLabel, x1 + 3, laneY - 4);
   }
 
   // Waveform bars
@@ -601,18 +623,34 @@ function draw() {
     ctx.textAlign = "left";
   }
 
-  // Event markers
+  // Event clips (drawn in the event lane as colored blocks)
+  ctx.font = "9px 'Courier New', monospace";
   for (const ev of state.events) {
-    const x = tToX(ev.t);
     const col = (state.samples[ev.sample] || {}).color || "#aaa";
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 2]);
-    ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
+    const samp = state.samples[ev.sample];
+    const rawDur = samp ? (samp.to - samp.from) : 0.5;
+    const speed = typeof ev.speed === "number" ? ev.speed : 1.0;
+    const clipDur = rawDur / speed;
+    const x1 = tToX(ev.t);
+    const x2 = tToX(ev.t + clipDur);
+    const bw = Math.max(2, x2 - x1);
+    // thin trigger line up through waveform area
+    ctx.strokeStyle = hexAlpha(col, 0.35);
+    ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, laneY); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = col;
-    ctx.font = "9px 'Courier New', monospace";
-    ctx.fillText("▶" + ev.sample, x + 3, RULER_H + 22);
+    // clip block in lane
+    ctx.fillStyle = hexAlpha(col, 0.28);
+    ctx.fillRect(x1, laneY + 2, bw, EVENT_LANE_H - 4);
+    ctx.strokeStyle = hexAlpha(col, 0.8);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x1, laneY + 2, bw, EVENT_LANE_H - 4);
+    // label clipped to block width
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x1 + 1, laneY + 2, bw - 2, EVENT_LANE_H - 4); ctx.clip();
+    ctx.fillStyle = hexAlpha(col, 0.95);
+    ctx.fillText("▶" + ev.sample, x1 + 4, laneY + EVENT_LANE_H / 2 + 4);
+    ctx.restore();
   }
 
   // Dynamic point marks
@@ -626,7 +664,7 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
       ctx.fillStyle = col;
       ctx.font = "10px 'Courier New', monospace";
-      ctx.fillText(d.mark, x + 3, H - 6);
+      ctx.fillText(d.mark, x + 3, laneY - 4);
     }
   }
 
@@ -1139,6 +1177,30 @@ function fxParamsHTML(fxType) {
     html += paramWidget("p-delay-sec", "delay_sec", 0.3, 0.05, 0);
     html += paramWidget("p-feedback",  "feedback",  0.4, 0.05, 0);
   }
+  if (fxType === "overdrive") {
+    html += paramWidget("p-od-gain",   "gain",   20, 5, 0);
+    html += paramWidget("p-od-colour", "colour", 20, 5, 0);
+  }
+  if (fxType === "flanger") {
+    html += paramWidget("p-fl-delay", "delay_ms", 0,   1,   0);
+    html += paramWidget("p-fl-depth", "depth_ms", 2,   1,   0);
+    html += paramWidget("p-fl-speed", "speed_hz", 0.5, 0.1, 0.1);
+  }
+  if (fxType === "pitch") {
+    html += paramWidget("p-pitch-cents", "cents", 0, 100, null);
+  }
+  if (fxType === "compress") {
+    html += paramWidget("p-cmp-threshold", "threshold_db", -20, 1,   null);
+    html += paramWidget("p-cmp-ratio",     "ratio",          4, 0.5, 1);
+    html += paramWidget("p-cmp-attack",    "attack",      0.01, 0.005, 0.001);
+    html += paramWidget("p-cmp-release",   "release",      0.3, 0.05, 0.01);
+    html += paramWidget("p-cmp-makeup",    "makeup_db",      0, 1,   null);
+  }
+  if (fxType === "eq") {
+    html += paramWidget("p-eq-freq",  "freq_hz", 1000, 50,  20);
+    html += paramWidget("p-eq-gain",  "gain_db",    0,  1, null);
+    html += paramWidget("p-eq-q",     "q",         1.0, 0.1, 0.1);
+  }
   return html;
 }
 
@@ -1156,6 +1218,21 @@ function collectFx() {
   }
   if (fxType === "delay" || fxType === "reverb+delay") {
     result.push({ type: "delay", delay_sec: collectParam("p-delay-sec"), feedback: collectParam("p-feedback") });
+  }
+  if (fxType === "overdrive") {
+    result.push({ type: "overdrive", gain: collectParam("p-od-gain"), colour: collectParam("p-od-colour") });
+  }
+  if (fxType === "flanger") {
+    result.push({ type: "flanger", delay_ms: collectParam("p-fl-delay"), depth_ms: collectParam("p-fl-depth"), speed_hz: collectParam("p-fl-speed") });
+  }
+  if (fxType === "pitch") {
+    result.push({ type: "pitch", cents: collectParam("p-pitch-cents") });
+  }
+  if (fxType === "compress") {
+    result.push({ type: "compress", threshold_db: collectParam("p-cmp-threshold"), ratio: collectParam("p-cmp-ratio"), attack: collectParam("p-cmp-attack"), release: collectParam("p-cmp-release"), makeup_db: collectParam("p-cmp-makeup") });
+  }
+  if (fxType === "eq") {
+    result.push({ type: "eq", freq_hz: collectParam("p-eq-freq"), gain_db: collectParam("p-eq-gain"), q: collectParam("p-eq-q") });
   }
   return result;
 }
@@ -1180,9 +1257,14 @@ async function openEventPopup(t) {
         <option value="reverb">reverb</option>
         <option value="delay">delay</option>
         <option value="reverb+delay">reverb+delay</option>
+        <option value="overdrive">overdrive</option>
+        <option value="flanger">flanger</option>
+        <option value="pitch">pitch</option>
+        <option value="compress">compress</option>
+        <option value="eq">eq</option>
       </select>`)
     + `<div id="p-fx-params"></div>`
-    + `<div style="font-size:10px;color:#444;margin-top:4px;">at: ${t.toFixed(3)}s</div>`;
+    + row("time (s)", `<input id="p-t" type="number" value="${t.toFixed(3)}" step="0.01" style="width:90px;" />`);
   const res = await showPopup("▶ Event — place playback", html);
   if (!res) return;
   const sample = document.getElementById("p-sample").value;
@@ -1201,7 +1283,7 @@ async function openEventPopup(t) {
 
   const ev = {
     sample,
-    t,
+    t: parseFloat(document.getElementById("p-t").value) || t,
     gain_db: collectParam("p-gain"),
     loop:    parseInt(document.getElementById("p-loop").value) || 0,
     reverse: reverseVal,
@@ -1212,6 +1294,66 @@ async function openEventPopup(t) {
 
   pushHistory();
   state.events.push(ev);
+  state.events.sort((a, b) => a.t - b.t);
+  updateScoreInfo();
+  draw();
+}
+
+async function editEventAt(i) {
+  const ev = state.events[i];
+  const sampleOptions = Object.keys(state.samples).map(n =>
+    `<option value="${n}"${n === ev.sample ? " selected" : ""}>${n}</option>`).join("");
+  const speedsVal = ev.speeds ? ev.speeds.join(", ") : "";
+  const revDefault = ev.reverse === true ? "yes" : (ev.reverse && ev.reverse.distribution ? "p" : "no");
+  const revP = (ev.reverse && ev.reverse.p != null) ? ev.reverse.p : 0.5;
+  const html = row("sample", `<select id="p-sample">${sampleOptions}</select>`)
+    + paramWidget("p-speed",  "speed",   ev.speed ?? 1.0, "0.1", "0.01")
+    + row("speeds", `<input id="p-speeds" type="text" value="${speedsVal}" placeholder="0.5, 1.0, 2.0  (layers, overrides speed)" style="font-size:11px;" />`)
+    + paramWidget("p-gain",   "gain_db", ev.gain_db ?? -6, "1", null)
+    + row("loop", `<input id="p-loop" type="number" value="${ev.loop ?? 0}" min="0" step="1" style="width:60px;" />`)
+    + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
+        style="width:90px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
+        <option value="no"${revDefault==="no"?" selected":""}>no</option>
+        <option value="yes"${revDefault==="yes"?" selected":""}>yes</option>
+        <option value="p"${revDefault==="p"?" selected":""}>~ bernoulli</option>
+      </select><span id="p-rev-inputs" style="display:flex;gap:4px;flex:1;">${revDefault==="p" ? `<input id="p-rev-p" type="number" value="${revP}" min="0" max="1" step="0.05" style="flex:1;" />` : ""}</span>`)
+    + row("fx", `<select id="p-fx" onchange="updateFxParams()">
+        <option value="none">none</option>
+        <option value="reverb">reverb</option>
+        <option value="delay">delay</option>
+        <option value="reverb+delay">reverb+delay</option>
+        <option value="overdrive">overdrive</option>
+        <option value="flanger">flanger</option>
+        <option value="pitch">pitch</option>
+        <option value="compress">compress</option>
+        <option value="eq">eq</option>
+      </select>`)
+    + `<div id="p-fx-params"></div>`
+    + row("time (s)", `<input id="p-t" type="number" value="${ev.t.toFixed(3)}" step="0.01" style="width:90px;" />`);
+  const res = await showPopup("✎ Edit Event", html);
+  if (!res) return;
+  const sample = document.getElementById("p-sample").value;
+  if (!sample) return;
+  const revMode = document.getElementById("p-rev-mode").value;
+  let reverseVal;
+  if (revMode === "yes") reverseVal = true;
+  else if (revMode === "p") reverseVal = { distribution: "bernoulli", p: parseFloat(document.getElementById("p-rev-p").value) || 0.5 };
+  else reverseVal = false;
+  const speedsRaw = document.getElementById("p-speeds").value.trim();
+  const speedsArr = speedsRaw ? speedsRaw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n)) : [];
+  const updated = {
+    sample,
+    t: parseFloat(document.getElementById("p-t").value) || ev.t,
+    gain_db: collectParam("p-gain"),
+    loop:    parseInt(document.getElementById("p-loop").value) || 0,
+    reverse: reverseVal,
+    fx:      collectFx()
+  };
+  if (speedsArr.length > 0) updated.speeds = speedsArr;
+  else updated.speed = collectParam("p-speed");
+  pushHistory();
+  state.events[i] = updated;
+  state.events.sort((a, b) => a.t - b.t);
   updateScoreInfo();
   draw();
 }
@@ -1282,6 +1424,11 @@ async function openFxZonePopup(t1, t2) {
       <option value="reverb">reverb</option>
       <option value="delay">delay</option>
       <option value="reverb+delay">reverb+delay</option>
+      <option value="overdrive">overdrive</option>
+      <option value="flanger">flanger</option>
+      <option value="pitch">pitch</option>
+      <option value="compress">compress</option>
+      <option value="eq">eq</option>
     </select>`)
     + `<div id="p-fx-params"></div>`
     + `<div style="font-size:10px;color:#444;margin-top:6px;">applies to base audio ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
@@ -1332,15 +1479,15 @@ function updateScoreInfo() {
   // Events
   html += `<h3>events (${state.events.length})</h3>`;
   if (!state.events.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
-  for (const ev of state.events) {
+  state.events.forEach((ev, i) => {
     const col = (state.samples[ev.sample] || {}).color || "#aaa";
-    html += `<div class="info-item">▶ <span style="color:${col}">${ev.sample}</span> @${ev.t.toFixed(2)}s`;
-    html += ` spd:${ev.speed} db:${ev.gain_db}`;
-    if (ev.loop) html += " loop";
-    if (ev.reverse) html += " rev";
-    if (ev.fx && ev.fx.length > 0) html += ` fx:${ev.fx.map(f => f.type).join("+")}`;
-    html += `</div>`;
-  }
+    let line = `✎ <span style="color:${col}">${ev.sample}</span> @${ev.t.toFixed(2)}s`;
+    line += ` spd:${ev.speed ?? (ev.speeds ? "[…]" : "?")} db:${ev.gain_db}`;
+    if (ev.loop) line += " loop";
+    if (ev.reverse) line += " rev";
+    if (ev.fx && ev.fx.length > 0) line += ` fx:${ev.fx.map(f => f.type).join("+")}`;
+    html += `<div class="info-item info-clickable" onclick="editEventAt(${i})">${line}</div>`;
+  });
 
   // Dynamics
   const pts = state.dynamics.filter(d => d.t !== undefined);
@@ -1383,6 +1530,11 @@ async function openBaseFxPopup() {
       <option value="reverb">reverb</option>
       <option value="delay">delay</option>
       <option value="reverb+delay">reverb+delay</option>
+      <option value="overdrive">overdrive</option>
+      <option value="flanger">flanger</option>
+      <option value="pitch">pitch</option>
+      <option value="compress">compress</option>
+      <option value="eq">eq</option>
     </select>`)
     + `<div id="p-fx-params"></div>`;
   const res = await showPopup("Base FX — applied to base audio", html);
