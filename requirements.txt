@@ -3,3 +3,5 @@ soundfile
 librosa
 pyyaml
 flask
+scikit-learn
+pillow

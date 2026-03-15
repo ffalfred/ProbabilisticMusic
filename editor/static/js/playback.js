@@ -1,0 +1,154 @@
+// ─── Playback ─────────────────────────────────────────────────────────────────
+function _useWebAudio() {
+  // Use Web Audio mixer when there are multiple tracks (stems loaded)
+  return state.tracks.length > 1;
+}
+
+async function toggleBase() {
+  if (_useWebAudio()) {
+    // Always ensure HTML audio is silent in multi-track mode
+    if (!baseAudio.paused) baseAudio.pause();
+    if (!vid.paused) vid.pause();
+    if (_waPlaying) {
+      state.currentTime = _waCurrentTime();
+      _waStop();
+      document.getElementById("play-base-btn").textContent = "▶ Source";
+    } else {
+      if (!state.tracks.filter(tk => !tk.muted).length) return;
+      await _waStart(state.currentTime);
+    }
+    return;
+  }
+  // Single track: use HTML audio element
+  const pl = activeBasePlayer();
+  if (!pl) return;
+  if (!pl.paused) { pl.pause(); return; }
+  const targetPath = state.filePath;
+  if (!targetPath) return;
+  if (currentSourcePath !== targetPath) {
+    pl.src = "/video?path=" + encodeURIComponent(targetPath);
+    pl.currentTime = state.currentTime;
+    currentSourcePath = targetPath;
+  }
+  pl.muted = false;
+  pl.play();
+}
+
+function syncSourcePlayback() {
+  if (_useWebAudio()) {
+    if (!_waPlaying && !_waStarting) return;
+    const unmuted = state.tracks.filter(tk => !tk.muted);
+    if (!unmuted.length) {
+      state.currentTime = _waCurrentTime();
+      _waStop();
+      document.getElementById("play-base-btn").textContent = "▶ Source";
+    } else {
+      // Restart with updated set of unmuted tracks
+      _waStart(_waCurrentTime());
+    }
+    return;
+  }
+  const pl = activeBasePlayer();
+  if (!pl || pl.paused) return;
+  if (!state.filePath) { pl.pause(); return; }
+}
+
+// ─── Cursor seek ──────────────────────────────────────────────────────────────
+function seekTo(t) {
+  scoreView.panOffset = 0;
+  state.currentTime = t;
+  document.getElementById("cur-time").textContent = t.toFixed(3);
+  const pl = activeBasePlayer();
+  if (pl && pl.src && pl.readyState >= 1) pl.currentTime = t;
+  if (vid.src && vid.readyState >= 1) vid.currentTime = t;
+  // If Web Audio is playing, restart from new position
+  if (_waPlaying) { _waStart(t); }
+  draw();
+}
+
+async function renderAndPlay() {
+  const btn = document.getElementById("play-mix-btn");
+  if (!mixAudio.paused) { mixAudio.pause(); return; }
+  if (!state.filePath) return;
+  btn.textContent = "⏳ rendering…";
+  btn.disabled = true;
+  try {
+    const samplesClean = {};
+    for (const [k, v] of Object.entries(state.samples))
+      samplesClean[k] = { from: v.from, to: v.to,
+        fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
+        ...(v.track ? { track: v.track } : {}) };
+    const score = {
+      samples: samplesClean,
+      dynamics: state.dynamics,
+      tempo: state.tempo,
+      base_fx: state.baseFx,
+      fx_ranges: state.fxRanges,
+      events: state.events,
+      phrases: state.phrases.map(p => ({
+        from: p.from, to: p.to, label: p.label,
+        gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
+        fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
+      })),
+      ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
+        path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted
+      })) } : {}),
+      ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
+      ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
+      ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
+    };
+    const res = await fetch("/preview", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ path: state.filePath, score, _config: state.v2config })
+    });
+    const data = await res.json();
+    if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
+    mixAudio.src = data.url;
+    await mixAudio.play();
+  } catch(e) {
+    alert("Render failed: " + e);
+  } finally {
+    btn.disabled = false;
+    if (mixAudio.paused) btn.textContent = "▶ Mix";
+  }
+}
+
+function playTick() {
+  if (_waPlaying) {
+    state.currentTime = _waCurrentTime();
+    document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+    draw();
+    requestAnimationFrame(playTick);
+    return;
+  }
+  const playing = (!vid.paused       && !vid.ended)       ? vid
+                : (!baseAudio.paused && !baseAudio.ended) ? baseAudio
+                : (!mixAudio.paused  && !mixAudio.ended)  ? mixAudio
+                : null;
+  if (!playing) return;
+  state.currentTime = playing.currentTime;
+  document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+  draw();
+  requestAnimationFrame(playTick);
+}
+
+
+vid.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Source"; requestAnimationFrame(playTick); });
+vid.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; });
+vid.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; state.currentTime = vid.currentTime; draw(); });
+
+baseAudio.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Source"; requestAnimationFrame(playTick); });
+baseAudio.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; });
+baseAudio.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; state.currentTime = baseAudio.currentTime; draw(); });
+
+mixAudio.addEventListener("play",  () => { document.getElementById("play-mix-btn").textContent = "⏸ Mix"; requestAnimationFrame(playTick); });
+mixAudio.addEventListener("pause", () => { document.getElementById("play-mix-btn").textContent = "▶ Mix"; });
+mixAudio.addEventListener("ended", () => { document.getElementById("play-mix-btn").textContent = "▶ Mix"; state.currentTime = mixAudio.currentTime; draw(); });
+
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !e.target.matches("input, textarea, select")) {
+    e.preventDefault();
+    toggleBase();
+  }
+});

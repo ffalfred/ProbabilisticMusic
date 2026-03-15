@@ -51,8 +51,95 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
     return env
 
 
-def apply_fade(clip: np.ndarray, sr: int, ms: float = 10.0) -> np.ndarray:
-    fade = min(int(ms * sr / 1000), len(clip) // 4)
-    clip[:fade]  *= np.linspace(0, 1, fade, dtype=np.float32)
-    clip[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)
+def apply_fade(clip: np.ndarray, sr: int,
+               fade_in_pct: float = 0.0, fade_out_pct: float = 0.0,
+               ms: float = 10.0) -> np.ndarray:
+    """Apply fade in/out to a clip.
+
+    If fade_in_pct / fade_out_pct > 0, use them as a fraction of clip length.
+    Otherwise fall back to a fixed ms fade.
+    """
+    n = len(clip)
+    fi = int(n * fade_in_pct)  if fade_in_pct  > 0 else int(ms * sr / 1000)
+    fo = int(n * fade_out_pct) if fade_out_pct > 0 else int(ms * sr / 1000)
+    fi = min(fi, n // 2)
+    fo = min(fo, n // 2)
+    if fi > 0:
+        clip[:fi]  *= np.linspace(0, 1, fi,  dtype=np.float32)
+    if fo > 0:
+        clip[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)
     return clip
+
+
+def build_duck_envelope(n_samples: int, sr: int, events: list, trigger_fn,
+                        amount_db: float = -6.0, attack: float = 0.01,
+                        release: float = 0.3, tempo_ranges: list = None) -> np.ndarray:
+    """Build an amplitude envelope that ducks to amount_db whenever trigger_fn(event) is True.
+
+    Used for duck_base (trigger all events) and duck_key (trigger on one sample).
+    """
+    from src.mixer import _warp_time
+    duck  = 10 ** (amount_db / 20.0)
+    atk_s = max(1, int(attack  * sr))
+    rel_s = max(1, int(release * sr))
+    env   = np.ones(n_samples, dtype=np.float32)
+    for ev in events:
+        if not trigger_fn(ev):
+            continue
+        i0 = int(_warp_time(ev['t'], tempo_ranges or []) * sr)
+        if i0 >= n_samples:
+            continue
+        a1 = min(i0 + atk_s, n_samples)
+        env[i0:a1] = np.minimum(env[i0:a1],
+                                np.linspace(1.0, duck, a1 - i0, dtype=np.float32))
+        r1 = min(a1 + rel_s, n_samples)
+        env[a1:r1] = np.minimum(env[a1:r1],
+                                np.linspace(duck, 1.0, r1 - a1, dtype=np.float32))
+    return env
+
+
+def build_phrase_envelope(n_samples: int, sr: int, phrases: list) -> np.ndarray:
+    """Multiplicative envelope: per-phrase gain + fade-in/out."""
+    env = np.ones(n_samples, dtype=np.float32)
+    for ph in phrases:
+        gain_db = ph.get('gain_db', 0.0)
+        fi_pct  = ph.get('fade_in',  0.0)
+        fo_pct  = ph.get('fade_out', 0.0)
+        if gain_db == 0.0 and fi_pct == 0.0 and fo_pct == 0.0:
+            continue
+        i0 = int(ph['from'] * sr)
+        i1 = min(int(ph['to'] * sr), n_samples)
+        if i0 >= i1:
+            continue
+        n   = i1 - i0
+        seg = np.full(n, 10 ** (gain_db / 20.0), dtype=np.float32)
+        fi  = min(int(n * fi_pct), n // 2)
+        fo  = min(int(n * fo_pct), n // 2)
+        if fi > 0: seg[:fi]  *= np.linspace(0, 1, fi,  dtype=np.float32)
+        if fo > 0: seg[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)
+        env[i0:i1] *= seg
+    return env
+
+
+def build_density_scale(n_samples: int, sr: int, events: list, samples_spec: dict,
+                        tempo_ranges: list = None, mode: str = "sqrt",
+                        silence_start: float = 0.0) -> np.ndarray:
+    """Build a per-sample gain scale that reduces volume when events overlap.
+
+    mode="sqrt": scale by 1/sqrt(density)  — gentle, musical
+    mode="linear": scale by 1/density      — strict, no clipping
+    """
+    from src.mixer import _warp_time
+    density = np.ones(n_samples, dtype=np.float32)
+    for ev in events:
+        spec   = samples_spec.get(ev.get('sample', ''), {})
+        t_real = _warp_time(ev['t'], tempo_ranges or []) + silence_start
+        i0     = int(t_real * sr)
+        dur    = (spec.get('to', 0) - spec.get('from', 0)) / max(ev.get('speed', 1.0), 0.01)
+        i1     = min(i0 + max(1, int(dur * sr)), n_samples)
+        if i0 < n_samples:
+            density[i0:i1] += 1.0
+    if mode == "sqrt":
+        return np.where(density > 1, 1.0 / np.sqrt(density), 1.0).astype(np.float32)
+    else:
+        return (1.0 / density).astype(np.float32)

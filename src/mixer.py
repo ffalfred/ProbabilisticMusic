@@ -1,6 +1,6 @@
 import numpy as np
 import librosa
-from src.envelope import apply_fade
+from src.envelope import apply_fade, build_duck_envelope, build_density_scale
 from src.fx       import apply_fx
 
 
@@ -37,6 +37,7 @@ def _apply_speed(clip: np.ndarray, speed: float, sr: int) -> np.ndarray:
 def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.ndarray = None) -> np.ndarray:
     silence_start = (score or {}).get('silence_start', 0.0)
     tempo_ranges  = (score or {}).get('tempo', [])
+    samples_spec  = (score or {}).get('samples', {})
 
     mix = base.copy() if base is not None else np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
 
@@ -58,6 +59,18 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if out_end > len(mix):
             mix = np.pad(mix, (0, out_end - len(mix)))
         mix[i0:out_end] += processed
+
+    # --- duck_base: duck the base track before events are added ---
+    db = (score or {}).get('duck_base')
+    if db and db.get('enabled') and events:
+        duck_env = build_duck_envelope(
+            len(mix), sr, events, trigger_fn=lambda ev: True,
+            amount_db=db.get('amount_db', -6.0),
+            attack=db.get('attack', 0.01),
+            release=db.get('release', 0.3),
+            tempo_ranges=tempo_ranges,
+        )
+        mix[:len(duck_env)] *= duck_env
 
     for event in events:
         base_clip = bank[event['sample']].copy()
@@ -82,8 +95,11 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if loop > 0:
             clip = np.tile(clip, loop + 1)
 
-        # --- fade edges ---
-        clip = apply_fade(clip, sr)
+        # --- per-sample fade edges ---
+        sample_spec  = samples_spec.get(event['sample'], {})
+        clip = apply_fade(clip, sr,
+                          fade_in_pct=sample_spec.get('fade_in',  0.05),
+                          fade_out_pct=sample_spec.get('fade_out', 0.05))
 
         # --- gain ---
         gain_db = event.get('gain_db', -6.0)
@@ -101,6 +117,17 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if i1 > len(mix):
             mix = np.pad(mix, (0, i1 - len(mix)))
         mix[i0:i1] += clip
+
+    # --- auto_mix: scale down overlapping events ---
+    am = (score or {}).get('auto_mix')
+    if am and am.get('enabled') and events:
+        scale = build_density_scale(
+            len(mix), sr, events, samples_spec,
+            tempo_ranges=tempo_ranges,
+            mode=am.get('mode', 'sqrt'),
+            silence_start=silence_start,
+        )
+        mix *= scale
 
     return mix
 

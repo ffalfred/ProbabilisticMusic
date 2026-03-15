@@ -66,20 +66,30 @@ After loading:
 ## Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  [ full path to your file ]                      [ Load ]    │
-├─────────────────────────────────┬───────────────────────────┤
-│  waveform                       │  score panel              │
-│  (draw samples, events here)    │  (live list of everything │
-│                                 │   you've added)           │
-│  video frame                    │                           │
-│  (same tools work here too)     │                           │
-├─────────────────────────────────┴───────────────────────────┤
-│  [ Sample ] [ Event ] [ Dynamics ] [ Tempo ] [ FX ]         │
-│                        [ ▶ Base ]  [ ▶ Mix ]  [ ← Undo ]    │
-├─────────────────────────────────────────────────────────────┤
-│  name: [untitled]  [Base FX]  Engine: [V1▾]  [Export YAML]  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  [ full path to your file ]                             [ Load ]      │  ← header bar
+├────────────────────────────────────┬─────────────────────────────────┤
+│  waveform                          │  score panel                     │
+│  (draw samples, events, etc.)      │  (live list of everything        │
+│                                    │   you've added)                  │
+│  ─ Tracks panel (collapsible) ─    │                                  │
+│  stem 1 ░░░░░░░░░░░░░░             │                                  │
+│  stem 2 ░░░░░░░░░░░░░░             │                                  │
+│                                    │                                  │
+│  video frame / image               │                                  │
+│  (score overlay, metadata image)   │                                  │
+│                                    │                                  │
+├────────────────────────────────────┴─────────────────────────────────┤
+│  tool:  [ Sample ] [ Event ] [ Dynamics ] [ Tempo ] [ FX ]           │
+│         [ Slur ] [ Glissando ] [ Arpeggio ]                          │  ← tools row
+│         [ Staccato ] [ Legato ] [ Fermata ] [ Accent ]  ⚙ Stemize   │
+├──────────────────────────────────────────────────────────────────────┤
+│  view:  ⊕ Zoom  ↑ Pointer  |  ⌟ Quantize  |  ← Undo  → Redo        │  ← controls bar
+├──────────────────────────────────────────────────────────────────────┤
+│  name: [untitled]  [Base FX]  engine: [V1▾]  [↓ Export YAML]        │
+│        [⇓ Export MP4]  [path/to/score.yaml]  [↑ Import YAML]  |     │  ← export bar
+│        [▶ Source]  [▶ Mix]                                           │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -88,15 +98,17 @@ After loading:
 
 | Button | What it does |
 |--------|-------------|
-| **▶ Base** | Plays the original file unchanged |
-| **Space** | Same as ▶ Base |
-| **▶ Mix** | Renders your full composition and plays it. This takes a second or two. |
+| **▶ Source** | Plays the original file. If you have loaded stems (see [Stemize](#stemize-audio-source-separation)), plays the mix of all unmuted stems instead. |
+| **Space** | Same as ▶ Source |
+| **▶ Mix** | Renders your full composition using the score you've drawn, and plays it. Takes a second or two. |
 
-Click on the waveform or video frame to jump to that point in time. Drag to scrub through.
+Click on the waveform or video frame to jump to that point in time.
 
-The current time is shown in the bottom-left corner of the video frame area.
+The current time is shown in the overlay at the bottom of the video/image area.
 
 Pressing **▶ Mix** again while audio is playing will pause it. Pressing it again re-renders and plays from the start.
+
+> **About ▶ Source with stems:** When you use Stemize to split the audio into separate tracks, ▶ Source plays through the **Web Audio mixer** and plays all unmuted stems together. Muting/unmuting a stem takes effect immediately — you don't need to press play again.
 
 ---
 
@@ -129,7 +141,7 @@ A popup opens with these options:
 | **gain_db** | Volume. `0` = full volume. `-6` = half amplitude (quieter). `-20` = very quiet. |
 | **loop** | How many extra times to repeat. `0` = play once. `3` = play 4 times total. |
 | **reverse** | Play the sample backwards. |
-| **fx** | Add an effect to this event (see Effects below). |
+| **fx** | Add an effect to this event (see [Effects](#effects)). |
 
 > **Editing an existing event:** Click on the event in the score panel on the right to reopen its popup and change any value.
 
@@ -155,7 +167,83 @@ This affects the *timing* of events, not the pitch or length of individual clips
 
 ### ◆ FX
 
-**Drag** to apply an effect to the **base track itself** across a time range. For example, add reverb to a 3-second section of the original recording. This plays *under* your events, not on top.
+**Drag** to apply an effect to the **base track itself** across a time range. For example, add reverb to a 3-second section of the original recording.
+
+### Note relationship tools
+
+These are applied after placing events, to shape how consecutive notes relate:
+
+| Button | What it does |
+|--------|-------------|
+| **⌒ Slur** | Connects two notes in a legato phrase — smooth, joined playback |
+| **∼ Glissando** | Continuous pitch slide between two notes |
+| **∿ Arpeggio** | Plays chord notes as a rapid sequence rather than simultaneously |
+
+### Articulation tools
+
+| Button | What it does |
+|--------|-------------|
+| **• Staccato** | Short, detached — the note ends before the next one begins |
+| **⌒ Legato** | Smooth and connected — notes flow into each other |
+| **𝄐 Fermata** | Hold the note longer than written |
+| **> Accent** | Emphasise the attack — play louder at the start |
+
+---
+
+## View controls (controls bar)
+
+These buttons change how you navigate the canvas, not what you draw:
+
+| Button | What it does |
+|--------|-------------|
+| **⊕ Zoom** | Click to zoom in, right-click to zoom out. Or scroll with the mouse wheel. |
+| **↑ Pointer** | Click to seek to that time. Drag to pan the score image left/right. |
+| **⌟ Quantize** | Snap all event times to the nearest beat grid. A popup lets you choose the grid size. |
+| **← Undo** | Removes the last action |
+| **→ Redo** | Re-applies an undone action |
+
+> Undo and redo history is lost when you refresh the page or load a new file.
+
+---
+
+## ⚙ Stemize — audio source separation
+
+**Stemize** splits your audio file into separate layers (called "stems") that you can listen to and mute independently. This is useful when working with a complex recording — for example, separating a drum track from a melodic layer, or isolating a repeated texture.
+
+### How to use Stemize
+
+1. Load an audio file using the path bar at the top.
+2. Click **⚙ Stemize** at the right end of the tools row.
+3. A popup appears with these options:
+
+| Option | What it does |
+|--------|-------------|
+| **Method** | How to split the audio. `hpss` separates harmonic (tonal) from percussive (rhythmic) content. `nmf` finds N abstract components. `both` runs both. |
+| **NMF components** | Only used when method is `nmf` or `both`. How many layers to split into (default 3). More components = finer separation, but slower. |
+| **NMF reconstruction** | `softmask` (recommended): each component keeps only the energy it "owns" from the original signal. `naive`: uses the component magnitudes directly with the original phase — may be louder but less clean. |
+
+4. Click **OK**. The server analyses the file — this can take several seconds for long audio.
+5. When done, a **Tracks panel** appears below the waveform, showing one row per stem.
+
+### The Tracks panel
+
+Each row in the Tracks panel shows:
+- A **mini waveform** of that stem with a moving playback cursor
+- A **mute checkbox** — uncheck to silence that stem
+- A **gain slider** — adjust the relative level of each stem in dB
+- The **stem name** (e.g. `harmonic`, `percussive`, `nmf_1`)
+
+The panel can be **collapsed or expanded** by clicking its header bar ("Tracks ▼").
+
+### Playback with stems
+
+Once stems are loaded:
+- **▶ Source** plays the **mix of all unmuted stems** through the Web Audio mixer in your browser.
+- Muting or unmuting a stem takes effect immediately while audio is playing — no need to stop and restart.
+- The **▶ Mix** button still plays the rendered composition (which uses the original file as its base track, not the stems).
+- If you load a new file, stems are cleared automatically.
+
+> **Note:** Stem separation is approximate — some bleed between stems is normal. HPSS is fast and good for drum/melody separation. NMF finds more abstract patterns and works well on textural material. Try both to see what works for your source.
 
 ---
 
@@ -221,7 +309,7 @@ You can add multiple EQ entries to the same event to build a multi-band shape.
 
 ## Base FX
 
-The **Base FX** button in the bottom bar opens a panel to apply effects to the **entire base track** — not just a region. This runs before everything else, so your events and FX zones sit on top of the processed base. Useful for a global room reverb or a slight compression on the source.
+The **Base FX** button in the export bar opens a panel to apply effects to the **entire base track** — not just a region. This runs before everything else, so your events and FX zones sit on top of the processed base. Useful for a global room reverb or a slight compression on the source.
 
 ---
 
@@ -241,7 +329,7 @@ This means the same score can sound different every time you press **▶ Mix**. 
 
 ## Engine selector (V1 / V2 β)
 
-The **Engine** dropdown in the bottom bar selects the rendering mode:
+The **Engine** dropdown in the export bar selects the rendering mode:
 
 | Option | What it does |
 |--------|-------------|
@@ -265,9 +353,14 @@ Right-click on any annotation on either canvas — a sample boundary, event mark
 
 ---
 
-## Undo
+## Undo / Redo
 
-The **← Undo** button removes the last action. Undo history is lost when you refresh the page.
+| Button | Keyboard shortcut | What it does |
+|--------|------------------|-------------|
+| **← Undo** | — | Removes the last action |
+| **→ Redo** | — | Re-applies the last undone action |
+
+Undo/redo history is stored in memory and lost when you refresh the page or load a new file.
 
 ---
 
@@ -276,11 +369,32 @@ The **← Undo** button removes the last action. Undo history is lost when you r
 When you're happy with your composition:
 
 1. Type a name in the **name:** field at the bottom (e.g. `my_composition`)
-2. Click **Export YAML**
+2. Click **↓ Export YAML**
 
 The score is saved as `scores/my_composition.yaml` inside the ProbabilisticMusic folder. The full path is shown in the status bar.
 
 This file can then be used with the [command-line renderer](cli.md) to render without opening the editor.
+
+### Exporting as MP4 video
+
+If you have loaded a score image (using the score image inputs below the video frame), you can export a **scrolling score video** — a video that shows the score scrolling as the music plays, with a red playhead cursor.
+
+1. Load a score image and set its start/end times (so the image aligns with the audio)
+2. Type a name in the **name:** field
+3. Click **⇓ Export MP4**
+
+The resulting `.mp4` file is saved alongside your YAML in the `scores/` folder. The video shows the score image scrolling horizontally, centred on the playhead.
+
+> This requires `ffmpeg` to be installed. See [installation.md](installation.md).
+
+### Importing a previously exported score
+
+If you have a `.yaml` score file from a previous session:
+
+1. Paste the full path to the file into the **import path** field
+2. Click **↑ Import YAML**
+
+All samples, events, dynamics, tempo, and FX zones will be restored in the editor.
 
 ---
 
@@ -288,4 +402,17 @@ This file can then be used with the [command-line renderer](cli.md) to render wi
 
 The right-hand panel shows a live summary of everything in your score: samples, events, dynamics, tempo regions, and FX zones. Click on any event in the list to edit it.
 
+The panel is divided into **collapsible sections** — click any section heading to collapse or expand it. This helps keep the panel tidy when working with large scores.
+
 It updates automatically as you draw.
+
+---
+
+## Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| **Space** | Play / pause source audio (same as ▶ Source) |
+| Click on waveform | Seek to that time |
+| Drag on waveform (Pointer tool) | Pan the waveform view |
+| Scroll wheel | Zoom in/out on the waveform |
