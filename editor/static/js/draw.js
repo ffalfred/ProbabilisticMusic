@@ -624,7 +624,7 @@ function drawScoreOverlay(c, ctx, view) {
   }
   // Cursor
   const cx = tx(state.currentTime);
-  ctx.strokeStyle = "rgba(255,50,50,0.85)"; ctx.lineWidth = 2; ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(51,204,204,0.85)"; ctx.lineWidth = 2; ctx.setLineDash([]);
   ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
 }
 
@@ -790,10 +790,10 @@ function drawFrameOverlay() {
   // Cursor
   const cx = tToXF(state.currentTime);
   if (viewMode === "score") {
-    frameCtx.strokeStyle = "rgba(255,50,50,0.85)";
+    frameCtx.strokeStyle = "rgba(51,204,204,0.85)";  // #33cccc on score image
     frameCtx.lineWidth = 2; frameCtx.setLineDash([]);
   } else {
-    frameCtx.strokeStyle = "rgba(255,255,255,0.7)";
+    frameCtx.strokeStyle = "rgba(255,50,50,0.85)";   // red on metadata/video
     frameCtx.lineWidth = 1; frameCtx.setLineDash([4,3]);
   }
   frameCtx.beginPath(); frameCtx.moveTo(cx, 0); frameCtx.lineTo(cx, H); frameCtx.stroke();

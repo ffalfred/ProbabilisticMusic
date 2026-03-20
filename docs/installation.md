@@ -133,10 +133,13 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 | Package | What it does |
 |---------|-------------|
 | `numpy` | Fast math for audio arrays |
+| `scipy` | Signal processing — used by Morphogenics spectral plugins |
 | `soundfile` | Reads and writes WAV and FLAC files |
-| `librosa` | Resamples audio (for varispeed playback) |
+| `librosa` | Resamples audio, pitch-shifting, spectral analysis |
 | `pyyaml` | Reads YAML score files |
 | `flask` | Runs the web editor server |
+| `scikit-learn` | Used by audio source separation (Stemize) |
+| `pillow` | Image handling for score image overlays |
 
 ---
 
@@ -145,7 +148,7 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 Run these three commands. Each should produce output without errors:
 
 ```bash
-python -c "import numpy, soundfile, librosa, yaml, flask; print('Python packages OK')"
+python -c "import numpy, scipy, soundfile, librosa, yaml, flask, sklearn; print('Python packages OK')"
 ```
 
 ```bash

@@ -14,6 +14,29 @@
 </div>
 
 <div id="mid">
+  <div id="palette">
+    <label onclick="toggleBarContent('palette-content','palette-chevron')" title="Collapse/expand tools">
+      <span id="palette-chevron" style="font-size:9px;">&#9660;</span> tools
+    </label>
+    <div id="palette-content">
+      <button id="tool-sample" class="active" data-tool="sample">[ Sample ]</button>
+      <button id="tool-event" data-tool="event">&#9654; Event</button>
+      <button id="tool-dynamics" data-tool="dynamics">~ Dynamics</button>
+      <button id="tool-tempo" data-tool="tempo">&#9201; Tempo</button>
+      <button id="tool-fx" data-tool="fx">&#9670; FX</button>
+      <span class="tool-sep">Note rel.</span>
+      <button id="tool-phrase" data-tool="phrase">&#8994; Slur</button>
+      <button id="tool-glissando" data-tool="glissando">&#8764; Glissando</button>
+      <button id="tool-arpchord" data-tool="arpchord">&#8767; Arpeggio</button>
+      <span class="tool-sep">Articulation</span>
+      <button id="tool-staccato" data-tool="staccato">&#8226; Staccato</button>
+      <button id="tool-legato" data-tool="legato">&#8994; Legato</button>
+      <button id="tool-fermata" data-tool="fermata">&#119140; Fermata</button>
+      <button id="tool-accent" data-tool="accent">&gt; Accent</button>
+      <span class="tool-sep">Audio</span>
+      <button id="separate-btn" title="Separate audio into stems">&#9881; Stemize</button>
+    </div>
+  </div>
   <div id="left-col">
     <div id="canvas-wrap">
       <canvas id="waveform-canvas"></canvas>
@@ -39,12 +62,15 @@
       </div>
       <div id="score-load-row">
         <button id="view-toggle-btn">[ Score ]</button>
-        <input id="score-path-input" type="text" placeholder="/path/to/score.png" />
-        <button id="load-score-btn">Load Score</button>
-        <label title="Audio time (s) that maps to the LEFT edge of the score image">img start:</label>
-        <input id="score-start-input" type="number" step="0.1" value="0" title="Audio time at left edge of score image">s
-        <label title="Audio time (s) that maps to the RIGHT edge of the score image">img end:</label>
-        <input id="score-end-input" type="number" step="0.1" value="0" title="Audio time at right edge of score image">s
+        <button id="toggle-img-paths-btn" title="Show/hide image path inputs" onclick="toggleImgPaths()" style="font-size:10px;padding:1px 5px;color:#777;">&#9660; Paths</button>
+        <span id="img-paths-content">
+          <input id="score-path-input" type="text" placeholder="/path/to/score.png" />
+          <button id="load-score-btn">Load Score</button>
+          <label title="Audio time (s) that maps to the LEFT edge of the score image">img start:</label>
+          <input id="score-start-input" type="number" step="0.1" value="0" title="Audio time at left edge of score image">s
+          <label title="Audio time (s) that maps to the RIGHT edge of the score image">img end:</label>
+          <input id="score-end-input" type="number" step="0.1" value="0" title="Audio time at right edge of score image">s
+        </span>
         <button id="toggle-score2-btn" style="margin-left:4px;" title="Show/hide metadata image panel">Metadata Img</button>
       </div>
       <div id="time-overlay">t = <span id="cur-time">0.000</span>s / <span id="dur-display">—</span>s</div>
@@ -53,6 +79,7 @@
     <div id="score2-container">
       <canvas id="score2-canvas"></canvas>
       <div id="score2-load-row">
+        <button id="sync-imgs-btn" title="Sync metadata image time range to match score image" onclick="syncImageRanges()" style="font-size:10px;padding:1px 5px;color:#6af;">&#8596; Sync</button>
         <input id="score2-path-input" type="text" placeholder="/path/to/metadata-image.png" />
         <button id="load-score2-btn">Load</button>
         <label>start:</label>
@@ -64,73 +91,73 @@
     </div>
   </div>
   <div id="score-info-panel">
-    <div style="color:#333;font-size:11px;">load a file to begin</div>
+    <div id="history-header" onclick="toggleBarContent('history-body','history-chevron')"
+         style="cursor:pointer;user-select:none;font-size:9px;text-transform:uppercase;
+                letter-spacing:1px;color:#555;padding:4px 8px;border-bottom:1px solid #1a1a1a;
+                display:flex;align-items:center;gap:4px;">
+      <span id="history-chevron">&#9660;</span> History
+    </div>
+    <div id="history-body">
+      <div style="color:#333;font-size:11px;">load a file to begin</div>
+    </div>
   </div>
 </div>
 
-<div id="palette">
-  <label>tool:</label>
-  <button id="tool-sample" class="active" data-tool="sample">[ Sample ]</button>
-  <button id="tool-event" data-tool="event">&#9654; Event</button>
-  <button id="tool-dynamics" data-tool="dynamics">~ Dynamics</button>
-  <button id="tool-tempo" data-tool="tempo">&#9201; Tempo</button>
-  <button id="tool-fx" data-tool="fx">&#9670; FX</button>
-  <span class="tool-sep">Note relationship</span>
-  <button id="tool-phrase" data-tool="phrase">&#8994; Slur</button>
-  <button id="tool-glissando" data-tool="glissando">&#8764; Glissando</button>
-  <button id="tool-arpchord" data-tool="arpchord">&#8767; Arpeggio</button>
-  <span class="tool-sep">Articulation</span>
-  <button id="tool-staccato" data-tool="staccato">&#8226; Staccato</button>
-  <button id="tool-legato" data-tool="legato">&#8994; Legato</button>
-  <button id="tool-fermata" data-tool="fermata">&#119140; Fermata</button>
-  <button id="tool-accent" data-tool="accent">&gt; Accent</button>
-  <span style="color:#555;padding:0 4px;">|</span>
-  <button id="separate-btn" title="Separate audio into stems">&#9881; Stemize</button>
-</div>
 <div id="controls-bar">
-  <label>view:</label>
-  <button id="tool-zoom" data-tool="zoom">&#8853; Zoom</button>
-  <button id="tool-pointer" data-tool="pointer" title="Pointer: click to seek, drag to pan score">&#8593; Pointer</button>
-  <span style="color:#555;padding:0 4px;">|</span>
-  <button id="quantize-btn" title="Snap events to a beat grid">&#9956; Quantize</button>
-  <span style="color:#555;padding:0 4px;">|</span>
-  <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
-  <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
+  <label style="cursor:pointer;user-select:none;" onclick="toggleBarContent('controls-content','controls-chevron')" title="Collapse/expand view controls">
+    <span id="controls-chevron" style="font-size:9px;">&#9660;</span> view:
+  </label>
+  <span id="controls-content">
+    <button id="tool-zoom" data-tool="zoom">&#8853; Zoom</button>
+    <button id="tool-pointer" data-tool="pointer" title="Pointer: click to seek, drag to pan score">&#8593; Pointer</button>
+    <span style="color:#555;padding:0 4px;">|</span>
+    <button id="quantize-btn" title="Snap events to a beat grid">&#9956; Quantize</button>
+    <span style="color:#555;padding:0 4px;">|</span>
+    <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
+    <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
+  </span>
 </div>
 
 <div id="export-bar">
-  <label style="font-size:11px;color:#555;">name:</label>
-  <input id="score-name" type="text" value="untitled" />
-  <button id="base-fx-btn" title="FX applied to the base audio track">Base FX: <span id="base-fx-label">none</span></button>
-
-  <!-- Engine selector -->
-  <span style="margin-left:12px;font-size:11px;color:#555;">engine:</span>
-  <select id="engine-select" title="Rendering engine" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 6px;font-size:11px;">
-    <option value="v1">V1</option>
-    <option value="v2">V2 β</option>
-  </select>
-
-  <!-- V2 config sub-panel (hidden when V1 active) -->
-  <span id="v2-panel" style="display:none;margin-left:8px;gap:6px;align-items:center;">
-    <span style="font-size:10px;color:#7b5ea7;font-weight:bold;">V2 β</span>
-    <select id="v2-mode" title="Markov mode" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 5px;font-size:11px;">
-      <option value="joint">joint</option>
-      <option value="symbolic">symbolic</option>
+  <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;" onclick="toggleBarContent('export-content','export-chevron')" title="Collapse/expand export bar">
+    <span id="export-chevron" style="font-size:9px;">&#9660;</span> name:
+  </label>
+  <span id="export-content">
+    <input id="score-name" type="text" value="untitled" />
+    <button id="base-fx-btn" title="FX applied to the base audio track">Base FX: <span id="base-fx-label">none</span></button>
+    <!-- Engine selector -->
+    <span style="margin-left:12px;font-size:11px;color:#555;">engine:</span>
+    <select id="engine-select" title="Rendering engine" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 6px;font-size:11px;">
+      <option value="v1">V1</option>
+      <option value="v2">V2 β</option>
     </select>
-    <label style="font-size:11px;color:#555;">seed:</label>
-    <input id="v2-seed" type="number" placeholder="random" title="Set integer for reproducible runs" style="width:72px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
-    <label style="font-size:11px;color:#555;">order:</label>
-    <input id="v2-order" type="number" value="2" min="1" max="4" title="Markov order (1–4)" style="width:40px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
-  </span>
-
-  <span style="color:#555;padding:0 4px;">|</span>
-  <button id="export-btn">&#8595; Export YAML</button>
-  <button id="export-mp4-btn" title="Export scrolling score video as MP4 file">&#8659; Export MP4</button>
-  <input id="import-path" type="text" placeholder="/path/to/score.yaml" style="width:180px;" />
-  <button id="import-btn">&#8593; Import YAML</button>
-  <span style="color:#555;padding:0 4px;">|</span>
-  <button id="play-base-btn" title="Play source audio — plays first unmuted track (Space)" onclick="toggleBase()">&#9654; Source</button>
-  <button id="play-mix-btn" title="Render &amp; play composition" onclick="renderAndPlay()">&#9654; Mix</button>
+    <!-- V2 config sub-panel (hidden when V1 active) -->
+    <span id="v2-panel" style="display:none;margin-left:8px;gap:6px;align-items:center;">
+      <span style="font-size:10px;color:#7b5ea7;font-weight:bold;">V2 β</span>
+      <select id="v2-mode" title="Markov mode" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 5px;font-size:11px;">
+        <option value="joint">joint</option>
+        <option value="symbolic">symbolic</option>
+      </select>
+      <label style="font-size:11px;color:#555;">seed:</label>
+      <input id="v2-seed" type="number" placeholder="random" title="Set integer for reproducible runs" style="width:72px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
+      <label style="font-size:11px;color:#555;">order:</label>
+      <input id="v2-order" type="number" value="2" min="1" max="4" title="Markov order (1–4)" style="width:40px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
+    </span>
+    <span style="color:#555;padding:0 4px;">|</span>
+    <button id="export-btn">&#8595; Export YAML</button>
+    <button id="export-mp4-btn" title="Export scrolling score video as MP4 file">&#8659; Export MP4</button>
+    <input id="import-path" type="text" placeholder="/path/to/score.yaml" style="width:180px;" />
+    <button id="import-btn">&#8593; Import YAML</button>
+    <span style="color:#555;padding:0 4px;">|</span>
+  </span><!-- /export-content -->
+  <button id="go-start-btn" title="Go to beginning" onclick="goToBeginning()" style="font-size:13px;padding:2px 6px;">&#9612;&#9664;</button>
+  <button id="play-base-btn" title="Play/pause source audio (s)" onclick="toggleBase()">&#9654; Source</button>
+  <button id="play-mix-btn" title="Render &amp; play composition (Space)" onclick="toggleMix()">&#9654; Mix</button>
+  <label style="font-size:11px;color:#555;margin-left:8px;">speed:</label>
+  <input id="playback-speed" type="number" value="1.0" min="0.1" max="4.0" step="0.05"
+         title="Playback speed (time only — pitch unchanged for source; re-render Mix for pitch-safe stretch)"
+         style="width:52px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;"
+         onchange="_applyPlaybackSpeed()" />
   <span id="export-status" style="margin-left:6px;"></span>
 </div>
 
@@ -151,6 +178,10 @@
 <script src="js/playback.js"></script>
 <script src="js/draw.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/tracks.js"></script>
+<script src="js/ui-helpers.js"></script>
+<script src="js/image-view.js"></script>
+<script src="js/export.js"></script>
 <script src="js/editor.js"></script>
 </body>
 </html>

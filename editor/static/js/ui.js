@@ -1,3 +1,14 @@
+// ─── Morphogenics plugin registry (fetched once from /plugins) ────────────────
+let _morphoPlugins = [];  // [{type, name, group, params}]
+
+async function _loadMorphoPlugins() {
+  try {
+    const r = await fetch("/plugins");
+    if (r.ok) _morphoPlugins = await r.json();
+  } catch (_) {}
+}
+_loadMorphoPlugins();
+
 // ─── Popup helpers ─────────────────────────────────────────────────────────────
 const overlay = document.getElementById("popup-overlay");
 const popupTitle = document.getElementById("popup-title");
@@ -20,13 +31,15 @@ function showPopup(title, bodyHTML) {
   return new Promise(res => { popupResolve = res; });
 }
 
-function row(label, inputHTML) {
-  return `<div class="popup-row"><label>${label}</label>${inputHTML}</div>`;
+function row(label, inputHTML, hint) {
+  const hintHtml = hint ? `<span style="font-size:10px;color:#444;margin-left:4px;">${hint}</span>` : "";
+  return `<div class="popup-row"><label>${label}</label>${inputHTML}${hintHtml}</div>`;
 }
 
 // ─── Probabilistic param widgets ──────────────────────────────────────────────
-function paramWidget(id, label, defaultVal, step, min) {
+function paramWidget(id, label, defaultVal, step, min, hint) {
   const minAttr = min != null ? `min="${min}"` : "";
+  const hintHtml = hint ? `<span style="font-size:9px;color:#444;margin-left:2px;">${hint}</span>` : "";
   return `<div class="popup-row">
     <label>${label}</label>
     <select id="${id}-mode" onchange="updateParamWidget('${id}')"
@@ -37,7 +50,7 @@ function paramWidget(id, label, defaultVal, step, min) {
     </select>
     <span id="${id}-inputs" style="display:flex;gap:4px;flex:1;">
       <input id="${id}-v" type="number" value="${defaultVal}" step="${step}" ${minAttr} style="flex:1;" />
-    </span>
+    </span>${hintHtml}
   </div>`;
 }
 
@@ -78,35 +91,67 @@ function fxParamsHTML(fxType) {
   if (fxType === "none") return "";
   let html = "";
   if (fxType === "reverb" || fxType === "reverb+delay") {
-    html += paramWidget("p-reverberance", "reverberance", 60, 5, 0);
+    html += paramWidget("p-reverberance", "reverberance", 60, 5, 0, "0–100");
   }
   if (fxType === "delay" || fxType === "reverb+delay") {
-    html += paramWidget("p-delay-sec", "delay_sec", 0.3, 0.05, 0);
-    html += paramWidget("p-feedback",  "feedback",  0.4, 0.05, 0);
+    html += paramWidget("p-delay-sec", "delay_sec", 0.3, 0.05, 0.01, "0.01–4 s");
+    html += paramWidget("p-feedback",  "feedback",  0.4, 0.05, 0,    "0–0.99");
   }
   if (fxType === "overdrive") {
-    html += paramWidget("p-od-gain",   "gain",   20, 5, 0);
-    html += paramWidget("p-od-colour", "colour", 20, 5, 0);
+    html += paramWidget("p-od-gain",   "gain",   20, 5, 0, "0–100");
+    html += paramWidget("p-od-colour", "colour", 20, 5, 0, "0–100");
   }
   if (fxType === "flanger") {
-    html += paramWidget("p-fl-delay", "delay_ms", 0,   1,   0);
-    html += paramWidget("p-fl-depth", "depth_ms", 2,   1,   0);
-    html += paramWidget("p-fl-speed", "speed_hz", 0.5, 0.1, 0.1);
+    html += paramWidget("p-fl-delay", "delay_ms", 0,   1,   0,   "0–30 ms");
+    html += paramWidget("p-fl-depth", "depth_ms", 2,   1,   0,   "0–10 ms");
+    html += paramWidget("p-fl-speed", "speed_hz", 0.5, 0.1, 0.1, "0.1–10 Hz");
   }
   if (fxType === "pitch") {
-    html += paramWidget("p-pitch-cents", "cents", 0, 100, null);
+    html += paramWidget("p-pitch-cents", "cents", 0, 100, null, "±2400 (100=semitone)");
   }
   if (fxType === "compress") {
-    html += paramWidget("p-cmp-threshold", "threshold_db", -20, 1,   null);
-    html += paramWidget("p-cmp-ratio",     "ratio",          4, 0.5, 1);
-    html += paramWidget("p-cmp-attack",    "attack",      0.01, 0.005, 0.001);
-    html += paramWidget("p-cmp-release",   "release",      0.3, 0.05, 0.01);
-    html += paramWidget("p-cmp-makeup",    "makeup_db",      0, 1,   null);
+    html += paramWidget("p-cmp-threshold", "threshold_db", -20, 1,     null, "-80–0 dB");
+    html += paramWidget("p-cmp-ratio",     "ratio",          4, 0.5,   1,    "1–50");
+    html += paramWidget("p-cmp-attack",    "attack",      0.01, 0.005, 0.001,"0.001–2 s");
+    html += paramWidget("p-cmp-release",   "release",      0.3, 0.05,  0.01, "0.01–5 s");
+    html += paramWidget("p-cmp-makeup",    "makeup_db",      0, 1,     null, "-20–40 dB");
   }
   if (fxType === "eq") {
-    html += paramWidget("p-eq-freq",  "freq_hz", 1000, 50,  20);
-    html += paramWidget("p-eq-gain",  "gain_db",    0,  1, null);
-    html += paramWidget("p-eq-q",     "q",         1.0, 0.1, 0.1);
+    html += paramWidget("p-eq-freq",  "freq_hz", 1000, 50,  20,  "20 Hz – Nyquist");
+    html += paramWidget("p-eq-gain",  "gain_db",    0,  1,  null,"-40–40 dB");
+    html += paramWidget("p-eq-q",     "q",         1.0, 0.1, 0.1,"≥0.1 (higher=narrower)");
+  }
+  if (fxType === "spectral_inversion") {
+    html += paramWidget("p-si-low",   "low_hz",        20,   10,  0,    "20–20000 Hz");
+    html += paramWidget("p-si-high",  "high_hz",     10000,  500, 20,   "20–20000 Hz");
+    html += paramWidget("p-si-thresh","threshold_db",  -60,    5, null, "-80–0 dB");
+    html += paramWidget("p-si-amt",   "amount %",      100,    5, 0,    "0–100");
+    html += row("fft size", `<select id="p-si-fft" style="flex:1;background:#222;border:1px solid #333;color:#ccc;font-family:inherit;font-size:12px;padding:3px 6px;">
+        <option value="512">512</option><option value="1024">1024</option>
+        <option value="2048" selected>2048</option></select>`);
+    html += paramWidget("p-si-drywet","dry/wet %",     100,    5, 0,    "0=dry 100=wet");
+  }
+  if (fxType === "overtones") {
+    html += row("n harmonics", `<input id="p-ov-n" type="number" value="3" min="1" max="8" step="1" style="flex:1;">`,
+               "1–8 (2nd, 3rd… harmonic added)");
+    html += paramWidget("p-ov-gain", "gain_db", -12, 1, null, "-60–12 dB (overall harmonic level)");
+  }
+  // ── Morphogenics plugins: auto-generate widgets from PARAMS schema ────────
+  if (fxType.startsWith("morpho_")) {
+    const plug = _morphoPlugins.find(p => p.type === fxType);
+    if (plug) {
+      for (const [key, spec] of Object.entries(plug.params)) {
+        const wid = `p-morpho-${key}`;
+        if (spec.type === "select") {
+          const optHtml = (spec.options || []).map(o =>
+            `<option value="${o}"${o===String(spec.default)?" selected":""}>${o}</option>`).join("");
+          html += row(spec.label, `<select id="${wid}" style="flex:1;background:#222;border:1px solid #333;color:#ccc;font-family:inherit;font-size:12px;padding:3px 6px;">${optHtml}</select>`);
+        } else {
+          const step = spec.type === "int" ? 1 : 0.1;
+          html += row(spec.label, `<input id="${wid}" type="number" value="${spec.default}" min="${spec.min}" max="${spec.max}" step="${step}" style="flex:1;">`);
+        }
+      }
+    }
   }
   return html;
 }
@@ -141,7 +186,54 @@ function collectFx() {
   if (fxType === "eq") {
     result.push({ type: "eq", freq_hz: collectParam("p-eq-freq"), gain_db: collectParam("p-eq-gain"), q: collectParam("p-eq-q") });
   }
+  if (fxType === "spectral_inversion") {
+    result.push({ type: "spectral_inversion",
+      low_hz:       collectParam("p-si-low"),
+      high_hz:      collectParam("p-si-high"),
+      threshold_db: collectParam("p-si-thresh"),
+      amount:       collectParam("p-si-amt"),
+      fft_size:     parseInt(document.getElementById("p-si-fft").value),
+      dry_wet:      collectParam("p-si-drywet"),
+    });
+  }
+  if (fxType === "overtones") {
+    result.push({ type: "overtones",
+      n_harmonics: parseInt(document.getElementById("p-ov-n").value) || 3,
+      gain_db:     collectParam("p-ov-gain"),
+    });
+  }
+  if (fxType.startsWith("morpho_")) {
+    const plug = _morphoPlugins.find(p => p.type === fxType);
+    if (plug) {
+      const entry = { type: fxType };
+      for (const [key, spec] of Object.entries(plug.params)) {
+        const el = document.getElementById(`p-morpho-${key}`);
+        if (!el) continue;
+        entry[key] = spec.type === "int" ? parseInt(el.value) :
+                     spec.type === "float" ? parseFloat(el.value) :
+                     el.value;
+      }
+      result.push(entry);
+    }
+  }
   return result;
+}
+
+// ─── FX type select HTML (reused in several popups) ───────────────────────────
+function fxSelectHTML(selectedVal) {
+  const opts = [
+    "none","reverb","delay","reverb+delay","overdrive","flanger",
+    "pitch","compress","eq","spectral_inversion","overtones"
+  ];
+  const baseGroup = opts.map(o =>
+    `<option value="${o}"${o===selectedVal?" selected":""}>${o}</option>`).join("");
+  let morphoGroup = "";
+  if (_morphoPlugins.length > 0) {
+    const morphoOpts = _morphoPlugins.map(p =>
+      `<option value="${p.type}"${p.type===selectedVal?" selected":""}>${p.name}</option>`).join("");
+    morphoGroup = `<optgroup label="Morphogenics">${morphoOpts}</optgroup>`;
+  }
+  return `<select id="p-fx" onchange="updateFxParams()">${baseGroup}${morphoGroup}</select>`;
 }
 
 // ─── Sample popup ─────────────────────────────────────────────────────────────
@@ -151,8 +243,8 @@ async function openSamplePopup(t1, t2) {
     : '<option value="0">0: base</option>';
   const html = row("name", `<input id="p-name" type="text" value="s${Object.keys(state.samples).length + 1}" />`)
     + (state.tracks.length > 1 ? row("track", `<select id="p-track">${trackOpts}</select>`) : "")
-    + row("fade in",  `<input id="p-fi" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`)
-    + row("fade out", `<input id="p-fo" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`)
+    + row("fade in",  `<input id="p-fi" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
+    + row("fade out", `<input id="p-fo" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("[ Sample ] — define range", html);
   if (!res) return;
@@ -177,23 +269,19 @@ async function openEventPopup(t) {
     + row("speeds", `<input id="p-speeds" type="text" placeholder="0.5, 1.0, 2.0  (layers, overrides speed)" style="font-size:11px;" />`)
     + paramWidget("p-gain",   "gain_db", "0",   "1",    null)
     + row("loop", `<input id="p-loop" type="number" value="0" min="0" step="1" style="width:60px;" title="extra repeats (0 = play once)" />`)
+    + row("fade in",  `<input id="p-ev-fi" type="number" value="" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
+          "overrides sample default")
+    + row("fade out", `<input id="p-ev-fo" type="number" value="" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
+          "overrides sample default")
+    + row("pitch", `<input id="p-ev-pitch" type="number" value="0" min="-24" max="24" step="0.5" style="width:60px;"> st`,
+          "-24 – +24 semitones")
     + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
         style="width:90px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
         <option value="no">no</option>
         <option value="yes">yes</option>
         <option value="p">~ bernoulli</option>
       </select><span id="p-rev-inputs" style="display:flex;gap:4px;flex:1;"></span>`)
-    + row("fx", `<select id="p-fx" onchange="updateFxParams()">
-        <option value="none">none</option>
-        <option value="reverb">reverb</option>
-        <option value="delay">delay</option>
-        <option value="reverb+delay">reverb+delay</option>
-        <option value="overdrive">overdrive</option>
-        <option value="flanger">flanger</option>
-        <option value="pitch">pitch</option>
-        <option value="compress">compress</option>
-        <option value="eq">eq</option>
-      </select>`)
+    + row("fx", fxSelectHTML("none"))
     + `<div id="p-fx-params"></div>`
     + row("time (s)", `<input id="p-t" type="number" value="${t.toFixed(3)}" step="0.01" style="width:90px;" />`);
   const res = await showPopup("▶ Event — place playback", html);
@@ -201,14 +289,12 @@ async function openEventPopup(t) {
   const sample = document.getElementById("p-sample").value;
   if (!sample) return;
 
-  // collect reverse
   const revMode = document.getElementById("p-rev-mode").value;
   let reverseVal;
   if (revMode === "yes") reverseVal = true;
   else if (revMode === "p") reverseVal = { distribution: "bernoulli", p: parseFloat(document.getElementById("p-rev-p").value) || 0.5 };
   else reverseVal = false;
 
-  // parse speeds list (overrides speed if non-empty)
   const speedsRaw = document.getElementById("p-speeds").value.trim();
   const speedsArr = speedsRaw ? speedsRaw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n)) : [];
 
@@ -220,6 +306,12 @@ async function openEventPopup(t) {
     reverse: reverseVal,
     fx:      collectFx()
   };
+  const fiRaw = document.getElementById("p-ev-fi").value.trim();
+  const foRaw = document.getElementById("p-ev-fo").value.trim();
+  if (fiRaw !== "") ev.fade_in  = Math.max(0, Math.min(0.5, parseFloat(fiRaw) / 100));
+  if (foRaw !== "") ev.fade_out = Math.max(0, Math.min(0.5, parseFloat(foRaw) / 100));
+  const pitchVal = parseFloat(document.getElementById("p-ev-pitch").value);
+  if (!isNaN(pitchVal) && pitchVal !== 0) ev.pitch = pitchVal;
   if (speedsArr.length > 0) ev.speeds = speedsArr;
   else ev.speed = collectParam("p-speed");
 
@@ -237,28 +329,26 @@ async function editEventAt(i) {
   const speedsVal = ev.speeds ? ev.speeds.join(", ") : "";
   const revDefault = ev.reverse === true ? "yes" : (ev.reverse && ev.reverse.distribution ? "p" : "no");
   const revP = (ev.reverse && ev.reverse.p != null) ? ev.reverse.p : 0.5;
+  const fiVal = ev.fade_in  != null ? Math.round(ev.fade_in  * 100) : "";
+  const foVal = ev.fade_out != null ? Math.round(ev.fade_out * 100) : "";
   const html = row("sample", `<select id="p-sample">${sampleOptions}</select>`)
     + paramWidget("p-speed",  "speed",   ev.speed ?? 1.0, "0.1", "0.01")
     + row("speeds", `<input id="p-speeds" type="text" value="${speedsVal}" placeholder="0.5, 1.0, 2.0  (layers, overrides speed)" style="font-size:11px;" />`)
     + paramWidget("p-gain",   "gain_db", ev.gain_db ?? -6, "1", null)
     + row("loop", `<input id="p-loop" type="number" value="${ev.loop ?? 0}" min="0" step="1" style="width:60px;" />`)
+    + row("fade in",  `<input id="p-ev-fi" type="number" value="${fiVal}" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
+          "overrides sample default")
+    + row("fade out", `<input id="p-ev-fo" type="number" value="${foVal}" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
+          "overrides sample default")
+    + row("pitch", `<input id="p-ev-pitch" type="number" value="${ev.pitch ?? 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`,
+          "-24 – +24 semitones")
     + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
         style="width:90px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
         <option value="no"${revDefault==="no"?" selected":""}>no</option>
         <option value="yes"${revDefault==="yes"?" selected":""}>yes</option>
         <option value="p"${revDefault==="p"?" selected":""}>~ bernoulli</option>
       </select><span id="p-rev-inputs" style="display:flex;gap:4px;flex:1;">${revDefault==="p" ? `<input id="p-rev-p" type="number" value="${revP}" min="0" max="1" step="0.05" style="flex:1;" />` : ""}</span>`)
-    + row("fx", `<select id="p-fx" onchange="updateFxParams()">
-        <option value="none">none</option>
-        <option value="reverb">reverb</option>
-        <option value="delay">delay</option>
-        <option value="reverb+delay">reverb+delay</option>
-        <option value="overdrive">overdrive</option>
-        <option value="flanger">flanger</option>
-        <option value="pitch">pitch</option>
-        <option value="compress">compress</option>
-        <option value="eq">eq</option>
-      </select>`)
+    + row("fx", fxSelectHTML("none"))
     + `<div id="p-fx-params"></div>`
     + row("time (s)", `<input id="p-t" type="number" value="${ev.t.toFixed(3)}" step="0.01" style="width:90px;" />`);
   const res = await showPopup("✎ Edit Event", html);
@@ -280,6 +370,12 @@ async function editEventAt(i) {
     reverse: reverseVal,
     fx:      collectFx()
   };
+  const fiRaw2 = document.getElementById("p-ev-fi").value.trim();
+  const foRaw2 = document.getElementById("p-ev-fo").value.trim();
+  if (fiRaw2 !== "") updated.fade_in  = Math.max(0, Math.min(0.5, parseFloat(fiRaw2) / 100));
+  if (foRaw2 !== "") updated.fade_out = Math.max(0, Math.min(0.5, parseFloat(foRaw2) / 100));
+  const pitchVal2 = parseFloat(document.getElementById("p-ev-pitch").value);
+  if (!isNaN(pitchVal2) && pitchVal2 !== 0) updated.pitch = pitchVal2;
   if (speedsArr.length > 0) updated.speeds = speedsArr;
   else updated.speed = collectParam("p-speed");
   pushHistory();
@@ -352,10 +448,10 @@ async function openTempoPopup(t1, t2) {
 async function openPhrasePopup(t1, t2) {
   const n = state.phrases.length + 1;
   const html = row("label",    `<input id="p-phrase-label" type="text" value="slur ${n}" />`)
-    + row("gain dB",  `<input id="p-ph-gain"  type="number" value="0"   step="0.5" style="width:60px;">`)
+    + row("gain dB",  `<input id="p-ph-gain"  type="number" value="0"   step="0.5" style="width:60px;">`, "-20–20")
     + row("fade in",  `<input id="p-ph-fi"    type="number" value="0"   min="0" max="50" step="1" style="width:60px;"> %`)
     + row("fade out", `<input id="p-ph-fo"    type="number" value="0"   min="0" max="50" step="1" style="width:60px;"> %`)
-    + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="1.0" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change)</span>`)
+    + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="1.0" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change; affects event timing only)</span>`)
     + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("&#8994; Slur", html);
   if (!res) return;
@@ -378,12 +474,20 @@ async function openNoteRelPopup(type, t1, t2) {
   const rangeStr = isPoint ? `@${t1.toFixed(3)}s` : `${t1.toFixed(3)}s → ${t2.toFixed(3)}s`;
   const label = type === "glissando" ? "⟿ Glissando" : "⁑ Arpeggiate Chord";
   const html = row("label", `<input id="p-nr-label" type="text" placeholder="optional label" />`)
+    + (type === "glissando"
+        ? row("from pitch", `<input id="p-nr-fp" type="number" value="0" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+          + row("to pitch", `<input id="p-nr-tp" type="number" value="2" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+        : "")
     + `<div style="font-size:10px;color:#444;margin-top:4px;">${label} — ${rangeStr}</div>`;
   const res = await showPopup(label, html);
   if (!res) return;
   pushHistory();
   const entry = { type, from: t1, label: document.getElementById("p-nr-label").value.trim() || undefined };
   if (!isPoint) entry.to = t2;
+  if (type === "glissando") {
+    entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
+    entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
+  }
   state.noteRel.push(entry);
   updateScoreInfo(); draw();
 }
@@ -392,8 +496,15 @@ async function openNoteRelPopup(type, t1, t2) {
 async function openArticulationPopup(type, t1, t2) {
   const isRange = (t2 !== undefined && Math.abs(t2 - t1) >= 0.01);
   const titles = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
+  const descs  = {
+    staccato: "Shortens the note to ~30% of its duration.",
+    accent:   "Boosts the attack of the note by 2×.",
+    fermata:  "Extends the note by holding its tail.",
+    legato:   "Smooth connection — notes flow into each other.",
+  };
   const posStr = isRange ? `${t1.toFixed(3)}s → ${t2.toFixed(3)}s` : `@${t1.toFixed(3)}s`;
   const html = row("label", `<input id="p-art-label" type="text" placeholder="optional label" />`)
+    + `<div style="font-size:10px;color:#555;margin-top:4px;">${descs[type] || ""}</div>`
     + `<div style="font-size:10px;color:#444;margin-top:4px;">${titles[type] || type} — ${posStr}</div>`;
   const res = await showPopup(titles[type] || type, html);
   if (!res) return;
@@ -407,17 +518,7 @@ async function openArticulationPopup(type, t1, t2) {
 
 // ─── FX Zone popup ────────────────────────────────────────────────────────────
 async function openFxZonePopup(t1, t2) {
-  const html = row("fx", `<select id="p-fx" onchange="updateFxParams()">
-      <option value="none">none</option>
-      <option value="reverb">reverb</option>
-      <option value="delay">delay</option>
-      <option value="reverb+delay">reverb+delay</option>
-      <option value="overdrive">overdrive</option>
-      <option value="flanger">flanger</option>
-      <option value="pitch">pitch</option>
-      <option value="compress">compress</option>
-      <option value="eq">eq</option>
-    </select>`)
+  const html = row("fx", fxSelectHTML("none"))
     + `<div id="p-fx-params"></div>`
     + `<div style="font-size:10px;color:#444;margin-top:6px;">applies to base audio ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("◆ FX Zone — base audio range", html);
@@ -434,17 +535,7 @@ async function openFxZonePopup(t1, t2) {
 document.getElementById("base-fx-btn").addEventListener("click", openBaseFxPopup);
 
 async function openBaseFxPopup() {
-  const html = row("fx", `<select id="p-fx" onchange="updateFxParams()">
-      <option value="none">none</option>
-      <option value="reverb">reverb</option>
-      <option value="delay">delay</option>
-      <option value="reverb+delay">reverb+delay</option>
-      <option value="overdrive">overdrive</option>
-      <option value="flanger">flanger</option>
-      <option value="pitch">pitch</option>
-      <option value="compress">compress</option>
-      <option value="eq">eq</option>
-    </select>`)
+  const html = row("fx", fxSelectHTML("none"))
     + `<div id="p-fx-params"></div>`;
   const res = await showPopup("Base FX — applied to base audio", html);
   if (!res) return;
@@ -478,7 +569,7 @@ function _applySnapshot(snap) {
 function pushHistory() {
   state.history.push(_snapshotState());
   if (state.history.length > 50) state.history.shift();
-  redoStack.length = 0; // new action clears redo
+  redoStack.length = 0;
 }
 
 document.getElementById("undo-btn").addEventListener("click", () => {
@@ -497,7 +588,7 @@ document.getElementById("redo-btn").addEventListener("click", () => {
   draw();
 });
 
-// ─── Score info panel ─────────────────────────────────────────────────────────
+// ─── Score info panel (History) ───────────────────────────────────────────────
 const infoCollapsed = {};
 
 function toggleInfoSection(key) {
@@ -512,8 +603,8 @@ function _sh(key, label) {
 }
 
 function updateScoreInfo() {
-  const el = document.getElementById("score-info-panel");
-  let html = "";
+  const el = document.getElementById("history-body") || document.getElementById("score-info-panel");
+  let html = ``;
 
   // Samples
   const sNames = Object.keys(state.samples);

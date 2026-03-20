@@ -2,6 +2,7 @@ import numpy as np
 import librosa
 from src.envelope import apply_fade, build_duck_envelope, build_density_scale
 from src.fx       import apply_fx
+from src.pitch    import resolve_event_pitch, apply_pitch_shift
 
 
 def _warp_time(t_score: float, tempo_ranges: list) -> float:
@@ -34,10 +35,70 @@ def _apply_speed(clip: np.ndarray, speed: float, sr: int) -> np.ndarray:
     ).astype(np.float32)
 
 
+def _find_articulation(event_t: float, articulations: list, max_gap: float = 0.5):
+    """Return the first articulation that matches an event at event_t."""
+    for art in articulations:
+        art_t = art.get('t')
+        if art_t is not None and abs(art_t - event_t) <= max_gap:
+            return art
+        from_t = art.get('from')
+        to_t   = art.get('to')
+        if from_t is not None and to_t is not None and from_t <= event_t <= to_t:
+            return art
+    return None
+
+
+def _apply_articulation(clip: np.ndarray, art_type: str, sr: int) -> np.ndarray:
+    """Modify a clip according to the given articulation type."""
+    n = len(clip)
+    if n == 0:
+        return clip
+
+    if art_type == 'staccato':
+        # Shorten to ~30% of original duration with a quick fade-out
+        keep = max(int(sr * 0.02), int(n * 0.30))  # at least 20 ms
+        keep = min(keep, n)
+        clip = clip[:keep].copy()
+        fo = max(1, int(keep * 0.15))
+        clip[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+
+    elif art_type == 'accent':
+        # Boost attack: ramp 2× → 1× over the first 50 ms
+        atk = min(int(0.05 * sr), n)
+        if atk > 1:
+            env = np.ones(n, dtype=np.float32)
+            env[:atk] = np.linspace(2.0, 1.0, atk, dtype=np.float32)
+            clip = clip * env
+
+    elif art_type == 'fermata':
+        # Hold the last 20% of the clip for an extra duration (smoothly looped)
+        hold_n = min(int(n * 0.20), n)
+        if hold_n > 4:
+            tail   = clip[-hold_n:].copy()
+            # Crossfade loop point
+            fi = max(1, int(hold_n * 0.25))
+            loop_seg = tail.copy()
+            loop_seg[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+            clip = np.concatenate([clip, loop_seg, loop_seg])
+
+    elif art_type == 'legato':
+        # Smooth connection: replace default short fade-out with a long 500 ms one
+        # so the note rings smoothly into the next without an abrupt cutoff.
+        fo = min(int(0.5 * sr), n)
+        if fo > 1:
+            env = np.ones(n, dtype=np.float32)
+            env[-fo:] = np.linspace(1.0, 0.0, fo, dtype=np.float32)
+            clip = clip * env
+
+    return clip
+
+
 def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.ndarray = None) -> np.ndarray:
-    silence_start = (score or {}).get('silence_start', 0.0)
-    tempo_ranges  = (score or {}).get('tempo', [])
-    samples_spec  = (score or {}).get('samples', {})
+    silence_start  = (score or {}).get('silence_start', 0.0)
+    tempo_ranges   = (score or {}).get('tempo', [])
+    samples_spec   = (score or {}).get('samples', {})
+    articulations  = (score or {}).get('articulations', [])
+    note_rels      = (score or {}).get('note_rel', [])
 
     mix = base.copy() if base is not None else np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
 
@@ -95,11 +156,12 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if loop > 0:
             clip = np.tile(clip, loop + 1)
 
-        # --- per-sample fade edges ---
+        # --- per-sample / per-event fade edges ---
+        # Event-level fade_in/fade_out overrides sample-level if provided
         sample_spec  = samples_spec.get(event['sample'], {})
-        clip = apply_fade(clip, sr,
-                          fade_in_pct=sample_spec.get('fade_in',  0.05),
-                          fade_out_pct=sample_spec.get('fade_out', 0.05))
+        fade_in_pct  = event.get('fade_in',  sample_spec.get('fade_in',  0.05))
+        fade_out_pct = event.get('fade_out', sample_spec.get('fade_out', 0.05))
+        clip = apply_fade(clip, sr, fade_in_pct=fade_in_pct, fade_out_pct=fade_out_pct)
 
         # --- gain ---
         gain_db = event.get('gain_db', -6.0)
@@ -109,6 +171,17 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         fx_list = event.get('fx', [])
         if fx_list:
             clip = apply_fx(clip, sr, fx_list)
+
+        # --- articulations ---
+        if articulations:
+            art = _find_articulation(event['t'], articulations)
+            if art:
+                clip = _apply_articulation(clip, art['type'], sr)
+
+        # --- pitch (per-event static, or interpolated by glissando) ---
+        semitones = resolve_event_pitch(event['t'], float(event.get('pitch', 0.0)), note_rels)
+        if semitones:
+            clip = apply_pitch_shift(clip, sr, semitones)
 
         # --- place on timeline (tempo-warped + silence offset) ---
         t_real = _warp_time(event['t'], tempo_ranges) + silence_start

@@ -5,16 +5,33 @@ DYNAMIC_LEVELS = {
     'mf':  0.65, 'f':  0.80, 'ff': 0.90, 'fff': 1.00,
 }
 
+# Smooth transition time between adjacent dynamic marks, based on gap duration.
+# Prevents jarring volume jumps.
+def _transition_samples(gap_sec: float, sr: int) -> int:
+    if gap_sec < 0.5:
+        ms = 12
+    elif gap_sec < 2.0:
+        ms = 35
+    elif gap_sec < 5.0:
+        ms = 100
+    elif gap_sec < 10.0:
+        ms = 200
+    else:
+        ms = 500
+    return int(ms * sr / 1000)
+
+
 def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarray:
     """
     Build amplitude envelope from dynamics markings.
 
     Point markings  — { t: 4.0, mark: mf }
-      Define the amplitude level at a moment in time; holds until the next point.
+      Define the amplitude level at a moment in time.
+      Transitions between adjacent marks are smoothed to avoid jarring jumps.
 
     Range markings  — { from: 2.0, to: 5.0, mark: crescendo }
-      Linearly interpolate between the surrounding point levels.
-      mark: crescendo | decrescendo
+      Linearly interpolate across the span.
+      Works even without surrounding point marks.
     """
     if not dynamics:
         return np.ones(n_samples, dtype=np.float32)
@@ -27,26 +44,43 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
     )
     ranges = [d for d in dynamics if 'from' in d]
 
-    if not points:
-        return env
+    # ── Step-wise fill from point marks (with smooth cross-fades at transitions) ──
+    if points:
+        first_t, first_v = points[0]
+        # Everything before the first mark holds at the first mark's level
+        env[:int(first_t * sr)] = first_v
 
-    # fill step-wise from point markings
-    first_t, first_v = points[0]
-    env[:int(first_t * sr)] = first_v
+        for i, (t, v) in enumerate(points):
+            i0 = int(t * sr)
+            i1 = int(points[i + 1][0] * sr) if i + 1 < len(points) else n_samples
+            env[i0:i1] = v
 
-    for i, (t, v) in enumerate(points):
-        i0 = int(t * sr)
-        i1 = int(points[i + 1][0] * sr) if i + 1 < len(points) else n_samples
-        env[i0:i1] = v
+            # Smooth transition from previous level into this level
+            if i > 0:
+                prev_v = points[i - 1][1]
+                gap    = t - points[i - 1][0]
+                trans  = min(_transition_samples(gap, sr), (i1 - i0) // 2)
+                if trans > 1:
+                    env[i0:i0 + trans] = np.linspace(prev_v, v, trans, dtype=np.float32)
 
-    # overlay crescendo / decrescendo ranges as linear interpolations
+    # ── Overlay crescendo / decrescendo ranges ─────────────────────────────────
     for rng in ranges:
         i0 = min(int(rng['from'] * sr), n_samples - 1)
         i1 = min(int(rng['to']   * sr), n_samples)
         if i0 >= i1:
             continue
-        env[i0:i1] = np.linspace(env[i0], env[min(i1, n_samples - 1)],
-                                  i1 - i0, dtype=np.float32)
+
+        start_v = float(env[i0])
+        end_v   = float(env[min(i1, n_samples - 1)])
+
+        # When there are no surrounding point marks, use sensible defaults
+        if not points:
+            if rng['mark'] == 'crescendo':
+                start_v, end_v = DYNAMIC_LEVELS['p'],  DYNAMIC_LEVELS['f']
+            else:
+                start_v, end_v = DYNAMIC_LEVELS['f'],  DYNAMIC_LEVELS['p']
+
+        env[i0:i1] = np.linspace(start_v, end_v, i1 - i0, dtype=np.float32)
 
     return env
 
@@ -74,10 +108,6 @@ def apply_fade(clip: np.ndarray, sr: int,
 def build_duck_envelope(n_samples: int, sr: int, events: list, trigger_fn,
                         amount_db: float = -6.0, attack: float = 0.01,
                         release: float = 0.3, tempo_ranges: list = None) -> np.ndarray:
-    """Build an amplitude envelope that ducks to amount_db whenever trigger_fn(event) is True.
-
-    Used for duck_base (trigger all events) and duck_key (trigger on one sample).
-    """
     from src.mixer import _warp_time
     duck  = 10 ** (amount_db / 20.0)
     atk_s = max(1, int(attack  * sr))
@@ -124,11 +154,6 @@ def build_phrase_envelope(n_samples: int, sr: int, phrases: list) -> np.ndarray:
 def build_density_scale(n_samples: int, sr: int, events: list, samples_spec: dict,
                         tempo_ranges: list = None, mode: str = "sqrt",
                         silence_start: float = 0.0) -> np.ndarray:
-    """Build a per-sample gain scale that reduces volume when events overlap.
-
-    mode="sqrt": scale by 1/sqrt(density)  — gentle, musical
-    mode="linear": scale by 1/density      — strict, no clipping
-    """
     from src.mixer import _warp_time
     density = np.ones(n_samples, dtype=np.float32)
     for ev in events:

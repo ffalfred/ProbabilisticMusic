@@ -336,13 +336,22 @@ def separate():
     method       = data.get("method", "hpss")       # "hpss" | "nmf" | "both"
     n_components = int(data.get("n_components", 3))
     nmf_mode     = data.get("nmf_mode", "softmask") # "softmask" | "naive"
+    from_t       = data.get("from_t")               # optional start time (s)
+    to_t         = data.get("to_t")                 # optional end time (s)
 
     if not os.path.exists(path):
         return jsonify({"error": "File not found"}), 404
 
     try:
         import librosa
-        audio, sr_lib = librosa.load(path, sr=None, mono=True)
+        load_kwargs = {"sr": None, "mono": True}
+        if from_t is not None:
+            load_kwargs["offset"] = float(from_t)
+        if to_t is not None and from_t is not None:
+            load_kwargs["duration"] = float(to_t) - float(from_t)
+        elif to_t is not None:
+            load_kwargs["duration"] = float(to_t)
+        audio, sr_lib = librosa.load(path, **load_kwargs)
         base_name = os.path.splitext(os.path.basename(path))[0]
         out_dir   = os.path.join(os.path.dirname(os.path.abspath(path)),
                                  base_name + "_stems")
@@ -394,6 +403,18 @@ def load_yaml_route():
         return jsonify({"score": score})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/plugins")
+def list_plugins():
+    from plugins import load_plugins
+    plugs = load_plugins()
+    return jsonify([{
+        "type":   k,
+        "name":   v.NAME,
+        "group":  v.GROUP,
+        "params": v.PARAMS,
+    } for k, v in plugs.items()])
 
 
 if __name__ == "__main__":

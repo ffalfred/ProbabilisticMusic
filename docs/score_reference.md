@@ -40,6 +40,13 @@ This cuts a 1.5-second fragment from the source audio (from 0.5s to 2.0s), names
 | `base_fx:` | no | Effects on the entire source track |
 | `fx_ranges:` | no | Effects on a specific time range of the source track |
 | `silence_start:` | no | Seconds of silence added before events are placed |
+| `tracks:` | no | Multiple source audio files mixed into one base |
+| `phrases:` | no | Per-phrase gain, fades, and local tempo changes |
+| `articulations:` | no | Staccato, accent, fermata, legato applied to events |
+| `note_rel:` | no | Glissando pitch curves across time ranges |
+| `duck_key:` | no | One sample ducks the whole mix when it plays |
+| `duck_base:` | no | Base track ducks whenever any event plays |
+| `auto_mix:` | no | Automatic gain scaling to prevent dense passages from clipping |
 
 ---
 
@@ -61,6 +68,16 @@ samples:
 - Names can be anything: letters, numbers, underscores (no spaces)
 - Define as many as you want — unused ones are harmless
 - The source audio always plays in full underneath, regardless of what you sample from it
+
+### Optional sample fields
+
+| Field | Type | Default | What it does |
+|-------|------|---------|-------------|
+| `track` | int | `0` | Which track index to slice from (see `tracks:`) |
+| `fade_in` | float | `0.05` | Fade-in as fraction of clip length (0–1) |
+| `fade_out` | float | `0.05` | Fade-out as fraction of clip length (0–1) |
+
+`fade_in` and `fade_out` set defaults for every event that uses this sample. An event can override them with its own `fade_in`/`fade_out` fields.
 
 ---
 
@@ -146,6 +163,33 @@ A list of effects applied to this event. See the Effects section below.
 ```
 
 Multiple effects can be stacked — they are applied in order.
+
+### `pitch` — semitone shift
+
+Shifts the pitch of this event by a fixed number of semitones, without changing duration. Independent of `speed`.
+
+```yaml
+  - sample: kick
+    t: 4.0
+    pitch: -5      # 5 semitones down
+    gain_db: -6
+```
+
+Fractional semitones are supported. Shifts smaller than 0.05 st are skipped as a no-op. Pitch from a `note_rel:` glissando overrides this value for events that fall inside the glissando range.
+
+### `fade_in` / `fade_out` — per-event fades
+
+Override the sample's default fades for this event. Values are fractions of clip length (0.0–1.0).
+
+```yaml
+  - sample: texture
+    t: 8.0
+    fade_in: 0.2     # fade in over the first 20% of the clip
+    fade_out: 0.1    # fade out over the last 10%
+    gain_db: -9
+```
+
+If omitted, the sample-level defaults apply (both default to `0.05`).
 
 ---
 
@@ -244,6 +288,182 @@ fx_ranges:
 
 ---
 
+## `silence_start:`
+
+Shifts all events later by the given number of seconds. Useful when you want a lead-in of pure source audio before your composition begins. Does not affect dynamics or phrase envelopes — those are still measured from time 0.
+
+```yaml
+silence_start: 2.0    # 2 seconds of source audio before the first event
+```
+
+---
+
+## `tracks:`
+
+Load multiple audio files as source material and mix them into a single base track. When `tracks:` is present, the top-level `base_track:` field is replaced by this list.
+
+```yaml
+tracks:
+  - path: /path/to/drums.wav
+    gain_db: -3
+  - path: /path/to/pad.wav
+    gain_db: -6
+  - path: /path/to/bass.wav
+    muted: true     # present but silenced
+```
+
+Each track entry accepts:
+
+| Field | Type | Default | What it does |
+|-------|------|---------|-------------|
+| `path` | string | required | File path (`.wav`, `.mp3`, `.mp4`) |
+| `gain_db` | float | `0` | Gain applied before mixing |
+| `muted` | bool | `false` | Include in bank but exclude from base mix |
+
+Tracks are indexed from 0 in order of appearance. Samples can be sliced from a specific track using the `track:` field on the sample:
+
+```yaml
+samples:
+  kick:
+    from: 1.2
+    to: 1.8
+    track: 0    # slice from the first track (default)
+  bass_note:
+    from: 3.0
+    to: 3.4
+    track: 2    # slice from the third track
+```
+
+---
+
+## `phrases:`
+
+Applies a multiplicative gain envelope to specific time regions of the final mix. Useful for shaping sections independently — quieting a dense passage, adding breath between phrases, or creating a local ritardando.
+
+```yaml
+phrases:
+  - from: 0.0
+    to: 8.0
+    gain_db: -3        # reduce this section by 3 dB
+    fade_in: 0.1       # fade in over the first 10% of the phrase
+    fade_out: 0.15     # fade out over the last 15% of the phrase
+    tempo_factor: 0.9  # local ritardando: events in this phrase arrive 10% later
+```
+
+| Field | Type | Default | What it does |
+|-------|------|---------|-------------|
+| `from` | float | required | Phrase start (seconds) |
+| `to` | float | required | Phrase end (seconds) |
+| `gain_db` | float | `0` | Gain offset for the phrase |
+| `fade_in` | float | `0` | Fade-in as fraction of phrase length |
+| `fade_out` | float | `0` | Fade-out as fraction of phrase length |
+| `tempo_factor` | float | `1.0` | Local time compression/expansion (merged into `tempo:`) |
+
+Phrase envelopes are applied after dynamics and after event mixing, so they shape the entire rendered result including the source track.
+
+---
+
+## `articulations:`
+
+Apply performance articulations to events. An articulation can match a specific event time or a time range.
+
+```yaml
+articulations:
+  - type: staccato
+    t: 4.0        # matches the event nearest to t=4.0 (within 0.5s)
+
+  - type: accent
+    from: 6.0
+    to: 10.0      # applies to all events in this range
+```
+
+Available types:
+
+| Type | Effect |
+|------|--------|
+| `staccato` | Shorten clip to ~30% of duration with a quick fade-out |
+| `accent` | Boost attack: ramp 2× → 1× gain over the first 50ms |
+| `fermata` | Extend duration: append two extra loops of the last 20% of the clip |
+| `legato` | Replace short fade-out with a smooth 500ms fade-out |
+
+Point-form (`t:`) matches the first event within 0.5 seconds of that time. Range-form (`from:`/`to:`) matches every event in the range.
+
+---
+
+## `note_rel:`
+
+Applies a continuous pitch curve across a time range. Events that fall inside a glissando range have their `pitch` field replaced by an interpolated value.
+
+```yaml
+note_rel:
+  - type: glissando
+    from: 3.0         # start of the glissando in seconds
+    to: 7.0           # end of the glissando
+    from_pitch: 0.0   # pitch at t=from (semitones)
+    to_pitch: 5.0     # pitch at t=to (semitones)
+```
+
+An event at `t: 5.0` would receive a pitch of `2.5` semitones — halfway between 0 and 5. The `pitch` field on individual events acts as the base value; `note_rel:` overrides it when the event falls inside a range.
+
+Currently `glissando` is the only supported `type`. `from_pitch` defaults to `0.0` and `to_pitch` defaults to `2.0` if omitted.
+
+---
+
+## `duck_key:`
+
+Triggers sidechain-style ducking whenever a specific sample plays. Every time the key sample is triggered, the whole mix dips and recovers.
+
+```yaml
+duck_key:
+  enabled: true
+  key: kick          # sample name that triggers ducking
+  amount_db: -10.0   # how far to duck (negative = quieter)
+  attack: 0.01       # time to reach full duck, in seconds
+  release: 0.3       # time to recover back to full level
+```
+
+| Field | Type | Default | What it does |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Must be `true` to activate |
+| `key` | string | required | Sample name that triggers ducking |
+| `amount_db` | float | `-10` | Duck depth in dB |
+| `attack` | float | `0.01` | Attack time in seconds |
+| `release` | float | `0.3` | Release time in seconds |
+
+Applied to the entire final mix after dynamics and phrases.
+
+---
+
+## `duck_base:`
+
+Ducks the source (base) track whenever any event plays. Creates a pumping effect where your composed samples push down the underlying source audio.
+
+```yaml
+duck_base:
+  enabled: true
+  amount_db: -6.0
+  attack: 0.01
+  release: 0.3
+```
+
+Same fields as `duck_key:` except there is no `key` — every event triggers the ducking. Applied to the base track only, before events are layered on top.
+
+---
+
+## `auto_mix:`
+
+Automatically reduces gain in regions where many events overlap, preventing clipping without manual gain adjustments.
+
+```yaml
+auto_mix:
+  enabled: true
+  mode: sqrt    # "sqrt" (default) or "inverse"
+```
+
+With `mode: sqrt`, a region with N simultaneous events is scaled by `1 / √N`. With `mode: inverse`, it is scaled by `1 / N`. `sqrt` is the musical default — it preserves more energy while still controlling peaks.
+
+---
+
 ## Effects reference
 
 ### `reverb`
@@ -317,6 +537,40 @@ fx:
     gain_db: -3
     q: 0.8
 ```
+
+### `spectral_inversion`
+Inverts the spectral phase, creating hollow and flanged timbres. No parameters.
+```yaml
+- type: spectral_inversion
+```
+
+### `overtones`
+Adds synthetic overtones (pitch-shifted copies) above the fundamental.
+```yaml
+- type: overtones
+  n_harmonics: 3     # 1–8 overtone layers
+  gain_db: -12       # level of first harmonic; subsequent ones taper off
+```
+
+### Morphogenics plugins
+Any Morphogenics plugin can be used as an FX type directly in YAML. The type key always starts with `morpho_`:
+
+```yaml
+fx:
+  - type: morpho_saariaho_freeze
+    n_partials: 20
+    freeze_rate: 0.1
+    dry_wet: 80
+
+  - type: morpho_xenakis_granular
+    grain_ms: 40
+    pitch_spread: 6
+    shuffle_pct: 30
+    amplitude_var: 40
+    dry_wet: 90
+```
+
+Any omitted parameter uses the plugin's default value. See [morphogenics.md](morphogenics.md) for the full list of plugins, their type keys, and all parameters.
 
 ---
 

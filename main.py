@@ -36,8 +36,19 @@ def _next_output_path(score_path: str, input_path: str) -> str:
         n += 1
 
 
+def _read_version() -> str:
+    """Read version from VERSION file next to main.py."""
+    vpath = os.path.join(os.path.dirname(__file__), 'VERSION')
+    try:
+        with open(vpath) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return 'unknown'
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='StrategicOpacity renderer')
+    parser = argparse.ArgumentParser(description='ProbabilisticMusic renderer')
+    parser.add_argument('--version', action='version', version=f'ProbabilisticMusic {_read_version()}')
     parser.add_argument('-i', '--input', required=True, help='Input file (wav or mp4)')
     parser.add_argument('-s', '--score', required=True, help='Score file')
     args = parser.parse_args()

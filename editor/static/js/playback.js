@@ -4,6 +4,22 @@ function _useWebAudio() {
   return state.tracks.length > 1;
 }
 
+function _getPlaybackSpeed() {
+  const el = document.getElementById("playback-speed");
+  return el ? (parseFloat(el.value) || 1.0) : 1.0;
+}
+
+function _applyPlaybackSpeed() {
+  const s = _getPlaybackSpeed();
+  vid.playbackRate       = s;
+  baseAudio.playbackRate = s;
+  mixAudio.playbackRate  = s;
+}
+
+function goToBeginning() {
+  seekTo(0);
+}
+
 async function toggleBase() {
   if (_useWebAudio()) {
     // Always ensure HTML audio is silent in multi-track mode
@@ -31,7 +47,13 @@ async function toggleBase() {
     currentSourcePath = targetPath;
   }
   pl.muted = false;
+  _applyPlaybackSpeed();
   pl.play();
+}
+
+async function toggleMix() {
+  if (!mixAudio.paused) { mixAudio.pause(); return; }
+  await renderAndPlay();
 }
 
 function syncSourcePlayback() {
@@ -96,6 +118,8 @@ async function renderAndPlay() {
       ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
       ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
       ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
+      ...(state.articulations.length ? { articulations: state.articulations } : {}),
+      ...(state.noteRel.length       ? { note_rel: state.noteRel }            : {}),
     };
     const res = await fetch("/preview", {
       method: "POST",
@@ -105,6 +129,9 @@ async function renderAndPlay() {
     const data = await res.json();
     if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
     mixAudio.src = data.url;
+    _applyPlaybackSpeed();
+    await new Promise(resolve => { mixAudio.addEventListener("canplay", resolve, { once: true }); });
+    mixAudio.currentTime = state.currentTime;
     await mixAudio.play();
   } catch(e) {
     alert("Render failed: " + e);
@@ -147,7 +174,11 @@ mixAudio.addEventListener("pause", () => { document.getElementById("play-mix-btn
 mixAudio.addEventListener("ended", () => { document.getElementById("play-mix-btn").textContent = "▶ Mix"; state.currentTime = mixAudio.currentTime; draw(); });
 
 document.addEventListener("keydown", e => {
-  if (e.code === "Space" && !e.target.matches("input, textarea, select")) {
+  if (e.target.matches("input, textarea, select")) return;
+  if (e.code === "Space") {
+    e.preventDefault();
+    toggleMix();
+  } else if (e.code === "KeyS") {
     e.preventDefault();
     toggleBase();
   }

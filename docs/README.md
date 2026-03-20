@@ -1,5 +1,7 @@
 # ProbabilisticMusic
 
+**Version 0.3.0** — see [CHANGELOG.md](../CHANGELOG.md) for what's new.
+
 A tool for composing music from a single audio or video file. You cut pieces of it like tape, arrange them back on top of the original, and add effects and dynamics — all described in a simple text file called a **score**.
 
 Every time you render, you can get a slightly different result. The same score can be performed hundreds of different ways.
@@ -12,7 +14,8 @@ You start with one source file — a recording, a field recording, a video. The 
 
 1. **Mark sections** of that file as named samples ("stab at 2 seconds", "texture at 5 seconds")
 2. **Write a score** describing when to play each sample back, at what speed, with what effects
-3. **Render** — the original plays underneath, your score plays on top of it
+3. **Apply effects** — standard effects (reverb, delay, EQ, pitch) or advanced spectral/granular **Morphogenics** processors inspired by Xenakis, Penderecki, Saariaho, and others
+4. **Render** — the original plays underneath, your score plays on top of it
 
 You can do this through a **visual editor** in your browser (easiest), or by writing the score by hand and running it from the terminal.
 
@@ -28,6 +31,7 @@ You can do this through a **visual editor** in your browser (easiest), or by wri
 | [cli.md](cli.md) | Running renders from the terminal |
 | [pipeline.md](pipeline.md) | How the code works internally |
 | [v2.md](v2.md) | V2 Expressive Engine — musical variation between runs (beta) |
+| [morphogenics.md](morphogenics.md) | Morphogenics plugins — 20 spectral and compositional processors |
 
 ---
 
@@ -78,8 +82,12 @@ ProbabilisticMusic/
 ├── main.py              ← renders a score from the terminal
 ├── requirements.txt     ← Python packages list
 ├── config.yaml          ← engine settings (V1 vs V2)
+├── VERSION              ← current version number
+├── CHANGELOG.md         ← history of changes
 │
 ├── src/                 ← the audio engine (you don't need to touch this)
+│
+├── plugins/             ← Morphogenics processors (auto-discovered)
 │
 ├── editor/
 │   ├── server.py        ← the web editor server

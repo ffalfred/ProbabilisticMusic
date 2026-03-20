@@ -251,6 +251,16 @@ Once stems are loaded:
 
 Effects can be added per-event (in the Event popup) or to a region of the base track (using the FX tool). The same effect types are available in both places.
 
+The FX dropdown is divided into two groups:
+- **Standard effects** — classic audio processing (reverb, delay, pitch, EQ, etc.)
+- **Morphogenics** — 20 advanced spectral and compositional processors inspired by Xenakis, Penderecki, Saariaho, Wagner, Messiaen, Desyatnikov, and Nørgaard
+
+Selecting a Morphogenics effect generates its parameter widgets automatically below the dropdown. See [morphogenics.md](morphogenics.md) for a full description of every plugin.
+
+---
+
+### Standard effects
+
 ### reverb
 Makes a sound feel like it's in a room.
 ```
@@ -304,6 +314,50 @@ q:       how narrow the band is — higher = more focused, lower = wider
 ```
 
 You can add multiple EQ entries to the same event to build a multi-band shape.
+
+### spectral_inversion
+
+Inverts the spectral phase of the audio, creating hollow and flanged timbres.
+No additional parameters.
+
+### overtones
+
+Adds synthetic overtones above the fundamental — harmonics at +12, +19, +24 semitones.
+```
+n_harmonics: 1–8    (how many overtone layers)
+gain_db:     dB     (level of first overtone; subsequent ones are proportionally quieter)
+```
+
+---
+
+### Morphogenics effects
+
+All 20 Morphogenics plugins are available in the same FX dropdown under the **Morphogenics** group.
+Parameters are generated automatically when you select a plugin.
+
+See [morphogenics.md](morphogenics.md) for the full reference — every plugin, parameter, and usage note.
+
+Quick reference: the available plugins are:
+- **Nørgaard: Undertones** — synthetic harmonic undertones below the fundamental
+- **Messiaen: Modes** — pitch quantization to Messiaen's 7 modes of limited transposition
+- **Penderecki: Cluster** — dense chromatic tone clusters
+- **Penderecki: Aleatoric** — random per-segment pitch displacement
+- **Penderecki: Textural** — cluster + aleatoric combined
+- **Penderecki: Glissando** — continuous pitch sweep through each segment
+- **Xenakis: Granular Cloud** — stochastic granular synthesis
+- **Xenakis: Stochastic Cloud** — dense probabilistic sine-burst layers
+- **Xenakis: GENDY** — Weibull-distributed amplitude envelope
+- **Saariaho: Spectral Freeze** — STFT-based spectral sustain (pad from any sound)
+- **Saariaho: Microtonal** — brightness-driven microtonal detuning
+- **Desyatnikov: Minimalism** — polystylistic quote displacement at every Nth onset
+- **Desyatnikov: Lyricism** — non-functional maj7 + dim11 harmonic layers
+- **Desyatnikov: Glissandi** — portamento slides into random onset boundaries
+- **Spectral: Harmonic Stretch** — partial remapping to stretch the harmonic series
+- **Spectral: Inharmonic** — shift partials to inharmonic ratios
+- **Spectral: Smooth** — frequency-axis spectral envelope smoothing
+- **Wagner: Leitmotif** — onset-segmented motif transformation with transposition
+- **Wagner: Tristan** — Tristan chord overlay on onset segments
+- **Wagner: Endless Melody** — crossfades + passing tones at phrase boundaries
 
 ---
 
