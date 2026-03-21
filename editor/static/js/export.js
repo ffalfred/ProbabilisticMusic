@@ -20,7 +20,7 @@ document.getElementById("export-mp4-btn").addEventListener("click", async () => 
     if (data.error) { alert("MP4 error: " + data.error); }
     else { document.getElementById("export-status").textContent = "MP4 → " + data.path; }
   } catch(e) { alert("MP4 failed: " + e); }
-  finally { btn.textContent = "▶ MP4"; btn.disabled = false; }
+  finally { btn.textContent = "\u21D3 Export MP4"; btn.disabled = false; }
 });
 
 // ─── Stemize ─────────────────────────────────────────────────────────────────

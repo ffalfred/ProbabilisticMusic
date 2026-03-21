@@ -49,8 +49,10 @@ def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = No
     mix = normalise(mix)
     os.makedirs('output', exist_ok=True)
 
-    base_track = score['base_track']
-    is_video   = base_track.lower().endswith('.mp4')
+    # When using tracks: list, fall back to the first track path for video detection.
+    tracks_spec = score.get('tracks', [])
+    base_track = score.get('base_track') or (tracks_spec[0]['path'] if tracks_spec else None)
+    is_video   = bool(base_track and base_track.lower().endswith('.mp4'))
     wav_path   = wav_path or 'output/output.wav'
 
     sf.write(wav_path, mix, sr)

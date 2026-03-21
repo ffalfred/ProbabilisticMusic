@@ -362,13 +362,15 @@ async function editEventAt(i) {
   else reverseVal = false;
   const speedsRaw = document.getElementById("p-speeds").value.trim();
   const speedsArr = speedsRaw ? speedsRaw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n)) : [];
+  const newFx = collectFx();
   const updated = {
     sample,
     t: parseFloat(document.getElementById("p-t").value) || ev.t,
     gain_db: collectParam("p-gain"),
     loop:    parseInt(document.getElementById("p-loop").value) || 0,
     reverse: reverseVal,
-    fx:      collectFx()
+    // If user left FX as "none", preserve existing FX rather than wiping them.
+    fx:      newFx.length > 0 ? newFx : (ev.fx || [])
   };
   const fiRaw2 = document.getElementById("p-ev-fi").value.trim();
   const foRaw2 = document.getElementById("p-ev-fo").value.trim();
@@ -549,7 +551,7 @@ async function openBaseFxPopup() {
 const redoStack = [];
 
 function _snapshotState() {
-  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations });
+  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix });
 }
 
 function _applySnapshot(snap) {
@@ -563,6 +565,9 @@ function _applySnapshot(snap) {
   state.phrases  = s.phrases  || [];
   state.noteRel  = s.noteRel  || [];
   state.articulations = s.articulations || [];
+  if (s.duckBase) Object.assign(state.duckBase, s.duckBase);
+  if (s.duckKey)  Object.assign(state.duckKey,  s.duckKey);
+  if (s.autoMix)  Object.assign(state.autoMix,  s.autoMix);
   document.getElementById("base-fx-label").textContent = state.baseFx.length ? state.baseFx.map(f => f.type).join("+") : "none";
 }
 
@@ -733,7 +738,7 @@ function updateScoreInfo() {
       <span style="color:#7ab;min-width:68px;">auto-mix</span>
       mode:<select id="sc-am-mode" style="width:54px;${scInputStyle}" onchange="state.autoMix.mode=this.value;">
         <option value="sqrt"${state.autoMix.mode==="sqrt"?" selected":""}>sqrt</option>
-        <option value="linear"${state.autoMix.mode==="linear"?" selected":""}>linear</option>
+        <option value="inverse"${state.autoMix.mode==="inverse"?" selected":""}>inverse</option>
       </select>
     </div>`;
   }

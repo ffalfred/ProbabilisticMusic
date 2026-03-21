@@ -9,6 +9,25 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 
 ---
 
+## [0.3.1] — Bug Fixes
+
+### Fixed
+- **Mix playback hang** — replaced `<audio>.canplay` event (no error handler, hangs forever on
+  load failure) with Web Audio API `fetch → decodeAudioData → AudioBufferSourceNode`, matching
+  the approach already used for Source playback (`wa-mix.js`)
+- **Edit event wipes FX** — editing an event always reset its FX to none; now preserves existing
+  FX if the user leaves the FX selector at "none" in the edit popup
+- **auto_mix mode naming** — UI sent `mode: "linear"` but backend and docs use `"inverse"`;
+  renamed the UI option to `"inverse"`
+- **Export MP4 button label** — button text was permanently changed to "▶ MP4" after first export;
+  now restored to "⇓ Export MP4"
+- **Undo/redo missing duck/auto_mix state** — `_snapshotState()` omitted `duckBase`, `duckKey`,
+  `autoMix`; these are now included in undo/redo snapshots
+- **CLI renderer crash with `tracks:`** — `renderer.py` did `score['base_track']` unconditionally;
+  now falls back to the first track path when `base_track:` is absent
+
+---
+
 ## [0.3.0] — Morphogenics Plugin System
 
 ### Added
