@@ -1,7 +1,11 @@
+// ─── Export helpers ───────────────────────────────────────────────────────────
+function _defaultName(ext) {
+  if (!state.filePath) return 'score.' + ext;
+  return state.filePath.split('/').pop().replace(/\.[^.]+$/, '') + '.' + ext;
+}
+
 // ─── Export MP4 ───────────────────────────────────────────────────────────────
-document.getElementById("export-mp4-btn").addEventListener("click", async () => {
-  if (!scoreView.path) { alert("Load a score image first."); return; }
-  if (!state.filePath) { alert("Load an audio file first."); return; }
+async function _doExportMp4(outputPath) {
   const btn = document.getElementById("export-mp4-btn");
   btn.textContent = "⏳ rendering…"; btn.disabled = true;
   try {
@@ -9,40 +13,126 @@ document.getElementById("export-mp4-btn").addEventListener("click", async () => 
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        audioPath: state.filePath,
-        imagePath: scoreView.path,
-        scoreStart: scoreView.start,
-        scoreEnd: scoreView.end,
-        name: document.getElementById("score-name").value.trim() || "score_video",
+        audioPath:   state.filePath,
+        imagePath:   scoreView.path,
+        scoreStart:  scoreView.start,
+        scoreEnd:    scoreView.end,
+        output_path: outputPath,
       })
     });
     const data = await res.json();
     if (data.error) { alert("MP4 error: " + data.error); }
     else { document.getElementById("export-status").textContent = "MP4 → " + data.path; }
   } catch(e) { alert("MP4 failed: " + e); }
-  finally { btn.textContent = "\u21D3 Export MP4"; btn.disabled = false; }
+  finally { btn.textContent = "\u21D3 MP4"; btn.disabled = false; }
+}
+
+document.getElementById("export-mp4-path").addEventListener("click", () => {
+  if (!scoreView.path) { alert("Load a score image first."); return; }
+  if (!state.filePath) { alert("Load an audio file first."); return; }
+  const pathEl = document.getElementById("export-mp4-path");
+  openSaveBrowser(p => { pathEl.value = p; _doExportMp4(p); },
+    pathEl.value || _defaultName('mp4'));
+});
+
+document.getElementById("export-mp4-btn").addEventListener("click", () => {
+  if (!scoreView.path) { alert("Load a score image first."); return; }
+  if (!state.filePath) { alert("Load an audio file first."); return; }
+  const pathEl = document.getElementById("export-mp4-path");
+  const path = pathEl.value.trim();
+  if (!path) {
+    openSaveBrowser(p => { pathEl.value = p; _doExportMp4(p); }, _defaultName('mp4'));
+    return;
+  }
+  _doExportMp4(path);
 });
 
 // ─── Stemize ─────────────────────────────────────────────────────────────────
+let _sepBands = [
+  { name: "bass",  low: 20,   high: 250  },
+  { name: "mids",  low: 250,  high: 4000 },
+  { name: "highs", low: 4000, high: 20000 },
+];
+
+function _iStyle() {
+  return 'style="width:60px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-family:inherit;font-size:11px;padding:2px 4px;"';
+}
+function _nStyle() {
+  return 'style="width:72px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-family:inherit;font-size:11px;padding:2px 4px;"';
+}
+
+function _renderBands() {
+  const list = document.getElementById("sep-bands-list");
+  if (!list) return;
+  list.innerHTML = _sepBands.map((b, i) => `
+    <div class="sep-band-row" style="display:flex;align-items:center;gap:5px;margin-bottom:4px;">
+      <input class="sep-band-name" type="text" value="${b.name}" placeholder="name" ${_nStyle()} />
+      <input class="sep-band-low"  type="number" value="${b.low}"  min="0" max="22050" step="1" title="Low Hz"  ${_iStyle()} />
+      <span style="color:#444;font-size:10px;">–</span>
+      <input class="sep-band-high" type="number" value="${b.high}" min="0" max="22050" step="1" title="High Hz" ${_iStyle()} />
+      <span style="color:#444;font-size:10px;">Hz</span>
+      <button onclick="_removeBand(${i})" style="padding:1px 6px;font-size:10px;color:#844;">✕</button>
+    </div>`).join("") +
+    `<button onclick="_addBand()" style="font-size:10px;padding:2px 8px;margin-top:2px;">+ Band</button>`;
+}
+
+function _readBandsFromDOM() {
+  return Array.from(document.querySelectorAll("#sep-bands-list .sep-band-row")).map(r => ({
+    name: r.querySelector(".sep-band-name").value.trim() || "band",
+    low:  parseFloat(r.querySelector(".sep-band-low").value)  || 0,
+    high: parseFloat(r.querySelector(".sep-band-high").value) || 20000,
+  }));
+}
+
+function _addBand() {
+  _sepBands = _readBandsFromDOM();
+  const last = _sepBands[_sepBands.length - 1];
+  _sepBands.push({ name: "band " + (_sepBands.length + 1), low: last ? last.high : 0, high: 20000 });
+  _renderBands();
+}
+
+function _removeBand(i) {
+  _sepBands = _readBandsFromDOM();
+  if (_sepBands.length > 1) { _sepBands.splice(i, 1); _renderBands(); }
+}
+
+function _onSepMethodChange() {
+  const method = document.getElementById("p-sep-method")?.value;
+  const nmfEl = document.getElementById("sep-nmf-opts");
+  const fbEl  = document.getElementById("sep-freqband-opts");
+  if (nmfEl) nmfEl.style.display = (method === "nmf" || method === "both") ? "" : "none";
+  if (fbEl)  fbEl.style.display  = method === "freqband" ? "" : "none";
+}
+
 document.getElementById("separate-btn").addEventListener("click", async () => {
   if (!state.tracks.length || !state.tracks[0].path) { alert("Load an audio file first."); return; }
   const durStr = state.duration ? state.duration.toFixed(2) : "";
-  const html = row("method", `<select id="p-sep-method">
+  const html = row("method", `<select id="p-sep-method" onchange="_onSepMethodChange()">
       <option value="hpss">Harmonic / Percussive (HPSS)</option>
       <option value="nmf">NMF components</option>
       <option value="both">Both (HPSS + NMF)</option>
+      <option value="freqband">Frequency bands</option>
     </select>`)
+    + `<div id="sep-nmf-opts">`
     + row("NMF components", `<input id="p-sep-n" type="number" value="3" min="2" max="8" step="1" style="width:60px;">`)
     + row("NMF reconstruction", `<select id="p-sep-nmf-mode">
       <option value="softmask">Soft mask (stems sum to original)</option>
       <option value="naive">Naive (raw components, quieter)</option>
     </select>`)
+    + `</div>`
+    + `<div id="sep-freqband-opts" style="display:none;">`
+    + `<div class="popup-row"><label>bands</label><div id="sep-bands-list"></div></div>`
+    + `</div>`
     + row("time range (s)", `<input id="p-sep-from" type="number" value="0" min="0" step="0.1" style="width:70px;" placeholder="start">
       &nbsp;–&nbsp;
       <input id="p-sep-to" type="number" value="${durStr}" min="0" step="0.1" style="width:70px;" placeholder="end (blank=full)">
       <span style="font-size:10px;color:#777;margin-left:6px;">leave blank for full file</span>`);
-  const ok = await showPopup("&#9881; Separate audio", html);
+
+  const popupPromise = showPopup("&#9881; Separate audio", html);
+  _renderBands();   // populate band list immediately after innerHTML is set
+  const ok = await popupPromise;
   if (!ok) return;
+
   const method   = document.getElementById("p-sep-method").value;
   const n        = parseInt(document.getElementById("p-sep-n").value) || 3;
   const nmf_mode = document.getElementById("p-sep-nmf-mode").value;
@@ -50,6 +140,7 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
   const toVal    = document.getElementById("p-sep-to").value.trim();
   const from_t   = fromVal !== "" ? parseFloat(fromVal) : null;
   const to_t     = toVal   !== "" ? parseFloat(toVal)   : null;
+  const bands    = method === "freqband" ? _readBandsFromDOM() : [];
   const btn    = document.getElementById("separate-btn");
   const status = document.getElementById("export-status");
   btn.textContent = "⏳…"; btn.disabled = true;
@@ -57,7 +148,7 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
   try {
     const r = await fetch("/separate", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.tracks[0].path, method, n_components: n, nmf_mode,
+      body: JSON.stringify({ path: state.tracks[0].path, method, n_components: n, nmf_mode, bands,
                              ...(from_t !== null ? { from_t } : {}),
                              ...(to_t   !== null ? { to_t   } : {}) })
     });
@@ -118,8 +209,7 @@ document.getElementById("quantize-btn").addEventListener("click", async () => {
 });
 
 // ─── Export YAML ──────────────────────────────────────────────────────────────
-document.getElementById("export-btn").addEventListener("click", async () => {
-  const name = document.getElementById("score-name").value.trim() || "untitled";
+async function _doExportYaml(outputPath) {
   const samplesClean = {};
   for (const [k, v] of Object.entries(state.samples)) {
     samplesClean[k] = { from: v.from, to: v.to,
@@ -127,9 +217,13 @@ document.getElementById("export-btn").addEventListener("click", async () => {
       ...(v.track ? { track: v.track } : {}) };
   }
   const score = {
-    _name: name,
+    output_path: outputPath,
     samples: samplesClean,
-    dynamics: state.dynamics,
+    dynamics: state.dynamics.map(d => {
+      // Export using 'marking' field (Kalman engine format)
+      const { mark, ...rest } = d;
+      return { ...rest, marking: mark };
+    }),
     tempo: state.tempo,
     base_fx: state.baseFx,
     fx_ranges: state.fxRanges,
@@ -164,12 +258,29 @@ document.getElementById("export-btn").addEventListener("click", async () => {
     const res = await fetch("/export", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(Object.assign(score, { _config: state.v2config }))
+      body: JSON.stringify(score)
     });
     const data = await res.json();
     statusEl.textContent = "saved → " + data.path;
+    state.lastScorePath = data.path;
     setTimeout(() => { statusEl.textContent = ""; }, 4000);
   } catch(e) { statusEl.textContent = "export failed: " + e; }
+}
+
+document.getElementById("export-yaml-path").addEventListener("click", () => {
+  const pathEl = document.getElementById("export-yaml-path");
+  openSaveBrowser(p => { pathEl.value = p; _doExportYaml(p); },
+    pathEl.value || _defaultName('yaml'));
+});
+
+document.getElementById("export-btn").addEventListener("click", () => {
+  const pathEl = document.getElementById("export-yaml-path");
+  const path = pathEl.value.trim();
+  if (!path) {
+    openSaveBrowser(p => { pathEl.value = p; _doExportYaml(p); }, _defaultName('yaml'));
+    return;
+  }
+  _doExportYaml(path);
 });
 
 // ─── Import YAML ─────────────────────────────────────────────────────────────
@@ -189,7 +300,14 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     const sc = data.score;
 
     if (sc.samples)      state.samples       = sc.samples;
-    if (sc.dynamics)     state.dynamics      = sc.dynamics;
+    if (sc.dynamics)     state.dynamics      = sc.dynamics.map(d => {
+      // Normalize YAML field 'marking' → internal field 'mark'
+      if (d.marking !== undefined && d.mark === undefined) {
+        const { marking, ...rest } = d;
+        return { ...rest, mark: marking };
+      }
+      return d;
+    });
     if (sc.tempo)        state.tempo         = sc.tempo;
     if (sc.events)       state.events        = sc.events;
     if (sc.phrases)      state.phrases       = (sc.phrases || []).map(p => Object.assign({ gain_db: 0, fade_in: 0, fade_out: 0, tempo_factor: 1.0 }, p));
@@ -200,14 +318,13 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     if (sc.duck_base)    Object.assign(state.duckBase, sc.duck_base);
     if (sc.duck_key)     Object.assign(state.duckKey,  sc.duck_key);
     if (sc.auto_mix)     Object.assign(state.autoMix,  sc.auto_mix);
+    if (sc.golems)       interpState.golems = sc.golems;
 
     for (const k of Object.keys(state.samples)) {
       if (!state.samples[k].color) state.samples[k].color = nextColor();
     }
 
-    const nameEl = document.getElementById("score-name");
-    if (sc._name) nameEl.value = sc._name;
-    else { const bn = path.split("/").pop().replace(/\.yaml$/i, ""); if (bn) nameEl.value = bn; }
+    state.lastScorePath = path;
 
     if (sc.base_track && !state.filePath) {
       document.getElementById("path-input").value = sc.base_track;

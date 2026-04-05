@@ -14,49 +14,73 @@ const state = {
   noteRel: [],        // [{type:"glissando"|"arpeggiate", from, to, label}]
   articulations: [],  // [{type:"staccato"|"legato"|"fermata"|"accent", t?, from?, to?, label?}]
   tracks:  [],        // [{name, path, gain_db, muted, waveform}] — track 0 = original file
+  lastScorePath: "",  // last exported or imported YAML score path
   duckBase: { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 },
   duckKey:  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 },
   autoMix:  { enabled: false, mode: "sqrt" },
   history: [],        // for undo
-  v2config: {
-    engine: 'v1',
-    markov_mode: 'joint',
-    markov_order: 2,
-    covariance: 'diagonal',
-    phrase_boundary: 'reset',
-    history_decay: 0.7,
-    seed: null,
+};
+
+// ─── 12D state dimension metadata ────────────────────────────────────────────
+const DIM_NAMES = [
+  'gain_db','brightness','timing_offset_ms','attack_shape','release_shape',
+  'reverb_wet','filter_cutoff','filter_resonance','stereo_width',
+  'overdrive_drive','pitch_dev_cents','dynamic_center',
+];
+const DIM_LABELS = [
+  'Gain dB','Brightness','Timing ms','Attack','Release',
+  'Reverb','Filter Cutoff','Filter Q','Stereo Width',
+  'Overdrive','Pitch Cents','Dyn Center',
+];
+const DIM_RANGES_DEFAULT = [
+  [-40,6],[0,1],[-50,50],[0,1],[0,1],
+  [0,1],[20,20000],[0,1],[0,1],
+  [0,1],[-50,50],[-30,0],
+];
+const DIM_DEFAULTS = {
+  gain_db:0, brightness:0.5, timing_offset_ms:0, attack_shape:0.5,
+  release_shape:0.5, reverb_wet:0.3, filter_cutoff:5000, filter_resonance:0,
+  stereo_width:0.5, overdrive_drive:0, pitch_dev_cents:0, dynamic_center:-12,
+};
+
+// Character cold-start biases (mirror of src/character.py BUILTIN.cold_start_bias)
+// Used by the golem editor's "Starting values" section to show per-character defaults.
+const CHAR_COLD_START_BIAS = {
+  dramatic: {
+    gain_db:3.0, brightness:0.25, timing_offset_ms:0.0, attack_shape:0.35,
+    release_shape:0.3, reverb_wet:0.65, filter_cutoff:3000.0, filter_resonance:0.2,
+    stereo_width:0.7, overdrive_drive:0.15, pitch_dev_cents:0.0, dynamic_center:-6.0,
+  },
+  lyrical: {
+    gain_db:0.0, brightness:0.75, timing_offset_ms:0.0, attack_shape:0.75,
+    release_shape:0.7, reverb_wet:0.40, filter_cutoff:8000.0, filter_resonance:0.0,
+    stereo_width:0.5, overdrive_drive:0.0, pitch_dev_cents:0.0, dynamic_center:-12.0,
+  },
+  sparse: {
+    gain_db:-4.0, brightness:0.50, timing_offset_ms:0.0, attack_shape:0.10,
+    release_shape:0.4, reverb_wet:0.05, filter_cutoff:5000.0, filter_resonance:0.0,
+    stereo_width:0.3, overdrive_drive:0.0, pitch_dev_cents:0.0, dynamic_center:-18.0,
+  },
+  turbulent: {
+    gain_db:4.0, brightness:0.55, timing_offset_ms:0.0, attack_shape:0.20,
+    release_shape:0.2, reverb_wet:0.55, filter_cutoff:2000.0, filter_resonance:0.4,
+    stereo_width:0.8, overdrive_drive:0.3, pitch_dev_cents:0.0, dynamic_center:-4.0,
   },
 };
 
-// ─── Engine selector wiring ───────────────────────────────────────────────────
-function _syncV2Config() {
-  const sel   = document.getElementById('engine-select');
-  const panel = document.getElementById('v2-panel');
-  const mode  = document.getElementById('v2-mode');
-  const seed  = document.getElementById('v2-seed');
-  const order = document.getElementById('v2-order');
-  if (!sel) return;
-  const isV2 = sel.value === 'v2';
-  panel.style.display = isV2 ? 'inline-flex' : 'none';
-  state.v2config.engine       = sel.value;
-  state.v2config.markov_mode  = mode  ? mode.value  : 'joint';
-  state.v2config.markov_order = order ? parseInt(order.value) || 2 : 2;
-  const rawSeed = seed ? seed.value.trim() : '';
-  state.v2config.seed = rawSeed === '' ? null : parseInt(rawSeed);
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const sel   = document.getElementById('engine-select');
-  const mode  = document.getElementById('v2-mode');
-  const seed  = document.getElementById('v2-seed');
-  const order = document.getElementById('v2-order');
-  if (sel)   sel.addEventListener('change', _syncV2Config);
-  if (mode)  mode.addEventListener('change', _syncV2Config);
-  if (seed)  seed.addEventListener('input',  _syncV2Config);
-  if (order) order.addEventListener('input',  _syncV2Config);
-  _syncV2Config();
-});
+// ─── Interpreter state (V2 engine + Golems) ──────────────────────────────────
+const interpState = {
+  scorePath: "",        // path to the score YAML being interpreted
+  scoreDuration: 0,     // cached duration for timeline drawing
+  scoreDynamics: [],    // dynamics from the loaded score YAML (for trace overlay)
+  golems: [],           // [{from, to, character, type, state, dimension_config}]
+  v2config: {
+    engine: 'v2',
+    seed: null,
+    v2: { lambda: 0.7, A1: 0.7, A2: 0.2, eta: 0.3, xi: 0.05, window_size: 3, trace_step: 0.5,
+          base_dims: ['gain_db', 'dynamic_center'] },
+  },
+};
 
 const DYNAMIC_COLORS = {
   ppp: "#2244aa", pp: "#3355bb", p: "#5577cc",

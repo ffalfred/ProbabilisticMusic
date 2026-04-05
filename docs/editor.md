@@ -43,9 +43,25 @@ Leave the terminal open while you use the editor. To stop the editor, press `Ctr
 
 ---
 
-## Loading a file
+## Workspaces
 
-At the top of the editor, there is a text bar. Type or paste the **full path** to your audio or video file and press **Load** (or Enter).
+The editor is divided into three workspaces, selectable from the tab bar at the very top:
+
+| Workspace | Purpose |
+|-----------|---------|
+| **Composer** | Draw samples, events, dynamics, tempo, and effects on the waveform. Export clean score YAML. |
+| **Interpreter** | Configure how the score is performed — Golems (piece characters), V2 Kalman parameters, seed. Preview and save interpretation configs separately from the score. |
+| **Conductor** | Reserved for future features (batch rendering, multi-score sequencing). |
+
+The Composer and Interpreter are separate by design: one score can be performed many different ways by loading different interpretation configs in the Interpreter — without changing the composition itself.
+
+---
+
+## Composer workspace
+
+### Loading a file
+
+At the top of the Composer, there is a text bar. Type or paste the **full path** to your audio or video file and press **Load** (or Enter).
 
 Examples:
 ```
@@ -61,46 +77,39 @@ After loading:
 - **Audio files**: the waveform appears as a scrollable graph of the sound.
 - **Video files**: the waveform appears, and the first frame of the video is shown below it.
 
----
-
-## Layout
+### Layout
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  [ full path to your file ]                             [ Load ]      │  ← header bar
-├────────────────────────────────────┬─────────────────────────────────┤
-│  waveform                          │  score panel                     │
-│  (draw samples, events, etc.)      │  (live list of everything        │
-│                                    │   you've added)                  │
-│  ─ Tracks panel (collapsible) ─    │                                  │
-│  stem 1 ░░░░░░░░░░░░░░             │                                  │
-│  stem 2 ░░░░░░░░░░░░░░             │                                  │
-│                                    │                                  │
-│  video frame / image               │                                  │
-│  (score overlay, metadata image)   │                                  │
-│                                    │                                  │
-├────────────────────────────────────┴─────────────────────────────────┤
-│  tool:  [ Sample ] [ Event ] [ Dynamics ] [ Tempo ] [ FX ]           │
-│         [ Slur ] [ Glissando ] [ Arpeggio ]                          │  ← tools row
-│         [ Staccato ] [ Legato ] [ Fermata ] [ Accent ]  ⚙ Stemize   │
+┌───────────────────────────────────────────────────────────────────────┐
+│  [ Composer ]  [ Interpreter ]  [ Conductor ]                          │  ← workspace tabs
 ├──────────────────────────────────────────────────────────────────────┤
-│  view:  ⊕ Zoom  ↑ Pointer  |  ⌟ Quantize  |  ← Undo  → Redo        │  ← controls bar
+│  [ full path to your file ]                              [ Load ]      │  ← header bar
+├──────────────┬───────────────────────────────┬───────────────────────┤
+│ tools        │  waveform                      │  score panel          │
+│              │  (draw samples, events, etc.)  │  (live summary)       │
+│ [ Sample ]   │                                │                       │
+│ [▶ Event ]   │  ─ Tracks panel (collapsible)─ │                       │
+│ [~ Dynamics] │  stem 1 ░░░░░░░░░░░            │                       │
+│ [⏱ Tempo ]   │  stem 2 ░░░░░░░░░░░            │                       │
+│ [◆ FX    ]   │                                │                       │
+│              │  video frame / image           │                       │
+│ [⚙ Stemize]  │  (score overlay, metadata img) │                       │
+├──────────────┴───────────────────────────────┴───────────────────────┤
+│  view:  ⊕ Zoom  ↑ Pointer  |  ⌟ Quantize  |  ← Undo  → Redo         │  ← controls bar
 ├──────────────────────────────────────────────────────────────────────┤
-│  name: [untitled]  [Base FX]  engine: [V1▾]  [↓ Export YAML]        │
-│        [⇓ Export MP4]  [path/to/score.yaml]  [↑ Import YAML]  |     │  ← export bar
-│        [▶ Source]  [▶ Mix]                                           │
+│  name: [untitled]  [Base FX]  |  [↓ Export YAML]  [⇓ Export MP4]    │
+│        [path/to/score.yaml]  [↑ Import YAML]  |                      │  ← export bar
+│        [▶ Source]  [▶ Mix]   speed: [1.0]                            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## Playing back
+### Playing back
 
 | Button | What it does |
 |--------|-------------|
-| **▶ Source** | Plays the original file. If you have loaded stems (see [Stemize](#stemize-audio-source-separation)), plays the mix of all unmuted stems instead. |
+| **▶ Source** | Plays the original file. If you have loaded stems (see [Stemize](#stemize--audio-source-separation)), plays the mix of all unmuted stems instead. |
 | **Space** | Same as ▶ Source |
-| **▶ Mix** | Renders your full composition using the score you've drawn, and plays it. Takes a second or two. |
+| **▶ Mix** | Renders your full composition using the score you've drawn, and plays it. Takes a second or two. Always uses V1 engine — expressive interpretation is done in the Interpreter workspace. |
 
 Click on the waveform or video frame to jump to that point in time.
 
@@ -155,6 +164,8 @@ Controls the overall loudness shape of the piece. Two gestures:
 - **Drag** → draw a **crescendo or decrescendo** (gradual volume change) across that time span.
 
 Dynamic marks and ranges work together: marks define levels, ranges smoothly interpolate between surrounding levels.
+
+> Dynamics marks are also read by the V2 Kalman engine in the Interpreter workspace to derive expressive variation — the more markings you add, the richer the interpretation.
 
 ### ⏱ Tempo
 
@@ -381,26 +392,6 @@ This means the same score can sound different every time you press **▶ Mix**. 
 
 ---
 
-## Engine selector (V1 / V2 β)
-
-The **Engine** dropdown in the export bar selects the rendering mode:
-
-| Option | What it does |
-|--------|-------------|
-| **V1** | Standard render. Same score → same result (unless you use probabilistic parameters). |
-| **V2 β** | Expressive Interpretation Engine. Reads the `dynamics:` marks and adds musical variation — different phrasing, timing, and loudness each run. |
-
-When **V2 β** is selected, extra controls appear:
-- **mode**: `joint` (the engine remembers its own previous choices — more organic) or `symbolic` (just reacts to the score marks — more neutral)
-- **seed**: type a number to get the exact same render every time; leave blank for random
-- **order**: how many past events to consider (default 2 — don't change this unless you know what you're doing)
-
-V2 needs at least one `dynamics:` marking in your score, otherwise it uses a neutral default.
-
-See [v2.md](v2.md) for the full V2 documentation.
-
----
-
 ## Right-click to delete
 
 Right-click on any annotation on either canvas — a sample boundary, event marker, dynamic mark, tempo zone, or FX zone — to delete the nearest one.
@@ -414,7 +405,7 @@ Right-click on any annotation on either canvas — a sample boundary, event mark
 | **← Undo** | — | Removes the last action |
 | **→ Redo** | — | Re-applies the last undone action |
 
-Undo/redo history is stored in memory and lost when you refresh the page or load a new file.
+Undo/redo history is stored in memory and lost when you refresh the page or load a new file. Note: Golem edits in the Interpreter workspace do not participate in undo/redo — delete and re-add as needed.
 
 ---
 
@@ -426,6 +417,8 @@ When you're happy with your composition:
 2. Click **↓ Export YAML**
 
 The score is saved as `scores/my_composition.yaml` inside the ProbabilisticMusic folder. The full path is shown in the status bar.
+
+The exported score is a **clean composition file** — it does not include engine config or Golems. Those live in the Interpreter workspace. This keeps scores reusable with any interpretation.
 
 This file can then be used with the [command-line renderer](cli.md) to render without opening the editor.
 
@@ -448,7 +441,7 @@ If you have a `.yaml` score file from a previous session:
 1. Paste the full path to the file into the **import path** field
 2. Click **↑ Import YAML**
 
-All samples, events, dynamics, tempo, and FX zones will be restored in the editor.
+All samples, events, dynamics, tempo, and FX zones will be restored in the editor. If the YAML contains a `golems:` key (from an older export), those Golems are automatically loaded into the Interpreter workspace.
 
 ---
 
@@ -470,3 +463,109 @@ It updates automatically as you draw.
 | Click on waveform | Seek to that time |
 | Drag on waveform (Pointer tool) | Pan the waveform view |
 | Scroll wheel | Zoom in/out on the waveform |
+
+---
+
+## Interpreter workspace
+
+The Interpreter is where you configure **how** the score is performed. It is separate from the Composer so that the same composition can be performed with different expressive characters without changing a note.
+
+### Layout
+
+```
+┌────────────────────────┬──────────────────────────────────────────────┐
+│  score                 │                                              │
+│  [path/to/score.yaml]  │  golem timeline canvas                       │
+│  [ Load ]              │  ┌──────────────────────────────────────────┐│
+│  status: loaded        │  │ ████ lyrical ████  ████ dramatic ████    ││
+├────────────────────────┤  └──────────────────────────────────────────┘│
+│  v2 parameters         │                                              │
+│  engine: [V2 Golems▾]  │  Golem list                                  │
+│  λ:  [0.7]             │  0.0s – 30.0s  [lyrical  ▾]  [✕]           │
+│  seed: [rand]          │  30.0s – 60.0s [dramatic ▾]  [✕]           │
+│  ▶ advanced            │  from:[   ] – to:[   ] [lyrical▾]  [+ Add]  │
+├────────────────────────┤  dramatic (volatile) · lyrical (smooth) …   │
+│  save / load           ├──────────────────────────────────────────────┤
+│  name: [untitled_interp│  audio: [path/to/audio.wav]                  │
+│  [↓ Save] [↑ Load]     │  [▶ Preview] [▶ Source]                     │
+│  [path/to/interp.yaml] │                                              │
+└────────────────────────┴──────────────────────────────────────────────┘
+```
+
+### Typical workflow
+
+1. In the Composer, draw your score and click **↓ Export YAML**
+2. Switch to the **Interpreter** tab
+3. Enter the path to your exported `.yaml` score in the **score** field and click **Load**
+4. Set the **audio** path to your source audio file
+5. Add Golem ranges on the **canvas timeline** (drag to create) or using the add row below it
+6. Adjust **V2 parameters** in the sidebar as needed
+7. Click **▶ Preview** to hear the interpretation
+8. Click **↓ Save** to save the interpretation as `interpretations/{name}.yaml`
+
+You can save multiple named interpretations of the same score and load them back at any time.
+
+### Golems — piece characters
+
+A **Golem** assigns a musical personality to a time range of the piece. Each Golem has:
+- **from / to** — start and end time in seconds (matching the score's timeline)
+- **character** — one of four built-in personalities:
+
+| Character | Behaviour |
+|-----------|-----------|
+| **dramatic** | Volatile — high contrast, sharp dynamics, wide expression |
+| **lyrical** | Smooth — gradual changes, flowing phrasing |
+| **sparse** | Literal — stays close to the written score, minimal added expression |
+| **turbulent** | Unpredictable — irregular phrasing, sudden shifts |
+
+**Adding Golems:**
+- **Drag** on the timeline canvas to create a new Golem range, then set its character from the dropdown
+- Or use the add row below the list: enter from/to times, choose a character, click **+ Add**
+
+**Editing Golems:**
+- Change the from/to values or character directly in the list rows — updates the canvas immediately
+- Click **✕** to delete a Golem
+
+Overlapping Golems blend linearly by time weight — the canvas shows them as coloured blocks.
+
+### V2 parameters
+
+| Parameter | What it does |
+|-----------|-------------|
+| **engine** | `V2 Golems` uses the Kalman expressive engine. `V1` renders without interpretation (same as Composer ▶ Mix). |
+| **λ (lambda)** | How well the performer "knows" the piece. `0.9` = knows it well (smooth, confident). `0.3` = sight-reading (more variable, reactive). Default: `0.7`. |
+| **seed** | Integer seed for reproducible renders. Leave blank for a different result each time. |
+
+**Advanced parameters** (click "▶ advanced" to expand):
+
+| Parameter | What it does |
+|-----------|-------------|
+| **A1, A2** | AR(2) momentum coefficients — how strongly the previous two states influence the current one. `A1 + A2` must be < 1 for stability. |
+| **η (eta)** | Volatility mixing weight — how much dramatic events amplify process noise. |
+| **ξ (xi)** | Future pull scaling — how much upcoming dynamic marks shape current expression. |
+| **window** | How many past dynamic marks the engine considers when updating its state. |
+
+### Save / Load interpretation
+
+An interpretation file stores the Golem ranges, V2 parameters, and the associated score path together. It is saved separately from the score YAML, in `interpretations/`.
+
+- Click **↓ Save** to write `interpretations/{name}.yaml`
+- Enter a path in the load field and click **↑ Load** to restore a saved interpretation
+
+This means one score can have many named interpretations: `lyrical_interp.yaml`, `dramatic_interp.yaml`, etc.
+
+### Backward compatibility
+
+Scores exported by older versions of the editor may contain a `golems:` key inside the YAML. When you **Import YAML** in the Composer workspace, any embedded Golems are automatically transferred to the Interpreter — the Composer itself no longer owns them.
+
+See [v2.md](v2.md) for the full V2 Kalman engine documentation.
+
+---
+
+## Conductor workspace
+
+The Conductor workspace is currently a placeholder. Future features planned:
+- Batch rendering across seed sweeps
+- Multi-score sequencing and splicing
+- Automated A/B interpretation comparison
+- Export report: per-seed expressive parameter trajectories

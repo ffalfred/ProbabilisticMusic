@@ -106,6 +106,22 @@ function fxParamsHTML(fxType) {
     html += paramWidget("p-fl-depth", "depth_ms", 2,   1,   0,   "0–10 ms");
     html += paramWidget("p-fl-speed", "speed_hz", 0.5, 0.1, 0.1, "0.1–10 Hz");
   }
+  if (fxType === "filter") {
+    html += row("filter type", `<select id="p-flt-type" style="flex:1;background:#222;border:1px solid #333;color:#ccc;font-family:inherit;font-size:12px;padding:3px 6px;">
+        <option value="lp">lowpass</option><option value="hp">highpass</option>
+        <option value="bp">bandpass</option></select>`);
+    html += paramWidget("p-flt-cutoff",    "cutoff",    1000, 100, 20, "20–20000 Hz");
+    html += paramWidget("p-flt-resonance", "resonance", 0.0,  0.05, 0, "0–1");
+  }
+  if (fxType === "chorus") {
+    html += paramWidget("p-ch-rate",  "rate",  1.5, 0.1, 0.1, "0.1–10 Hz");
+    html += paramWidget("p-ch-depth", "depth", 0.5, 0.05, 0,  "0–1");
+    html += paramWidget("p-ch-wet",   "wet",   0.5, 0.05, 0,  "0–1");
+  }
+  if (fxType === "tremolo") {
+    html += paramWidget("p-tr-rate",  "rate",  5.0, 0.5, 0.1, "0.1–30 Hz");
+    html += paramWidget("p-tr-depth", "depth", 0.5, 0.05, 0,  "0–1");
+  }
   if (fxType === "pitch") {
     html += paramWidget("p-pitch-cents", "cents", 0, 100, null, "±2400 (100=semitone)");
   }
@@ -177,6 +193,20 @@ function collectFx() {
   if (fxType === "flanger") {
     result.push({ type: "flanger", delay_ms: collectParam("p-fl-delay"), depth_ms: collectParam("p-fl-depth"), speed_hz: collectParam("p-fl-speed") });
   }
+  if (fxType === "filter") {
+    result.push({ type: "filter",
+      filter_type: document.getElementById("p-flt-type").value,
+      cutoff: collectParam("p-flt-cutoff"),
+      resonance: collectParam("p-flt-resonance") });
+  }
+  if (fxType === "chorus") {
+    result.push({ type: "chorus", rate: collectParam("p-ch-rate"),
+      depth: collectParam("p-ch-depth"), wet: collectParam("p-ch-wet") });
+  }
+  if (fxType === "tremolo") {
+    result.push({ type: "tremolo", rate: collectParam("p-tr-rate"),
+      depth: collectParam("p-tr-depth") });
+  }
   if (fxType === "pitch") {
     result.push({ type: "pitch", cents: collectParam("p-pitch-cents") });
   }
@@ -220,20 +250,30 @@ function collectFx() {
 }
 
 // ─── FX type select HTML (reused in several popups) ───────────────────────────
-function fxSelectHTML(selectedVal) {
-  const opts = [
-    "none","reverb","delay","reverb+delay","overdrive","flanger",
-    "pitch","compress","eq","spectral_inversion","overtones"
+// scope: 'all' | 'classic' | 'morpho'
+function fxSelectHTML(selectedVal, scope) {
+  scope = scope || 'all';
+  const classicOpts = [
+    "reverb","delay","reverb+delay","overdrive","flanger",
+    "filter","chorus","tremolo","pitch","compress","eq",
+    "spectral_inversion","overtones"
   ];
-  const baseGroup = opts.map(o =>
+  const noneOpt = `<option value="none"${"none"===selectedVal?" selected":""}>none</option>`;
+  const classicOptsHtml = classicOpts.map(o =>
     `<option value="${o}"${o===selectedVal?" selected":""}>${o}</option>`).join("");
-  let morphoGroup = "";
-  if (_morphoPlugins.length > 0) {
-    const morphoOpts = _morphoPlugins.map(p =>
-      `<option value="${p.type}"${p.type===selectedVal?" selected":""}>${p.name}</option>`).join("");
-    morphoGroup = `<optgroup label="Morphogenics">${morphoOpts}</optgroup>`;
+  const morphoOptsHtml = _morphoPlugins.map(p =>
+    `<option value="${p.type}"${p.type===selectedVal?" selected":""}>${p.name}</option>`).join("");
+
+  let body = noneOpt;
+  if (scope === 'classic') {
+    body += classicOptsHtml;
+  } else if (scope === 'morpho') {
+    body += morphoOptsHtml || `<option disabled>No morphogenics plugins loaded</option>`;
+  } else {
+    body += `<optgroup label="Classic FX">${classicOptsHtml}</optgroup>`;
+    if (morphoOptsHtml) body += `<optgroup label="Morphogenics">${morphoOptsHtml}</optgroup>`;
   }
-  return `<select id="p-fx" onchange="updateFxParams()">${baseGroup}${morphoGroup}</select>`;
+  return `<select id="p-fx" onchange="updateFxParams()">${body}</select>`;
 }
 
 // ─── Sample popup ─────────────────────────────────────────────────────────────
@@ -387,6 +427,84 @@ async function editEventAt(i) {
   draw();
 }
 
+// ─── Edit sample ─────────────────────────────────────────────────────────────
+async function editSampleAt(name) {
+  const s = state.samples[name];
+  const fiVal = Math.round((s.fade_in  ?? 0.05) * 100);
+  const foVal = Math.round((s.fade_out ?? 0.05) * 100);
+  const html = row("name", `<input id="p-name" type="text" value="${name}" />`)
+    + row("fade in",  `<input id="p-fi" type="number" value="${fiVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
+    + row("fade out", `<input id="p-fo" type="number" value="${foVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${s.from.toFixed(3)}s → ${s.to.toFixed(3)}s (drag new region to redefine)</div>`;
+  const res = await showPopup("✎ Edit Sample", html);
+  if (!res) return;
+  const newName = document.getElementById("p-name").value.trim() || name;
+  const fi = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fi").value) || 5) / 100));
+  const fo = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fo").value) || 5) / 100));
+  pushHistory();
+  const updated = { ...s, fade_in: fi, fade_out: fo };
+  if (newName !== name) {
+    delete state.samples[name];
+    state.events.forEach(ev => { if (ev.sample === name) ev.sample = newName; });
+  }
+  state.samples[newName] = updated;
+  updateScoreInfo(); draw();
+}
+
+// ─── Edit tempo range ─────────────────────────────────────────────────────────
+async function editTempoAt(i) {
+  const tp = state.tempo[i];
+  const html = row("direction", `<select id="p-tdir">
+      <option value="accelerando"${tp.mark==="accelerando"?" selected":""}>accelerando</option>
+      <option value="ritardando"${tp.mark==="ritardando"?" selected":""}>ritardando</option>
+    </select>`)
+    + paramWidget("p-tfactor", "end factor", tp.factor ?? 2.0, "0.1", "0.01")
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${tp.from.toFixed(3)}s → ${tp.to.toFixed(3)}s</div>`;
+  const res = await showPopup("✎ Edit Tempo", html);
+  if (!res) return;
+  pushHistory();
+  state.tempo[i] = { from: tp.from, to: tp.to, mark: document.getElementById("p-tdir").value, factor: collectParam("p-tfactor") };
+  updateScoreInfo(); draw();
+}
+
+// ─── Edit phrase (slur) ───────────────────────────────────────────────────────
+async function editPhraseAt(i) {
+  const ph = state.phrases[i];
+  const html = row("label",    `<input id="p-phrase-label" type="text" value="${ph.label || ''}" />`)
+    + row("gain dB",  `<input id="p-ph-gain"  type="number" value="${ph.gain_db ?? 0}"   step="0.5" style="width:60px;">`, "-20–20")
+    + row("fade in",  `<input id="p-ph-fi"    type="number" value="${Math.round((ph.fade_in  ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
+    + row("fade out", `<input id="p-ph-fo"    type="number" value="${Math.round((ph.fade_out ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
+    + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="${ph.tempo_factor ?? 1.0}" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change)</span>`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${ph.from.toFixed(3)}s → ${ph.to.toFixed(3)}s</div>`;
+  const res = await showPopup("✎ Edit Slur", html);
+  if (!res) return;
+  pushHistory();
+  state.phrases[i] = {
+    from: ph.from, to: ph.to,
+    label:        document.getElementById("p-phrase-label").value.trim() || ph.label,
+    gain_db:      parseFloat(document.getElementById("p-ph-gain").value)  || 0,
+    fade_in:      Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-ph-fi").value)  || 0) / 100)),
+    fade_out:     Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-ph-fo").value)  || 0) / 100)),
+    tempo_factor: parseFloat(document.getElementById("p-ph-tempo").value) || 1.0,
+  };
+  updateScoreInfo(); draw();
+}
+
+// ─── Edit FX zone ─────────────────────────────────────────────────────────────
+async function editFxZoneAt(i) {
+  const fz = state.fxRanges[i];
+  const currentFxType = fz.fx && fz.fx.length ? fz.fx[0].type : "none";
+  const html = row("fx", fxSelectHTML(currentFxType))
+    + `<div id="p-fx-params"></div>`
+    + `<div style="font-size:10px;color:#444;margin-top:6px;">base audio ${fz.from.toFixed(3)}s → ${fz.to.toFixed(3)}s</div>`;
+  const res = await showPopup("✎ Edit FX Zone", html);
+  if (!res) return;
+  const newFx = collectFx();
+  pushHistory();
+  state.fxRanges[i] = { from: fz.from, to: fz.to, fx: newFx.length > 0 ? newFx : (fz.fx || []) };
+  updateScoreInfo(); draw();
+}
+
 function updateRevWidget() {
   const mode = document.getElementById("p-rev-mode").value;
   const el   = document.getElementById("p-rev-inputs");
@@ -421,6 +539,39 @@ async function openRangePopup(t1, t2) {
   if (!res) return;
   pushHistory();
   state.dynamics.push({ from: t1, to: t2, mark: document.getElementById("p-rtype").value });
+  updateScoreInfo();
+  draw();
+}
+
+// ─── Edit existing dynamic mark ───────────────────────────────────────────────
+async function openMarkEditPopup(idx) {
+  const d = state.dynamics[idx];
+  const marks = ["ppp","pp","p","mp","mf","f","ff","fff"];
+  const current = d.mark || d.marking || "mp";
+  const opts = marks.map(m =>
+    `<option value="${m}" ${m === current ? "selected" : ""} style="color:${DYNAMIC_COLORS[m]}">${m}</option>`).join("");
+  const html = row("mark", `<select id="p-mark">${opts}</select>`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">at: ${d.t.toFixed(3)}s</div>`;
+  const res = await showPopup("• Edit mark", html);
+  if (!res) return;
+  pushHistory();
+  state.dynamics[idx] = { t: d.t, mark: document.getElementById("p-mark").value };
+  updateScoreInfo();
+  draw();
+}
+
+async function openRangeEditPopup(idx) {
+  const d = state.dynamics[idx];
+  const current = d.mark || d.marking || "crescendo";
+  const html = row("type", `<select id="p-rtype">
+      <option value="crescendo" ${current === "crescendo" ? "selected" : ""}>crescendo</option>
+      <option value="decrescendo" ${current === "decrescendo" ? "selected" : ""}>decrescendo</option>
+    </select>`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${d.from.toFixed(3)}s → ${d.to.toFixed(3)}s</div>`;
+  const res = await showPopup("~ Edit range", html);
+  if (!res) return;
+  pushHistory();
+  state.dynamics[idx] = { from: d.from, to: d.to, mark: document.getElementById("p-rtype").value };
   updateScoreInfo();
   draw();
 }
@@ -518,12 +669,95 @@ async function openArticulationPopup(type, t1, t2) {
   updateScoreInfo(); draw();
 }
 
+// ─── Edit existing note relationship ─────────────────────────────────────────
+async function editNoteRelAt(i) {
+  const nr = state.noteRel[i];
+  const isPoint = !nr.to || Math.abs((nr.to || nr.from) - nr.from) < 0.01;
+  const rangeStr = isPoint ? `@${nr.from.toFixed(3)}s` : `${nr.from.toFixed(3)}s → ${(nr.to||nr.from).toFixed(3)}s`;
+  const label = nr.type === "glissando" ? "⟿ Glissando" : "⁑ Arpeggiate Chord";
+  const html = row("label", `<input id="p-nr-label" type="text" value="${nr.label || ''}" placeholder="optional label" />`)
+    + (nr.type === "glissando"
+        ? row("from pitch", `<input id="p-nr-fp" type="number" value="${nr.from_pitch || 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+          + row("to pitch", `<input id="p-nr-tp" type="number" value="${nr.to_pitch || 2}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+        : "")
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">${label} — ${rangeStr}</div>`;
+  const res = await showPopup("✎ Edit " + label, html);
+  if (!res) return;
+  pushHistory();
+  const entry = { ...nr, label: document.getElementById("p-nr-label").value.trim() || undefined };
+  if (nr.type === "glissando") {
+    entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
+    entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
+  }
+  state.noteRel[i] = entry;
+  updateScoreInfo(); draw();
+}
+
+// ─── Edit existing articulation ───────────────────────────────────────────────
+async function editArticulationAt(i) {
+  const ar = state.articulations[i];
+  const isRange = ar.from !== undefined;
+  const titles  = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
+  const posStr  = isRange ? `${ar.from.toFixed(3)}s → ${ar.to.toFixed(3)}s` : `@${ar.t.toFixed(3)}s`;
+  const html = row("label", `<input id="p-art-label" type="text" value="${ar.label || ''}" placeholder="optional label" />`)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">${titles[ar.type] || ar.type} — ${posStr}</div>`;
+  const res = await showPopup("✎ Edit " + (titles[ar.type] || ar.type), html);
+  if (!res) return;
+  pushHistory();
+  state.articulations[i] = { ...ar, label: document.getElementById("p-art-label").value.trim() || undefined };
+  updateScoreInfo(); draw();
+}
+
+// ─── History panel delete / duplicate helpers ─────────────────────────────────
+function _delHist(type, i) {
+  pushHistory();
+  if      (type === 'event')        state.events.splice(i, 1);
+  else if (type === 'dynamic')      state.dynamics.splice(i, 1);
+  else if (type === 'tempo')        state.tempo.splice(i, 1);
+  else if (type === 'fxzone')       state.fxRanges.splice(i, 1);
+  else if (type === 'phrase')       state.phrases.splice(i, 1);
+  else if (type === 'noteRel')      state.noteRel.splice(i, 1);
+  else if (type === 'articulation') state.articulations.splice(i, 1);
+  updateScoreInfo(); draw();
+}
+
+function _dupHist(type, i) {
+  pushHistory();
+  const SHIFT = 0.1;
+  if (type === 'event') {
+    const e = { ...state.events[i] }; e.t = +(e.t + SHIFT).toFixed(4);
+    state.events.splice(i + 1, 0, e);
+  } else if (type === 'dynamic') {
+    const d = { ...state.dynamics[i] };
+    if (d.t !== undefined) d.t = +(d.t + SHIFT).toFixed(4);
+    else { d.from = +(d.from + SHIFT).toFixed(4); d.to = +(d.to + SHIFT).toFixed(4); }
+    state.dynamics.splice(i + 1, 0, d);
+  } else if (type === 'tempo') {
+    const t = { ...state.tempo[i] };
+    t.from = +(t.from + SHIFT).toFixed(4); t.to = +(t.to + SHIFT).toFixed(4);
+    state.tempo.splice(i + 1, 0, t);
+  } else if (type === 'fxzone') {
+    const f = JSON.parse(JSON.stringify(state.fxRanges[i]));
+    f.from = +(f.from + SHIFT).toFixed(4); f.to = +(f.to + SHIFT).toFixed(4);
+    state.fxRanges.splice(i + 1, 0, f);
+  } else if (type === 'phrase') {
+    const p = { ...state.phrases[i] };
+    p.from = +(p.from + SHIFT).toFixed(4); p.to = +(p.to + SHIFT).toFixed(4);
+    state.phrases.splice(i + 1, 0, p);
+  }
+  updateScoreInfo(); draw();
+}
+
 // ─── FX Zone popup ────────────────────────────────────────────────────────────
-async function openFxZonePopup(t1, t2) {
-  const html = row("fx", fxSelectHTML("none"))
+async function openFxZonePopup(t1, t2, scope) {
+  scope = scope || 'all';
+  const title = scope === 'morpho' ? '✦ Morpho Zone — region'
+              : scope === 'classic' ? '◆ Classic FX Zone — region'
+              : '◆ FX Zone — base audio range';
+  const html = row("fx", fxSelectHTML("none", scope))
     + `<div id="p-fx-params"></div>`
     + `<div style="font-size:10px;color:#444;margin-top:6px;">applies to base audio ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
-  const res = await showPopup("◆ FX Zone — base audio range", html);
+  const res = await showPopup(title, html);
   if (!res) return;
   const fx = collectFx();
   if (!fx.length) return;
@@ -534,18 +768,46 @@ async function openFxZonePopup(t1, t2) {
 }
 
 // ─── Base FX ──────────────────────────────────────────────────────────────────
-document.getElementById("base-fx-btn").addEventListener("click", openBaseFxPopup);
-
-async function openBaseFxPopup() {
-  const html = row("fx", fxSelectHTML("none"))
+async function openBaseFxPopup(scope) {
+  scope = scope || 'all';
+  const title = scope === 'morpho' ? '✦ Morpho Base FX'
+              : scope === 'classic' ? '◆ Classic Base FX'
+              : 'Base FX — applied to base audio';
+  const html = row("fx", fxSelectHTML("none", scope))
     + `<div id="p-fx-params"></div>`;
-  const res = await showPopup("Base FX — applied to base audio", html);
+  const res = await showPopup(title, html);
   if (!res) return;
+  const added = collectFx();
+  if (!added.length) return;
   pushHistory();
-  state.baseFx = collectFx();
-  const label = state.baseFx.length ? state.baseFx.map(f => f.type).join("+") : "none";
-  document.getElementById("base-fx-label").textContent = label;
+  // APPEND to existing base FX chain (previous single-replace behaviour was lossy)
+  state.baseFx = [...(state.baseFx || []), ...added];
+  _updateBaseFxLabel();
 }
+
+function _updateBaseFxLabel() {
+  const label = (state.baseFx && state.baseFx.length)
+    ? state.baseFx.map(f => f.type.replace(/^morpho_/, '')).join(' + ')
+    : 'none';
+  const el = document.getElementById("base-fx-label");
+  if (el) el.textContent = label;
+}
+
+// Wire the two new base-FX buttons
+document.addEventListener('DOMContentLoaded', () => {
+  const classicBtn = document.getElementById("base-fx-classic-btn");
+  const morphoBtn  = document.getElementById("base-fx-morpho-btn");
+  const clearBtn   = document.getElementById("base-fx-clear-btn");
+  if (classicBtn) classicBtn.addEventListener("click", () => openBaseFxPopup('classic'));
+  if (morphoBtn)  morphoBtn.addEventListener("click",  () => openBaseFxPopup('morpho'));
+  if (clearBtn)   clearBtn.addEventListener("click",   () => {
+    if (!state.baseFx || !state.baseFx.length) return;
+    pushHistory();
+    state.baseFx = [];
+    _updateBaseFxLabel();
+  });
+  _updateBaseFxLabel();
+});
 
 // ─── Undo / Redo ──────────────────────────────────────────────────────────────
 const redoStack = [];
@@ -568,7 +830,7 @@ function _applySnapshot(snap) {
   if (s.duckBase) Object.assign(state.duckBase, s.duckBase);
   if (s.duckKey)  Object.assign(state.duckKey,  s.duckKey);
   if (s.autoMix)  Object.assign(state.autoMix,  s.autoMix);
-  document.getElementById("base-fx-label").textContent = state.baseFx.length ? state.baseFx.map(f => f.type).join("+") : "none";
+  _updateBaseFxLabel();
 }
 
 function pushHistory() {
@@ -618,9 +880,17 @@ function updateScoreInfo() {
     if (sNames.length === 0) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     for (const n of sNames) {
       const s = state.samples[n];
-      html += `<div class="info-item"><span style="color:${s.color}">[${n}]</span> ${s.from.toFixed(2)}s → ${s.to.toFixed(2)}s</div>`;
+      html += `<div class="info-item info-clickable" onclick="editSampleAt('${n.replace(/'/g,"\\'")}')"><span style="color:${s.color}">[${n}]</span> ${s.from.toFixed(2)}s → ${s.to.toFixed(2)}s</div>`;
     }
   }
+
+  // ─ shared helper: wrap an info-item with edit/dup/del action buttons ─────────
+  const _ha = (editCall, dupType, delType, idx, content) => {
+    const actS = `font-size:8px;padding:0 3px;line-height:1.4;border-radius:2px;cursor:pointer;`;
+    const dupBtn = dupType ? `<button onclick="event.stopPropagation();_dupHist('${dupType}',${idx})" style="${actS}color:#557;border:1px solid #334;" title="Duplicate">⎘</button>` : '';
+    const delBtn = `<button onclick="event.stopPropagation();_delHist('${delType}',${idx})" style="${actS}color:#744;border:1px solid #522;" title="Delete">✕</button>`;
+    return `<div class="info-item" style="display:flex;align-items:center;gap:2px;"><span class="info-clickable" style="flex:1;" onclick="${editCall}">${content}</span>${dupBtn}${delBtn}</div>`;
+  };
 
   // Events
   html += _sh("events", `events (${state.events.length})`);
@@ -633,7 +903,7 @@ function updateScoreInfo() {
       if (ev.loop) line += " loop";
       if (ev.reverse) line += " rev";
       if (ev.fx && ev.fx.length > 0) line += ` fx:${ev.fx.map(f => f.type).join("+")}`;
-      html += `<div class="info-item info-clickable" onclick="editEventAt(${i})">${line}</div>`;
+      html += _ha(`editEventAt(${i})`, 'event', 'event', i, line);
     });
   }
 
@@ -643,47 +913,54 @@ function updateScoreInfo() {
   html += _sh("dynamics", `dynamics (${pts.length} pts, ${ranges.length} ranges)`);
   if (!infoCollapsed["dynamics"]) {
     if (!state.dynamics.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
-    for (const d of state.dynamics) {
+    state.dynamics.forEach((d, i) => {
       if (d.t !== undefined) {
-        html += `<div class="info-item"><span style="color:${DYNAMIC_COLORS[d.mark]}">${d.mark}</span> @${d.t.toFixed(2)}s</div>`;
+        const dm0 = d.mark || d.marking || '?';
+        html += _ha(`openMarkEditPopup(${i})`, 'dynamic', 'dynamic', i,
+          `<span style="color:${DYNAMIC_COLORS[dm0]}">${dm0}</span> @${d.t.toFixed(2)}s`);
       } else {
-        const col = d.mark === "crescendo" ? "#337755" : "#775533";
-        html += `<div class="info-item"><span style="color:${col}">${d.mark}</span> ${d.from.toFixed(2)}s → ${d.to.toFixed(2)}s</div>`;
+        const dm0 = d.mark || d.marking || '?';
+        const col = dm0 === "crescendo" ? "#337755" : "#775533";
+        html += _ha(`openRangeEditPopup(${i})`, 'dynamic', 'dynamic', i,
+          `<span style="color:${col}">${dm0}</span> ${d.from.toFixed(2)}s → ${d.to.toFixed(2)}s`);
       }
-    }
+    });
   }
 
   // Tempo
   html += _sh("tempo", `tempo (${state.tempo.length})`);
   if (!infoCollapsed["tempo"]) {
     if (!state.tempo.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
-    for (const tp of state.tempo) {
+    state.tempo.forEach((tp, i) => {
       const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
-      html += `<div class="info-item"><span style="color:${col}">${tp.mark}</span> ×${JSON.stringify(tp.factor)} ${tp.from.toFixed(2)}s → ${tp.to.toFixed(2)}s</div>`;
-    }
+      html += _ha(`editTempoAt(${i})`, 'tempo', 'tempo', i,
+        `<span style="color:${col}">${tp.mark}</span> ×${JSON.stringify(tp.factor)} ${tp.from.toFixed(2)}s → ${tp.to.toFixed(2)}s`);
+    });
   }
 
   // FX zones
   html += _sh("fxzones", `fx zones (${state.fxRanges.length})`);
   if (!infoCollapsed["fxzones"]) {
     if (!state.fxRanges.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
-    for (const fz of state.fxRanges) {
-      html += `<div class="info-item"><span style="color:#8844cc">${fz.fx.map(f => f.type).join("+")}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s</div>`;
-    }
+    state.fxRanges.forEach((fz, i) => {
+      html += _ha(`editFxZoneAt(${i})`, 'fxzone', 'fxzone', i,
+        `<span style="color:#8844cc">${fz.fx.map(f => f.type).join("+")}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s`);
+    });
   }
 
   // Slurs (phrases)
   html += _sh("slurs", `slurs (${state.phrases.length})`);
   if (!infoCollapsed["slurs"]) {
     if (!state.phrases.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
-    for (const ph of state.phrases) {
+    state.phrases.forEach((ph, i) => {
       const extras = [];
       if (ph.gain_db && ph.gain_db !== 0) extras.push(`${ph.gain_db}dB`);
       if (ph.fade_in)  extras.push(`fi:${(ph.fade_in*100).toFixed(0)}%`);
       if (ph.fade_out) extras.push(`fo:${(ph.fade_out*100).toFixed(0)}%`);
       if (ph.tempo_factor && Math.abs(ph.tempo_factor - 1.0) > 0.001) extras.push(`×${ph.tempo_factor}`);
-      html += `<div class="info-item"><span style="color:#8a6abf">${ph.label}</span> ${ph.from.toFixed(2)}s → ${ph.to.toFixed(2)}s${extras.length ? ' <span style="color:#666;font-size:10px;">' + extras.join(' ') + '</span>' : ''}</div>`;
-    }
+      html += _ha(`editPhraseAt(${i})`, 'phrase', 'phrase', i,
+        `<span style="color:#8a6abf">${ph.label}</span> ${ph.from.toFixed(2)}s → ${ph.to.toFixed(2)}s${extras.length ? ' <span style="color:#666;font-size:10px;">' + extras.join(' ') + '</span>' : ''}`);
+    });
   }
 
   // Note relationships
@@ -691,11 +968,12 @@ function updateScoreInfo() {
   if (!infoCollapsed["noterel"]) {
     if (!state.noteRel.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     const NR_COLORS = { glissando: "#44aadd", arpeggiate: "#44ddaa" };
-    for (const nr of state.noteRel) {
+    state.noteRel.forEach((nr, i) => {
       const col = NR_COLORS[nr.type] || "#aaa";
       const range = nr.to ? `${nr.from.toFixed(2)}s → ${nr.to.toFixed(2)}s` : `@${nr.from.toFixed(2)}s`;
-      html += `<div class="info-item"><span style="color:${col}">${nr.type}</span> ${range}${nr.label ? ' <span style="color:#666;font-size:10px;">' + nr.label + '</span>' : ''}</div>`;
-    }
+      html += _ha(`editNoteRelAt(${i})`, null, 'noteRel', i,
+        `<span style="color:${col}">${nr.type}</span> ${range}${nr.label ? ' <span style="color:#666;font-size:10px;">' + nr.label + '</span>' : ''}`);
+    });
   }
 
   // Articulations
@@ -703,11 +981,12 @@ function updateScoreInfo() {
   if (!infoCollapsed["articulations"]) {
     if (!state.articulations.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     const ART_COLORS = { staccato: "#ffaa44", legato: "#44ffaa", fermata: "#ff88cc", accent: "#ff6644" };
-    for (const ar of state.articulations) {
+    state.articulations.forEach((ar, i) => {
       const col = ART_COLORS[ar.type] || "#aaa";
       const pos = ar.t !== undefined ? `@${ar.t.toFixed(2)}s` : `${ar.from.toFixed(2)}s → ${ar.to.toFixed(2)}s`;
-      html += `<div class="info-item"><span style="color:${col}">${ar.type}</span> ${pos}${ar.label ? ' <span style="color:#666;font-size:10px;">' + ar.label + '</span>' : ''}</div>`;
-    }
+      html += _ha(`editArticulationAt(${i})`, null, 'articulation', i,
+        `<span style="color:${col}">${ar.type}</span> ${pos}${ar.label ? ' <span style="color:#666;font-size:10px;">' + ar.label + '</span>' : ''}`);
+    });
   }
 
   // Sidechain
@@ -747,3 +1026,4 @@ function updateScoreInfo() {
 }
 
 function scUpdate() { /* state already updated inline; just a hook for future use */ }
+

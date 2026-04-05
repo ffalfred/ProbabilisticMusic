@@ -138,7 +138,6 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 | `librosa` | Resamples audio, pitch-shifting, spectral analysis |
 | `pyyaml` | Reads YAML score files |
 | `flask` | Runs the web editor server |
-| `scikit-learn` | Used by audio source separation (Stemize) |
 | `pillow` | Image handling for score image overlays |
 
 ---
@@ -148,7 +147,7 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 Run these three commands. Each should produce output without errors:
 
 ```bash
-python -c "import numpy, scipy, soundfile, librosa, yaml, flask, sklearn; print('Python packages OK')"
+python -c "import numpy, scipy, soundfile, librosa, yaml, flask, PIL; print('Python packages OK')"
 ```
 
 ```bash

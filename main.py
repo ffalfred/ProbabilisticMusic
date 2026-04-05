@@ -62,10 +62,9 @@ if __name__ == '__main__':
     bank, sr, base = build_bank(score)
 
     if engine == 'v2':
-        # Add v2/ directory to path so relative imports work
-        sys.path.insert(0, os.path.dirname(__file__))
-        from v2.interpreter import interpret
-        events = interpret(score, config)
+        from src.interpreter import interpret
+        events, _trace = interpret(score, config, return_trace=True)
+        score['_state_trace'] = _trace
     else:
         events = get_events(score)
 

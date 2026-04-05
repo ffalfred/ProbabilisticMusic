@@ -1,10 +1,10 @@
-# ProbabilisticMusic
+# Opus One
 
-**Version 0.3.0** — see [CHANGELOG.md](../CHANGELOG.md) for what's new.
+**Version 0.4.0** — see [CHANGELOG.md](../CHANGELOG.md) for what's new.
 
 A tool for composing music from a single audio or video file. You cut pieces of it like tape, arrange them back on top of the original, and add effects and dynamics — all described in a simple text file called a **score**.
 
-Every time you render, you can get a slightly different result. The same score can be performed hundreds of different ways.
+Every time you render, you can get a slightly different result. The same score can be performed hundreds of different ways — and with the **Interpreter workspace**, you can configure *how* it's performed without touching the composition itself.
 
 ---
 
@@ -97,6 +97,7 @@ ProbabilisticMusic/
 ├── v2/                  ← V2 expressive interpretation engine (beta)
 │
 ├── scores/              ← your saved scores go here
+├── interpretations/     ← saved interpretation configs (Golems + V2 params)
 ├── output/              ← rendered audio/video files land here
 └── docs/                ← you are here
 ```

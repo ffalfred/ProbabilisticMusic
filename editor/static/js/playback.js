@@ -21,6 +21,43 @@ function goToBeginning() {
   seekTo(0);
 }
 
+function seekForward(s)  { seekTo(Math.min(state.duration || 0, state.currentTime + (s || 5))); }
+function seekBackward(s) { seekTo(Math.max(0, state.currentTime - (s || 5))); }
+
+function _setPlayBtn(text) {
+  const btn = document.getElementById("play-btn");
+  if (btn) btn.textContent = text;
+}
+function _setPlayStatus(text) {
+  const el = document.getElementById("play-status");
+  if (el) el.textContent = text;
+}
+
+function stopAll() {
+  vid.pause();
+  baseAudio.pause();
+  if (_waPlaying)  { state.currentTime = _waCurrentTime(); _waStop(); }
+  if (_mixPlaying) { state.currentTime = mixCurrentTime(); stopMix(); }
+  else _renderGen++;            // cancel any in-flight render even if not yet playing
+  _setPlayBtn("▶ Play");
+  _setPlayStatus("");
+}
+
+async function togglePlay() {
+  const mode = (document.getElementById("play-mode-select") || {}).value || "source";
+  if      (mode === "source") toggleBase();
+  else if (mode === "mix")    toggleMix();
+  else if (mode === "raw")    toggleBase();
+  else if (mode === "score")  renderScoreAndPlay();
+  else if (mode === "interp") renderInterpAndPlay();
+}
+
+function _updatePlaybackBar() {
+  const fill = document.getElementById("playback-fill");
+  if (fill && state.duration > 0)
+    fill.style.width = Math.min(100, (state.currentTime / state.duration) * 100).toFixed(2) + "%";
+}
+
 async function toggleBase() {
   if (_useWebAudio()) {
     if (!baseAudio.paused) baseAudio.pause();
@@ -28,7 +65,7 @@ async function toggleBase() {
     if (_waPlaying) {
       state.currentTime = _waCurrentTime();
       _waStop();
-      document.getElementById("play-base-btn").textContent = "▶ Source";
+      _setPlayBtn("▶ Play");
     } else {
       if (!state.tracks.filter(tk => !tk.muted).length) return;
       await _waStart(state.currentTime);
@@ -54,22 +91,22 @@ async function toggleMix() {
   if (_mixPlaying) {
     state.currentTime = mixCurrentTime();
     stopMix();
-    document.getElementById("play-mix-btn").textContent = "▶ Mix";
+    _setPlayBtn("▶ Play");
     return;
   }
   await renderAndPlay();
 }
 
-function syncSourcePlayback() {
+async function syncSourcePlayback() {
   if (_useWebAudio()) {
     if (!_waPlaying && !_waStarting) return;
     const unmuted = state.tracks.filter(tk => !tk.muted);
     if (!unmuted.length) {
       state.currentTime = _waCurrentTime();
       _waStop();
-      document.getElementById("play-base-btn").textContent = "▶ Source";
+      _setPlayBtn("▶ Play");
     } else {
-      _waStart(_waCurrentTime());
+      await _waStart(_waCurrentTime());
     }
     return;
   }
@@ -86,16 +123,17 @@ function seekTo(t) {
   const pl = activeBasePlayer();
   if (pl && pl.src && pl.readyState >= 1) pl.currentTime = t;
   if (vid.src && vid.readyState >= 1) vid.currentTime = t;
-  if (_waPlaying) { _waStart(t); }
+  if (_waPlaying) { void _waStart(t); }
   if (_mixPlaying && _mixBuf) { playMixBuffer(_mixBuf, t); }
   draw();
 }
 
 async function renderAndPlay() {
-  const btn = document.getElementById("play-mix-btn");
+  const btn = document.getElementById("play-btn");
   if (!state.filePath) return;
-  btn.textContent = "⏳ rendering…";
-  btn.disabled = true;
+  const gen = _claimRenderGen();
+  _setPlayBtn("⏳ rendering…");
+  if (btn) btn.disabled = true;
   try {
     const samplesClean = {};
     for (const [k, v] of Object.entries(state.samples))
@@ -128,9 +166,10 @@ async function renderAndPlay() {
     const res = await fetch("/preview", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.filePath, score, _config: state.v2config })
+      body: JSON.stringify({ path: state.filePath, score })
     });
     const data = await res.json();
+    if (gen !== _renderGen) return;
     if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
 
     // 2. Fetch the rendered audio and decode via Web Audio API.
@@ -138,15 +177,16 @@ async function renderAndPlay() {
     const audioRes = await fetch(data.url);
     if (!audioRes.ok) throw new Error(`Audio fetch failed (${audioRes.status})`);
     const ab  = await audioRes.arrayBuffer();
+    if (gen !== _renderGen) return;
     const buf = await _getMixCtx().decodeAudioData(ab);
 
     // 3. Play
     await playMixBuffer(buf, state.currentTime);
   } catch(e) {
-    alert("Render failed: " + e);
+    if (gen === _renderGen) alert("Render failed: " + e);
   } finally {
-    btn.disabled = false;
-    if (!_mixPlaying) btn.textContent = "▶ Mix";
+    if (btn) btn.disabled = false;
+    if (!_mixPlaying) _setPlayBtn("▶ Play");
   }
 }
 
@@ -154,6 +194,7 @@ function playTick() {
   if (_waPlaying) {
     state.currentTime = _waCurrentTime();
     document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+    _updatePlaybackBar();
     draw();
     requestAnimationFrame(playTick);
     return;
@@ -161,6 +202,7 @@ function playTick() {
   if (_mixPlaying) {
     state.currentTime = mixCurrentTime();
     document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+    _updatePlaybackBar();
     draw();
     requestAnimationFrame(playTick);
     return;
@@ -171,26 +213,39 @@ function playTick() {
   if (!playing) return;
   state.currentTime = playing.currentTime;
   document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
+  _updatePlaybackBar();
   draw();
   requestAnimationFrame(playTick);
 }
 
 
-vid.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Source"; requestAnimationFrame(playTick); });
-vid.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; });
-vid.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; state.currentTime = vid.currentTime; draw(); });
+vid.addEventListener("play",  () => { _setPlayBtn("⏸ Play"); requestAnimationFrame(playTick); });
+vid.addEventListener("pause", () => { _setPlayBtn("▶ Play"); });
+vid.addEventListener("ended", () => { _setPlayBtn("▶ Play"); state.currentTime = vid.currentTime; draw(); });
 
-baseAudio.addEventListener("play",  () => { document.getElementById("play-base-btn").textContent = "⏸ Source"; requestAnimationFrame(playTick); });
-baseAudio.addEventListener("pause", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; });
-baseAudio.addEventListener("ended", () => { document.getElementById("play-base-btn").textContent = "▶ Source"; state.currentTime = baseAudio.currentTime; draw(); });
+baseAudio.addEventListener("play",  () => { _setPlayBtn("⏸ Play"); requestAnimationFrame(playTick); });
+baseAudio.addEventListener("pause", () => { _setPlayBtn("▶ Play"); });
+baseAudio.addEventListener("ended", () => { _setPlayBtn("▶ Play"); state.currentTime = baseAudio.currentTime; draw(); });
 
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, textarea, select")) return;
   if (e.code === "Space") {
     e.preventDefault();
-    toggleMix();
-  } else if (e.code === "KeyS") {
+    togglePlay();
+  } else if (e.code === "Home") {
     e.preventDefault();
-    toggleBase();
+    goToBeginning();
+  }
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  const prog = document.getElementById("playback-progress");
+  if (prog) {
+    prog.addEventListener("click", e => {
+      if (!state.duration) return;
+      const rect = prog.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      seekTo(frac * state.duration);
+    });
   }
 });

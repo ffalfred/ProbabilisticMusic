@@ -4,6 +4,7 @@ import numpy as np
 import soundfile as sf
 from src.envelope import build_dynamics_envelope, build_duck_envelope, build_phrase_envelope
 from src.mixer    import mix_events, normalise
+from src.fx       import apply_section_fx, apply_global_fx
 
 
 def _apply_phrase_tempo(score: dict) -> dict:
@@ -25,14 +26,23 @@ def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = No
     score = _apply_phrase_tempo(score)
     mix = mix_events(events, bank, sr, score, base)
 
-    dynamics = score.get('dynamics', [])
-    if dynamics:
-        env  = build_dynamics_envelope(len(mix), sr, dynamics)
-        mix *= env
+    # Section-scoped FX (applied to time ranges)
+    mix = apply_section_fx(mix, sr, score.get('fx_sections', []))
+    # Global FX (applied to entire track)
+    mix = apply_global_fx(mix, sr, score.get('fx_global', []))
 
-    phrases = score.get('phrases', [])
-    if phrases:
-        mix *= build_phrase_envelope(len(mix), sr, phrases)
+    # When a v2 interpreter (golem) is active, the golem IS the performer and
+    # has already interpreted dynamics/phrases. Skip the blind envelopes.
+    _golem_active = bool(score.get('_state_trace'))
+    if not _golem_active:
+        dynamics = score.get('dynamics', [])
+        if dynamics:
+            env  = build_dynamics_envelope(len(mix), sr, dynamics)
+            mix *= env
+
+        phrases = score.get('phrases', [])
+        if phrases:
+            mix *= build_phrase_envelope(len(mix), sr, phrases)
 
     # duck_key: a specific sample ducks the entire mix
     dk = score.get('duck_key')

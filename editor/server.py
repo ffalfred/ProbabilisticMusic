@@ -11,7 +11,7 @@ import soundfile as sf
 import yaml
 from flask import Flask, request, jsonify, send_from_directory
 
-# Allow importing src.* and v2.* from the parent beta_interpreter directory
+# Allow importing src.* from the parent directory
 _BETA_DIR = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(_BETA_DIR))
 from src.sample_engine import build_bank
@@ -24,13 +24,18 @@ _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
 
 def _load_server_config(override: dict = None) -> dict:
-    """Load config.yaml defaults, then apply any per-request override."""
+    """Load config.yaml defaults, then apply any per-request override.
+    Dicts (e.g. the 'v2' sub-config) are merged rather than replaced."""
     cfg = {}
     if os.path.exists(_CONFIG_PATH):
         with open(_CONFIG_PATH) as f:
             cfg = yaml.safe_load(f) or {}
     if override:
-        cfg.update(override)
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                cfg[k] = {**cfg[k], **v}
+            else:
+                cfg[k] = v
     return cfg
 
 PREVIEW_TMP = os.path.join(tempfile.gettempdir(), "opacity_toke_preview.wav")
@@ -39,6 +44,7 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCORES_DIR = os.path.join(BASE_DIR, "..", "scores")
+INTERPS_DIR = os.path.join(BASE_DIR, "..", "interpretations")
 
 
 @app.route("/")
@@ -56,12 +62,14 @@ def _load_single(path: str) -> dict:
         if ext in (".mp4", ".mov", ".avi", ".mkv", ".webm"):
             tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp_wav.close()
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", path, "-vn", "-ar", "44100", "-ac", "1", tmp_wav.name],
-                capture_output=True, check=True
-            )
-            audio_data, samplerate = sf.read(tmp_wav.name, always_2d=True)
-            os.unlink(tmp_wav.name)
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", path, "-vn", "-ar", "44100", "-ac", "1", tmp_wav.name],
+                    capture_output=True, check=True
+                )
+                audio_data, samplerate = sf.read(tmp_wav.name, always_2d=True)
+            finally:
+                os.unlink(tmp_wav.name)
         else:
             audio_data, samplerate = sf.read(path, always_2d=True)
         mono = audio_data.mean(axis=1)
@@ -86,14 +94,16 @@ def _load_single(path: str) -> dict:
         try:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", path, "-vframes", "1", "-q:v", "2", tmp_path],
-                capture_output=True, check=True
-            )
-            with open(tmp_path, "rb") as f:
-                frame_bytes = f.read()
-            frame = "data:image/png;base64," + base64.b64encode(frame_bytes).decode()
-            os.unlink(tmp_path)
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", path, "-vframes", "1", "-q:v", "2", tmp_path],
+                    capture_output=True, check=True
+                )
+                with open(tmp_path, "rb") as f:
+                    frame_bytes = f.read()
+                frame = "data:image/png;base64," + base64.b64encode(frame_bytes).decode()
+            finally:
+                os.unlink(tmp_path)
         except Exception:
             frame = None
 
@@ -131,18 +141,20 @@ def get_frame():
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = tmp.name
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-ss", str(t), "-i", path,
-                "-vframes", "1", "-q:v", "2",
-                tmp_path
-            ],
-            capture_output=True, check=True
-        )
-        with open(tmp_path, "rb") as f:
-            frame_bytes = f.read()
-        frame = "data:image/png;base64," + base64.b64encode(frame_bytes).decode()
-        os.unlink(tmp_path)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-ss", str(t), "-i", path,
+                    "-vframes", "1", "-q:v", "2",
+                    tmp_path
+                ],
+                capture_output=True, check=True
+            )
+            with open(tmp_path, "rb") as f:
+                frame_bytes = f.read()
+            frame = "data:image/png;base64," + base64.b64encode(frame_bytes).decode()
+        finally:
+            os.unlink(tmp_path)
         return jsonify({"frame": frame})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -172,8 +184,31 @@ def preview():
     data   = request.get_json()
     path   = data.get("path", "")
     score  = data.get("score", {})
-    config = _load_server_config(data.get("_config"))
 
+    # Interpreter workflow: load score from file path + merge interpretation config
+    score_path = data.get("score_path")
+    if score_path and not score:
+        if not os.path.exists(score_path):
+            return jsonify({"error": f"Score not found: {score_path}"}), 404
+        with open(score_path) as f:
+            score = yaml.safe_load(f) or {}
+        # Normalize dynamics: YAML uses 'marking', backend uses 'mark'
+        for d in score.get('dynamics', []):
+            if 'marking' in d and 'mark' not in d:
+                d['mark'] = d.pop('marking')
+        # Auto-derive audio path from score if not given
+        if not path:
+            path = score.get("base_track", "")
+
+    # Merge interpretation block (golems + v2config)
+    interp = data.get("interp", {})
+    if interp.get("golems"):
+        score["golems"] = interp["golems"]
+
+    config = _load_server_config(data.get("_config") or interp.get("v2config"))
+
+    if not path:
+        return jsonify({"error": "Audio file path required"}), 400
     if not os.path.exists(path):
         return jsonify({"error": f"File not found: {path}"}), 404
 
@@ -183,18 +218,26 @@ def preview():
         bank, sr, base = build_bank(score)
 
         if config.get("engine") == "v2":
-            from v2.interpreter import interpret
-            events = interpret(score, config)
+            from src.interpreter import interpret
+            events, _state_trace = interpret(score, config, return_trace=True)
+            score['_state_trace'] = _state_trace
+            # per-dim toggles for state-to-base modulation
+            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
         else:
             events = get_events(score)
 
         mix = mix_events(events, bank, sr, score, base)
-        dynamics = score.get('dynamics', [])
-        if dynamics:
-            mix *= build_dynamics_envelope(len(mix), sr, dynamics)
-        phrases = score.get('phrases', [])
-        if phrases:
-            mix *= build_phrase_envelope(len(mix), sr, phrases)
+        # When a golem is interpreting (v2), the golem IS the performer — it has
+        # already read dynamics/phrases and shaped the audio. Skip the blind
+        # envelopes that would otherwise fight the golem's decisions.
+        _golem_active = bool(score.get('_state_trace'))
+        if not _golem_active:
+            dynamics = score.get('dynamics', [])
+            if dynamics:
+                mix *= build_dynamics_envelope(len(mix), sr, dynamics)
+            phrases = score.get('phrases', [])
+            if phrases:
+                mix *= build_phrase_envelope(len(mix), sr, phrases)
         dk = score.get('duck_key')
         if dk and dk.get('enabled') and dk.get('key') and events:
             mix *= build_duck_envelope(
@@ -222,19 +265,83 @@ def preview_audio():
     return send_from_directory(directory, filename, mimetype="audio/wav", conditional=True)
 
 
+@app.route("/export_interp_wav", methods=["POST"])
+def export_interp_wav():
+    """Render the interpreter mix and save to ProbabilisticMusic/output/."""
+    import datetime
+    data = request.get_json()
+    path = data.get("path", "")
+    score_path = data.get("score_path")
+    if not score_path or not os.path.exists(score_path):
+        return jsonify({"error": f"Score not found: {score_path}"}), 404
+    try:
+        with open(score_path) as f:
+            score = yaml.safe_load(f) or {}
+        for d in score.get('dynamics', []):
+            if 'marking' in d and 'mark' not in d:
+                d['mark'] = d.pop('marking')
+        if not path:
+            path = score.get("base_track", "")
+        if not path or not os.path.exists(path):
+            return jsonify({"error": "Audio file path required/not found"}), 404
+
+        interp = data.get("interp", {})
+        if interp.get("golems"):
+            score["golems"] = interp["golems"]
+        config = _load_server_config(interp.get("v2config"))
+        score["base_track"] = path
+        score = _apply_phrase_tempo(score)
+        bank, sr, base = build_bank(score)
+
+        from src.interpreter import interpret
+        events, _state_trace = interpret(score, config, return_trace=True)
+        score['_state_trace'] = _state_trace
+        score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
+
+        mix = mix_events(events, bank, sr, score, base)
+        # Golem is the performer — skip blind dynamics/phrase envelopes.
+        mix = normalise(mix)
+
+        # Build output path
+        out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+        os.makedirs(out_dir, exist_ok=True)
+        # User-supplied name wins; fall back to score name + timestamp
+        user_name = (data.get("out_name") or "").strip()
+        if user_name:
+            # Sanitize and ensure .wav extension
+            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
+            if not safe.lower().endswith(".wav"):
+                safe += ".wav"
+            out_name = safe
+        else:
+            score_name = os.path.splitext(os.path.basename(score_path))[0]
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            out_name = f"interp_{score_name}_{ts}.wav"
+        out_path = os.path.abspath(os.path.join(out_dir, out_name))
+        sf.write(out_path, mix, sr)
+        return jsonify({"path": out_path, "name": out_name})
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
 @app.route("/export", methods=["POST"])
 def export():
     data  = request.get_json()
-    name  = data.get("_name", "untitled")
     v2cfg = data.get("_config")
-    # Sanitize name
-    safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip() or "untitled"
 
-    os.makedirs(SCORES_DIR, exist_ok=True)
-    out_path = os.path.join(SCORES_DIR, f"{safe_name}.yaml")
+    output_path = data.get("output_path", "")
+    if output_path and os.path.isabs(output_path):
+        out_path = output_path
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    else:
+        name = data.get("_name", "untitled")
+        safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip() or "untitled"
+        os.makedirs(SCORES_DIR, exist_ok=True)
+        out_path = os.path.join(SCORES_DIR, f"{safe_name}.yaml")
 
-    # Build clean score dict (exclude editor metadata keys)
-    clean = {k: v for k, v in data.items() if not k.startswith("_")}
+    # Build clean score dict (exclude editor metadata keys and output_path)
+    clean = {k: v for k, v in data.items() if not k.startswith("_") and k != "output_path"}
     # Attach V2 config block if provided
     if v2cfg:
         clean["_v2_config"] = v2cfg
@@ -267,7 +374,6 @@ def export_mp4():
     image_path  = data["imagePath"]
     score_start = float(data.get("scoreStart", 0))
     score_end   = float(data.get("scoreEnd", 0))
-    out_name    = data.get("name", "score_video")
     fps         = int(data.get("fps", 30))
     out_h       = int(data.get("height", 540))
     out_w       = int(data.get("width", 960))
@@ -279,9 +385,15 @@ def export_mp4():
     if dur <= 0:
         return jsonify({"error": "scoreEnd must be > scoreStart"}), 400
 
-    safe_name = "".join(c for c in out_name if c.isalnum() or c in "-_").strip() or "score_video"
-    os.makedirs(SCORES_DIR, exist_ok=True)
-    out_path = os.path.join(SCORES_DIR, f"{safe_name}.mp4")
+    output_path = data.get("output_path", "")
+    if output_path and os.path.isabs(output_path):
+        out_path = output_path
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    else:
+        out_name  = data.get("name", "score_video")
+        safe_name = "".join(c for c in out_name if c.isalnum() or c in "-_").strip() or "score_video"
+        os.makedirs(SCORES_DIR, exist_ok=True)
+        out_path  = os.path.join(SCORES_DIR, f"{safe_name}.mp4")
 
     try:
         from PIL import Image as PILImage, ImageDraw
@@ -385,6 +497,21 @@ def separate():
                     y_i = librosa.istft(S_i * np.exp(1j * phase))
                     _save(f"nmf_{i+1}", y_i)
 
+        if method == "freqband":
+            bands = data.get("bands", [])
+            if not bands:
+                return jsonify({"error": "No frequency bands defined"}), 400
+            n_fft = 2048
+            D     = librosa.stft(audio, n_fft=n_fft)
+            freqs = librosa.fft_frequencies(sr=sr_lib, n_fft=n_fft)
+            for band in bands:
+                low_hz  = float(band.get("low",  0))
+                high_hz = float(band.get("high", sr_lib / 2))
+                name    = str(band.get("name", "")).strip() or f"band_{int(low_hz)}_{int(high_hz)}"
+                mask    = ((freqs >= low_hz) & (freqs <= high_hz)).reshape(-1, 1).astype(np.float32)
+                y_band  = librosa.istft(D * mask, length=len(audio))
+                _save(name, y_band)
+
         return jsonify({"stems": stems})
     except Exception as e:
         import traceback
@@ -403,6 +530,223 @@ def load_yaml_route():
         return jsonify({"score": score})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/save_interpretation", methods=["POST"])
+def save_interpretation():
+    data = request.get_json()
+    name = data.get("name", "untitled_interp")
+    safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip() or "untitled_interp"
+    os.makedirs(INTERPS_DIR, exist_ok=True)
+    out_path = os.path.join(INTERPS_DIR, f"{safe_name}.yaml")
+    payload = {
+        "score_path": data.get("score_path", ""),
+        "golems": data.get("golems", []),
+        "v2config": data.get("v2config", {}),
+    }
+    with open(out_path, "w") as f:
+        yaml.dump(payload, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return jsonify({"path": out_path})
+
+
+@app.route("/load_interpretation", methods=["POST"])
+def load_interpretation():
+    data = request.get_json()
+    path = data.get("path", "")
+    if not os.path.exists(path):
+        return jsonify({"error": f"Not found: {path}"}), 404
+    try:
+        with open(path) as f:
+            interp = yaml.safe_load(f) or {}
+        return jsonify({"interp": interp})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/trace", methods=["POST"])
+def trace():
+    data       = request.get_json()
+    score_path = data.get("score_path", "")
+    interp     = data.get("interp", {})
+
+    if not score_path or not os.path.exists(score_path):
+        return jsonify({"error": f"Score not found: {score_path}"}), 404
+    try:
+        with open(score_path) as f:
+            score = yaml.safe_load(f) or {}
+        if interp.get("golems"):
+            score["golems"] = interp["golems"]
+
+        config = _load_server_config(data.get("_config") or interp.get("v2config"))
+        config["engine"] = "v2"
+
+        score = _apply_phrase_tempo(score)
+
+        from src.interpreter import interpret
+        _, trace_data = interpret(score, config, return_trace=True)
+
+        total_dur = max((e["t"] for e in trace_data), default=1.0)
+
+        seen = set()
+        markings = []
+        for entry in trace_data:
+            key = (round(entry["t"], 3), entry["marking"])
+            if entry["marking"] and key not in seen:
+                seen.add(key)
+                markings.append({"t": entry["t"], "marking": entry["marking"]})
+
+        return jsonify({
+            "trace":      trace_data,
+            "total_dur":  total_dur,
+            "dimensions": ["gain_db", "brightness", "timing_offset_ms", "attack_shape", "reverb_wet"],
+            "markings":   markings,
+            "effective_seed": (config.get("v2") or {}).get("_effective_seed"),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
+@app.route("/multitrace", methods=["POST"])
+def multitrace():
+    data       = request.get_json()
+    score_path = data.get("score_path", "")
+    interp     = data.get("interp", {})
+    n_walks    = min(int(data.get("n_walks", 5)), 20)
+
+    if not score_path or not os.path.exists(score_path):
+        return jsonify({"error": f"Score not found: {score_path}"}), 404
+    try:
+        with open(score_path) as f:
+            score = yaml.safe_load(f) or {}
+        if interp.get("golems"):
+            score["golems"] = interp["golems"]
+
+        base_config = _load_server_config(data.get("_config") or interp.get("v2config"))
+        base_config["engine"] = "v2"
+        score = _apply_phrase_tempo(score)
+
+        from src.interpreter import interpret
+
+        walks = []
+        markings_seen = set()
+        markings = []
+        total_dur = 1.0
+
+        for seed in range(n_walks):
+            cfg = dict(base_config)
+            cfg["seed"] = seed
+            _, trace_data = interpret(score, cfg, return_trace=True)
+            walks.append(trace_data)
+            if trace_data:
+                total_dur = max(total_dur, max(e["t"] for e in trace_data))
+            for entry in trace_data:
+                key = (round(entry["t"], 3), entry["marking"])
+                if entry["marking"] and key not in markings_seen:
+                    markings_seen.add(key)
+                    markings.append({"t": entry["t"], "marking": entry["marking"]})
+
+        markings.sort(key=lambda m: m["t"])
+        return jsonify({
+            "walks":      walks,
+            "total_dur":  total_dur,
+            "dimensions": ["gain_db", "brightness", "timing_offset_ms", "attack_shape", "reverb_wet"],
+            "markings":   markings,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
+
+
+_TABLE_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "transition_table.yaml")
+
+# Built-in character names — never overwritten or deleted via the API
+_KALMAN_BUILTIN = {'dramatic', 'lyrical', 'sparse', 'turbulent'}
+_RW_BUILTIN     = {'rw_free', 'rw_drift_up', 'rw_reverting'}
+
+
+def _load_table() -> dict:
+    if os.path.exists(_TABLE_PATH):
+        with open(_TABLE_PATH) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _save_table(table: dict):
+    with open(_TABLE_PATH, "w") as f:
+        yaml.dump(table, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+@app.route("/characters", methods=["GET"])
+def get_characters():
+    table = _load_table()
+    # Return only user-defined (non-builtin) characters
+    kalman_chars = {k: v for k, v in (table.get("characters") or {}).items()
+                    if k not in _KALMAN_BUILTIN}
+    rw_chars     = {k: v for k, v in (table.get("rw_characters") or {}).items()
+                    if k not in _RW_BUILTIN}
+    return jsonify({"kalman": kalman_chars, "random_walk": rw_chars})
+
+
+@app.route("/characters", methods=["POST"])
+def save_character():
+    data    = request.get_json()
+    name    = (data.get("name") or "").strip()
+    ctype   = data.get("type", "kalman")   # "kalman" | "random_walk"
+    params  = data.get("params", {})
+    delete  = data.get("delete", False)
+
+    if not name or not name.replace("_", "").isalnum():
+        return jsonify({"error": "Invalid character name (alphanumeric + _ only)"}), 400
+
+    # Disallow overwriting builtins
+    if ctype == "kalman"      and name in _KALMAN_BUILTIN:
+        return jsonify({"error": f"'{name}' is a built-in character and cannot be modified"}), 400
+    if ctype == "random_walk" and name in _RW_BUILTIN:
+        return jsonify({"error": f"'{name}' is a built-in RW character and cannot be modified"}), 400
+
+    table    = _load_table()
+    section  = "characters" if ctype == "kalman" else "rw_characters"
+    if section not in table or not isinstance(table[section], dict):
+        table[section] = {}
+
+    if delete:
+        table[section].pop(name, None)
+    else:
+        if not params:
+            return jsonify({"error": "params required"}), 400
+        table[section][name] = params
+
+    _save_table(table)
+    return jsonify({"ok": True})
+
+
+@app.route("/browse")
+def browse():
+    path = request.args.get("path", "")
+    if not path:
+        path = os.path.expanduser("~")
+    path = os.path.abspath(path)
+    # Walk up until we find an existing directory
+    while path and not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            path = os.path.expanduser("~")
+            break
+        path = parent
+    try:
+        entries = os.listdir(path)
+    except PermissionError:
+        return jsonify({"error": "Permission denied"}), 403
+    dirs  = sorted([e for e in entries if os.path.isdir(os.path.join(path, e))  and not e.startswith('.')], key=str.lower)
+    files = sorted([e for e in entries if os.path.isfile(os.path.join(path, e)) and not e.startswith('.')], key=str.lower)
+    parent = os.path.dirname(path)
+    return jsonify({
+        "current": path,
+        "parent":  parent if parent != path else None,
+        "dirs":    dirs,
+        "files":   files,
+    })
 
 
 @app.route("/plugins")

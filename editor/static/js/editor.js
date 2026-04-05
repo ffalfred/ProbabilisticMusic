@@ -1,3 +1,32 @@
+// Returns {idx, type:"point"|"range"} for the nearest dynamic within thresh pixels, or null
+// waveX = pixel coordinate in the waveform canvas space
+function _nearestDynamic(waveX) {
+  const THRESH = 12;
+  let best = null, bestDist = Infinity;
+  state.dynamics.forEach((d, i) => {
+    if (d.t !== undefined) {
+      const dist = Math.abs(tToX(d.t) - waveX);
+      if (dist < THRESH && dist < bestDist) { bestDist = dist; best = { idx: i, type: "point" }; }
+    } else if (d.from !== undefined) {
+      const xMid = (tToX(d.from) + tToX(d.to)) / 2;
+      const dist = Math.min(Math.abs(tToX(d.from) - waveX), Math.abs(tToX(d.to) - waveX), Math.abs(xMid - waveX));
+      if (dist < THRESH && dist < bestDist) { bestDist = dist; best = { idx: i, type: "range" }; }
+    }
+  });
+  return best;
+}
+
+// Click handler for dynamics tool: edit existing if near one, else create new
+function _dynamicsClick(waveX, t) {
+  const near = _nearestDynamic(waveX);
+  if (near) {
+    if (near.type === "point") openMarkEditPopup(near.idx);
+    else openRangeEditPopup(near.idx);
+  } else {
+    openMarkPopup(t);
+  }
+}
+
 // ─── Tool state ───────────────────────────────────────────────────────────────
 let activeTool = "sample";
 let scoreMarkerDrag = null; // "start" | "end" | null — dragging a score alignment marker
@@ -135,6 +164,7 @@ canvas.addEventListener("mousemove", e => {
 
 canvas.addEventListener("mousedown", e => {
   mouseIsDown = true;
+  if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter') return;
   if (!state.duration) return;
   const r = canvas.getBoundingClientRect();
   const x = e.clientX - r.left;
@@ -155,7 +185,7 @@ canvas.addEventListener("mousedown", e => {
   }
 
   if (activeTool === "sample" || activeTool === "dynamics" || activeTool === "tempo" ||
-      activeTool === "fx" || activeTool === "phrase" || activeTool === "glissando" || activeTool === "legato") {
+      activeTool === "fx_classic" || activeTool === "fx_morpho" || activeTool === "phrase" || activeTool === "glissando" || activeTool === "legato") {
     dragState.active = true; dragState.canvas = canvas;
     dragState.startX = x; dragState.curX = x;
     dragState.startT = t; dragState.curT = t;
@@ -177,7 +207,7 @@ canvas.addEventListener("mouseup", e => {
     const dist = Math.abs(x - dragState.startX);
 
     if (dist < 5) {
-      if (activeTool === "dynamics")      openMarkPopup(t);
+      if (activeTool === "dynamics")      _dynamicsClick(x, t);
       else if (activeTool === "arpchord") openNoteRelPopup("arpeggiate", t, t);
       else if (activeTool === "staccato") openArticulationPopup("staccato", t);
       else if (activeTool === "fermata")  openArticulationPopup("fermata", t);
@@ -187,15 +217,19 @@ canvas.addEventListener("mouseup", e => {
       if (activeTool === "sample")         openSamplePopup(t1, t2);
       else if (activeTool === "dynamics")  openRangePopup(t1, t2);
       else if (activeTool === "tempo")     openTempoPopup(t1, t2);
-      else if (activeTool === "fx")        openFxZonePopup(t1, t2);
+      else if (activeTool === "fx_classic") openFxZonePopup(t1, t2, 'classic');
+      else if (activeTool === "fx_morpho")  openFxZonePopup(t1, t2, 'morpho');
       else if (activeTool === "phrase")    openPhrasePopup(t1, t2);
       else if (activeTool === "glissando") openNoteRelPopup("glissando", t1, t2);
       else if (activeTool === "legato")    openArticulationPopup("legato", t1, t2);
     }
   } else if (activeTool === "event") {
-    openEventPopup(t);
+    // Click near existing event → edit it; otherwise create new
+    const nearEv = _findNearest(x);
+    if (nearEv && nearEv.type === "event") editEventAt(nearEv.i);
+    else openEventPopup(t);
   } else if (activeTool === "dynamics") {
-    openMarkPopup(t);
+    _dynamicsClick(x, t);
   } else if (activeTool === "arpchord") {
     openNoteRelPopup("arpeggiate", t, t);
   } else if (activeTool === "staccato") {
@@ -204,6 +238,11 @@ canvas.addEventListener("mouseup", e => {
     openArticulationPopup("fermata", t);
   } else if (activeTool === "accent") {
     openArticulationPopup("accent", t);
+  } else if (activeTool === "pointer") {
+    // Pointer: click near any item to edit; click empty space to seek
+    const near = _findNearest(x);
+    if (near) _editBest(near);
+    else seekTo(t);
   } else {
     seekTo(t);
   }
@@ -274,6 +313,7 @@ frameCanvas.addEventListener("mousemove", e => {
 
 frameCanvas.addEventListener("mousedown", e => {
   mouseIsDown = true;
+  if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter') return;
   if (activeTool === "zoom" || activeTool === "pointer") {
     panStart = { mx: e.clientX, my: e.clientY, tx: fz.tx, ty: fz.ty, panOffset: scoreView.panOffset };
     frameCanvas.style.cursor = "grabbing";
@@ -283,7 +323,7 @@ frameCanvas.addEventListener("mousedown", e => {
   const x = frameMouseX(e);
   const t = xToTF(x);
   if (activeTool === "sample" || activeTool === "dynamics" || activeTool === "tempo" ||
-      activeTool === "fx" || activeTool === "phrase" || activeTool === "glissando" || activeTool === "legato") {
+      activeTool === "fx_classic" || activeTool === "fx_morpho" || activeTool === "phrase" || activeTool === "glissando" || activeTool === "legato") {
     dragState.active = true; dragState.canvas = frameCanvas;
     dragState.startX = (x / frameCanvas.width) * canvas.width;
     dragState.curX   = dragState.startX;
@@ -311,12 +351,14 @@ frameCanvas.addEventListener("mouseup", e => {
       if (activeTool === "sample")         openSamplePopup(t1, t2);
       else if (activeTool === "dynamics")  openRangePopup(t1, t2);
       else if (activeTool === "tempo")     openTempoPopup(t1, t2);
-      else if (activeTool === "fx")        openFxZonePopup(t1, t2);
+      else if (activeTool === "fx_classic") openFxZonePopup(t1, t2, 'classic');
+      else if (activeTool === "fx_morpho")  openFxZonePopup(t1, t2, 'morpho');
       else if (activeTool === "phrase")    openPhrasePopup(t1, t2);
       else if (activeTool === "glissando") openNoteRelPopup("glissando", t1, t2);
       else if (activeTool === "legato")    openArticulationPopup("legato", t1, t2);
     } else {
-      if (activeTool === "dynamics")      openMarkPopup(t);
+      const fWaveX = (x / frameCanvas.width) * canvas.width;
+      if (activeTool === "dynamics")      _dynamicsClick(fWaveX, t);
       else if (activeTool === "arpchord") openNoteRelPopup("arpeggiate", t, t);
       else if (activeTool === "staccato") openArticulationPopup("staccato", t);
       else if (activeTool === "fermata")  openArticulationPopup("fermata", t);
@@ -324,9 +366,13 @@ frameCanvas.addEventListener("mouseup", e => {
       else seekTo(t);
     }
   } else if (activeTool === "event") {
-    openEventPopup(t);
+    const fWaveX3 = (x / frameCanvas.width) * canvas.width;
+    const nearEv2 = _findNearest(fWaveX3);
+    if (nearEv2 && nearEv2.type === "event") editEventAt(nearEv2.i);
+    else openEventPopup(t);
   } else if (activeTool === "dynamics") {
-    openMarkPopup(t);
+    const fWaveX2 = (x / frameCanvas.width) * canvas.width;
+    _dynamicsClick(fWaveX2, t);
   } else if (activeTool === "arpchord") {
     openNoteRelPopup("arpeggiate", t, t);
   } else if (activeTool === "staccato") {
@@ -335,6 +381,11 @@ frameCanvas.addEventListener("mouseup", e => {
     openArticulationPopup("fermata", t);
   } else if (activeTool === "accent") {
     openArticulationPopup("accent", t);
+  } else if (activeTool === "pointer") {
+    const fWaveX4 = (x / frameCanvas.width) * canvas.width;
+    const near2 = _findNearest(fWaveX4);
+    if (near2) _editBest(near2);
+    else seekTo(t);
   } else {
     seekTo(t);
   }
@@ -390,91 +441,95 @@ frameCanvas.addEventListener("contextmenu", e => {
   }));
 });
 
-// ─── Right-click delete ───────────────────────────────────────────────────────
-canvas.addEventListener("contextmenu", e => {
-  e.preventDefault();
-  if (!state.duration) return;
-  const r = canvas.getBoundingClientRect();
-  const x = e.clientX - r.left;
+// ─── Shared proximity detection (waveX = waveform canvas pixel coordinate) ────
+function _findNearest(waveX) {
   const PX_THRESH = 12;
-
   let best = null, bestDist = Infinity;
 
   state.events.forEach((ev, i) => {
-    const d = Math.abs(tToX(ev.t) - x);
+    const d = Math.abs(tToX(ev.t) - waveX);
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "event", i }; }
   });
-
   state.dynamics.forEach((d, i) => {
     if (d.t !== undefined) {
-      const px = Math.abs(tToX(d.t) - x);
+      const px = Math.abs(tToX(d.t) - waveX);
       if (px < PX_THRESH && px < bestDist) { bestDist = px; best = { type: "dynamic", i }; }
     }
   });
-
   state.dynamics.forEach((d, i) => {
     if (d.from !== undefined) {
       const x1 = tToX(d.from), x2 = tToX(d.to);
-      if (x >= x1 && x <= x2) {
-        const midDist = Math.abs(x - (x1 + x2) / 2);
+      if (waveX >= x1 && waveX <= x2) {
+        const midDist = Math.abs(waveX - (x1 + x2) / 2);
         if (midDist < bestDist) { bestDist = midDist; best = { type: "dynamic", i }; }
       }
     }
   });
-
   for (const [name, s] of Object.entries(state.samples)) {
-    const d1 = Math.abs(tToX(s.from) - x);
-    const d2 = Math.abs(tToX(s.to) - x);
-    const d = Math.min(d1, d2);
+    const d = Math.min(Math.abs(tToX(s.from) - waveX), Math.abs(tToX(s.to) - waveX));
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "sample", name }; }
   }
-
   state.fxRanges.forEach((fz, i) => {
     const x1 = tToX(fz.from), x2 = tToX(fz.to);
-    if (x >= x1 && x <= x2) {
-      const midDist = Math.abs(x - (x1 + x2) / 2);
+    if (waveX >= x1 && waveX <= x2) {
+      const midDist = Math.abs(waveX - (x1 + x2) / 2);
       if (midDist < bestDist) { bestDist = midDist; best = { type: "fxzone", i }; }
     }
   });
-
   state.tempo.forEach((tp, i) => {
     const x1 = tToX(tp.from), x2 = tToX(tp.to);
-    if (x >= x1 && x <= x2) {
-      const midDist = Math.abs(x - (x1 + x2) / 2);
+    if (waveX >= x1 && waveX <= x2) {
+      const midDist = Math.abs(waveX - (x1 + x2) / 2);
       if (midDist < bestDist) { bestDist = midDist; best = { type: "tempo", i }; }
     }
-    const d = Math.min(Math.abs(x1 - x), Math.abs(x2 - x));
+    const d = Math.min(Math.abs(x1 - waveX), Math.abs(x2 - waveX));
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "tempo", i }; }
   });
-
   state.phrases.forEach((ph, i) => {
     const x1 = tToX(ph.from), x2 = tToX(ph.to);
-    if (x >= x1 && x <= x2) {
-      const midDist = Math.abs(x - (x1 + x2) / 2);
+    if (waveX >= x1 && waveX <= x2) {
+      const midDist = Math.abs(waveX - (x1 + x2) / 2);
       if (midDist < bestDist) { bestDist = midDist; best = { type: "phrase", i }; }
     }
-    const d = Math.min(Math.abs(x1 - x), Math.abs(x2 - x));
+    const d = Math.min(Math.abs(x1 - waveX), Math.abs(x2 - waveX));
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "phrase", i }; }
   });
-
   state.noteRel.forEach((nr, i) => {
     const x1 = tToX(nr.from), x2 = tToX(nr.to ?? nr.from);
-    if (x >= x1 && x <= (x2 || x1 + 1)) {
-      const midDist = Math.abs(x - (x1 + x2) / 2);
+    if (waveX >= x1 && waveX <= (x2 || x1 + 1)) {
+      const midDist = Math.abs(waveX - (x1 + x2) / 2);
       if (midDist < bestDist) { bestDist = midDist; best = { type: "noteRel", i }; }
     }
-    const d = nr.to ? Math.min(Math.abs(x1 - x), Math.abs(x2 - x)) : Math.abs(x1 - x);
+    const d = nr.to ? Math.min(Math.abs(x1 - waveX), Math.abs(x2 - waveX)) : Math.abs(x1 - waveX);
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "noteRel", i }; }
   });
-
   state.articulations.forEach((ar, i) => {
-    const xa = tToX(ar.t ?? ar.from);
-    const d = Math.abs(xa - x);
+    const d = Math.abs(tToX(ar.t ?? ar.from) - waveX);
     if (d < PX_THRESH && d < bestDist) { bestDist = d; best = { type: "articulation", i }; }
   });
+  return best;
+}
 
+// ─── Edit dispatcher (called from pointer click and context menu) ──────────────
+function _editBest(best) {
   if (!best) return;
+  if (best.type === "event")       editEventAt(best.i);
+  else if (best.type === "dynamic") {
+    const d = state.dynamics[best.i];
+    if (d.t !== undefined) openMarkEditPopup(best.i);
+    else openRangeEditPopup(best.i);
+  }
+  else if (best.type === "sample") editSampleAt(best.name);
+  else if (best.type === "tempo")        editTempoAt(best.i);
+  else if (best.type === "fxzone")       editFxZoneAt(best.i);
+  else if (best.type === "phrase")       editPhraseAt(best.i);
+  else if (best.type === "noteRel")      editNoteRelAt(best.i);
+  else if (best.type === "articulation") editArticulationAt(best.i);
+}
 
+// ─── Delete dispatcher ────────────────────────────────────────────────────────
+function _deleteBest(best) {
+  if (!best) return;
   pushHistory();
   if (best.type === "event")         state.events.splice(best.i, 1);
   else if (best.type === "dynamic")  state.dynamics.splice(best.i, 1);
@@ -486,6 +541,71 @@ canvas.addEventListener("contextmenu", e => {
   else if (best.type === "articulation") state.articulations.splice(best.i, 1);
   updateScoreInfo();
   draw();
+}
+
+// ─── Context menu ─────────────────────────────────────────────────────────────
+let _ctxBest = null;
+const ctxMenu = document.getElementById("ctx-menu");
+
+function _showCtxMenu(clientX, clientY, best) {
+  _ctxBest = best;
+  ctxMenu.style.left = clientX + "px";
+  ctxMenu.style.top  = clientY + "px";
+  ctxMenu.style.display = "block";
+}
+function _hideCtxMenu() {
+  ctxMenu.style.display = "none";
+  _ctxBest = null;
+}
+
+document.getElementById("ctx-edit").addEventListener("click", () => {
+  const b = _ctxBest; _hideCtxMenu(); _editBest(b);
+});
+document.getElementById("ctx-delete").addEventListener("click", () => {
+  const b = _ctxBest; _hideCtxMenu(); _deleteBest(b);
+});
+document.addEventListener("click", e => {
+  if (!ctxMenu.contains(e.target)) _hideCtxMenu();
+});
+document.addEventListener("keydown", e => {
+  // Skip shortcuts when typing in any input/textarea/select
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+  if (e.key === "Escape") {
+    _hideCtxMenu();
+    document.getElementById("tool-sample").click();
+  } else if (e.key === "v" || e.key === "V") {
+    e.preventDefault();
+    document.getElementById("tool-pointer")?.click();
+  } else if ((e.key === "z" || e.key === "Z") && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    if (typeof undo === "function") undo();
+  } else if ((e.key === "x" || e.key === "X") && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    if (typeof redo === "function") redo();
+  }
+});
+
+// ─── Right-click → context menu ───────────────────────────────────────────────
+canvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter') return;
+  if (!state.duration) return;
+  const r = canvas.getBoundingClientRect();
+  const best = _findNearest(e.clientX - r.left);
+  if (!best) return;
+  _showCtxMenu(e.clientX, e.clientY, best);
+});
+
+frameCanvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter') return;
+  if (!state.duration) return;
+  const waveX = (frameMouseX(e) / frameCanvas.width) * canvas.width;
+  const best = _findNearest(waveX);
+  if (!best) return;
+  _showCtxMenu(e.clientX, e.clientY, best);
 });
 
 // Initial draw

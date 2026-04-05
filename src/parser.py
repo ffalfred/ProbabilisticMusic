@@ -56,6 +56,11 @@ def load_score(path: str) -> dict:
                 if key != 'type':
                     fx[key] = _resolve(fx[key])
 
+    # Normalize dynamics: YAML uses 'marking', backend uses 'mark'
+    for d in score.get('dynamics', []):
+        if 'marking' in d and 'mark' not in d:
+            d['mark'] = d.pop('marking')
+
     # validate dynamics markings
     valid_range_marks = {'crescendo', 'decrescendo'}
     for d in score.get('dynamics', []):

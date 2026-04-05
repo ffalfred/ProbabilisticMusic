@@ -2,28 +2,135 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>opacity_toke — score editor</title>
+<title>Opus One — score editor</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<div id="header">
-  <h1>score editor</h1>
-  <input id="path-input" type="text" placeholder="/path/to/file.wav or .mp4" />
-  <button id="load-btn">Load</button>
+<div id="workspace-tabs">
+  <button class="ws-tab active" data-ws="composer">Composer</button>
+  <button class="ws-tab" data-ws="interpreter">Interpreter</button>
+  <button class="ws-tab" data-ws="conductor">Conductor</button>
+</div>
+
+<!-- Context menu (right-click on canvas items) -->
+<div id="ctx-menu">
+  <div id="ctx-edit">✎ Edit</div>
+  <div id="ctx-delete">✕ Delete</div>
+</div>
+
+<!-- ═══════════════════════════ SHARED LAYOUT ═══════════════════════════ -->
+
+<!-- TOP BAR -->
+<div id="composer-topbar">
+
+  <!-- Row 1: File loaders + export/import (all: [path input][icon btn]) -->
+  <div class="ctb-row" id="ctb-row-files">
+    <span class="composer-title">opus one</span>
+    <span class="ctb-sep">|</span>
+    <input id="path-input" type="text" placeholder="audio…" class="path-select ctb-input" readonly />
+    <button id="load-btn" class="ctb-btn" title="Reload audio">&#8635;</button>
+    <input id="score-path-input" type="text" placeholder="score img…" class="path-select ctb-input" readonly />
+    <button id="load-score-btn" class="ctb-btn" title="Load score image">&#8635;</button>
+    <input id="score2-path-input" type="text" placeholder="metadata…" class="path-select ctb-input" readonly />
+    <button id="load-score2-btn" class="ctb-btn" title="Load metadata image">&#8635;</button>
+    <span class="ctb-sep">|</span>
+    <input id="export-yaml-path" type="text" placeholder="save score…" class="path-select ctb-input" readonly />
+    <button id="export-btn" class="ctb-btn" title="Save score as YAML">&#8595;</button>
+    <input id="export-mp4-path" type="text" placeholder="save audio…" class="path-select ctb-input" readonly />
+    <button id="export-mp4-btn" class="ctb-btn" title="Save scrolling score video">&#8659;</button>
+    <span class="ctb-sep">|</span>
+    <input id="import-path" type="text" placeholder="import score…" class="path-select ctb-input" readonly />
+    <button id="import-btn" class="ctb-btn" title="Import score from YAML">&#8593;</button>
+    <span id="export-status" class="ctb-status"></span>
+  </div>
+
+</div><!-- /composer-topbar -->
+
+<!-- INTERPRETER TOP BAR (hidden initially, shown when Interpreter tab is active) -->
+<div id="interp-topbar" style="display:none">
+  <div id="interp-topbar-score">
+    <input id="interp-score-path" type="text" placeholder="click to select score…" class="path-select" readonly />
+    <button id="interp-load-score-btn">Load</button>
+    <span id="interp-score-status" class="interp-status" style="display:none;"></span>
+  </div>
+  <div id="interp-topbar-media">
+    <label class="itb-label">audio</label>
+    <input id="interp-audio-path" type="text" placeholder="click to select audio…" class="path-select" readonly />
+    <button id="interp-load-wave-btn">Load</button>
+    <span class="itb-sep">|</span>
+    <input id="interp-score-img-path" type="text" placeholder="score image…" class="path-select" readonly style="width:120px;" />
+    <button id="interp-load-score-img-btn">Score Img</button>
+    <input id="interp-meta-img-path" type="text" placeholder="metadata image…" class="path-select" readonly style="width:120px;" />
+    <button id="interp-load-meta-img-btn">Meta Img</button>
+  </div>
+  <div id="interp-topbar-meta">
+    <label style="font-size:10px;color:#555;">seed</label>
+    <input id="interp-seed" type="number" placeholder="random" style="width:70px;" />
+    <label style="font-size:10px;color:#555;">step</label>
+    <input id="interp-trace-step" type="number" value="0.5" step="0.1" min="0" placeholder="0.5" title="Trace interval in seconds (0 = off)" style="width:50px;" />
+    <label style="font-size:10px;color:#555;">name</label>
+    <input id="interp-name" type="text" value="untitled_interp" style="width:110px;" />
+    <button id="interp-save-btn">&#8595; Save</button>
+    <button id="interp-load-btn">&#8593; Load</button>
+    <input id="interp-load-path" type="text" placeholder="click to select interpretation…" class="path-select" readonly style="width:150px;" />
+    <span class="itb-sep">|</span>
+    <button id="interp-export-wav-btn-top" title="Render and save interpreted mix as WAV (uses 'name' field above)">&#8595; WAV</button>
+    <span id="interp-save-status" class="interp-status"></span>
+  </div>
+</div><!-- /interp-topbar -->
+
+<!-- SHARED PLAYBACK BAR — always visible, top-right style -->
+<div id="topbar-playback">
+  <select id="play-mode-select" title="Select what to play">
+    <option value="source">Source</option>
+    <option value="mix">Mix</option>
+  </select>
+  <button id="play-btn" title="Play/pause (Space)" onclick="togglePlay()">&#9654; Play</button>
+  <span id="play-status" class="interp-status"></span>
+  <span class="tbp-sep">|</span>
+  <button id="go-start-btn" title="Go to beginning (Home)" onclick="goToBeginning()">|&#9664;</button>
+  <button id="seek-back-btn" title="Back 5 seconds" onclick="seekBackward(5)">&#9668;&#9668;</button>
+  <button id="stop-btn" title="Stop all playback" onclick="stopAll()">&#9724;</button>
+  <button id="seek-fwd-btn" title="Forward 5 seconds" onclick="seekForward(5)">&#9658;&#9658;</button>
+  <span class="tbp-sep">|</span>
+  <div id="playback-progress" title="Click to seek"><div id="playback-fill"></div></div>
+  <span id="palette-time"><span id="cur-time">0.000</span> / <span id="dur-display">—</span> s</span>
+  <label class="tbp-label">spd</label>
+  <input id="playback-speed" type="number" value="1.0" min="0.1" max="4.0" step="0.05"
+         style="width:42px;" title="Playback speed" onchange="_applyPlaybackSpeed()" />
 </div>
 
 <div id="mid">
   <div id="palette">
-    <label onclick="toggleBarContent('palette-content','palette-chevron')" title="Collapse/expand tools">
-      <span id="palette-chevron" style="font-size:9px;">&#9660;</span> tools
+    <label onclick="toggleBarContent('palette-content','palette-chevron')" title="Collapse/expand panel">
+      <span id="palette-chevron" style="font-size:9px;">&#9660;</span> <span id="palette-label">tools</span>
     </label>
     <div id="palette-content">
+    <div id="palette-composer">
+      <!-- View + navigation -->
+      <span class="tool-sep">View</span>
+      <button id="tool-zoom" data-tool="zoom">&#8853; Zoom</button>
+      <button id="tool-pointer" data-tool="pointer" title="Click near any item to edit it, drag to pan (Esc = back to drawing)">&#8593; Pointer</button>
+      <!-- Edit -->
+      <span class="tool-sep">Edit</span>
+      <button id="quantize-btn" title="Snap events to a beat grid">&#9956; Quantize</button>
+      <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
+      <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
+      <!-- Mix -->
+      <span class="tool-sep">Base FX</span>
+      <button id="base-fx-classic-btn" title="Add a Classic FX to the base track">+ &#9670; Classic</button>
+      <button id="base-fx-morpho-btn" title="Add a Morphogenics FX to the base track">+ &#10022; Morpho</button>
+      <button id="base-fx-clear-btn" title="Remove all base FX" style="color:#a66;">&times;</button>
+      <span id="base-fx-label" style="font-size:10px;color:#888;">none</span>
+      <!-- Score tools -->
+      <span class="tool-sep">Score</span>
       <button id="tool-sample" class="active" data-tool="sample">[ Sample ]</button>
       <button id="tool-event" data-tool="event">&#9654; Event</button>
       <button id="tool-dynamics" data-tool="dynamics">~ Dynamics</button>
       <button id="tool-tempo" data-tool="tempo">&#9201; Tempo</button>
-      <button id="tool-fx" data-tool="fx">&#9670; FX</button>
+      <button id="tool-fx-classic" data-tool="fx_classic" title="Drag on waveform to create a Classic FX region">&#9670; Classic</button>
+      <button id="tool-fx-morpho" data-tool="fx_morpho" title="Drag on waveform to create a Morphogenics FX region">&#10022; Morpho</button>
       <span class="tool-sep">Note rel.</span>
       <button id="tool-phrase" data-tool="phrase">&#8994; Slur</button>
       <button id="tool-glissando" data-tool="glissando">&#8764; Glissando</button>
@@ -35,11 +142,78 @@
       <button id="tool-accent" data-tool="accent">&gt; Accent</button>
       <span class="tool-sep">Audio</span>
       <button id="separate-btn" title="Separate audio into stems">&#9881; Stemize</button>
-    </div>
-  </div>
+    </div><!-- /palette-composer -->
+    <div id="palette-interpreter" style="display:none">
+      <!-- GLOBAL ENGINE SETTINGS (Sections E + I) -->
+      <div id="ge-global" style="border-bottom:1px solid #1a1a1a;padding-bottom:6px;margin-bottom:4px;">
+        <div class="ge-label" style="cursor:pointer;display:flex;align-items:center;gap:4px;"
+             onclick="toggleBarContent('ge-global-body','ge-global-chev')">
+          <span id="ge-global-chev" style="font-size:9px;">&#9660;</span> Global Settings
+          <span style="font-size:9px;color:#333;font-style:italic;margin-left:4px;">— whole piece</span>
+        </div>
+        <div id="ge-global-body" style="padding-top:6px;">
+          <!-- E — Structural Salience -->
+          <div style="font-size:9px;color:#333;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">E — Salience</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+            <span id="gp-salience-summary" style="flex:1;font-size:9px;color:#555;font-family:'Courier New',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">α 0.40  β 0.30  γ 0.20  δ 0.10</span>
+            <button class="vec-edit-btn" onclick="_openSaliencePopup()">Edit</button>
+          </div>
+          <!-- hidden inputs keep the values for JS to read -->
+          <input id="gp-alpha"       type="hidden" value="0.4" />
+          <input id="gp-beta"        type="hidden" value="0.3" />
+          <input id="gp-gamma-sal"   type="hidden" value="0.2" />
+          <input id="gp-delta"       type="hidden" value="0.1" />
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
+            <label style="font-size:9px;color:#444;white-space:nowrap;" title="Clamp salience to [0,1]">ω clamp</label>
+            <input id="gp-salience-clamp" type="checkbox" checked />
+            <label style="font-size:9px;color:#444;white-space:nowrap;" title="EMA smoothing (0=off, 0.9=heavy)">ω smooth</label>
+            <input id="gp-omega-smooth" type="number" value="0" min="0" max="0.99" step="0.05" placeholder="0"
+                   style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+          </div>
+          <!-- I — Global / Engine-Level -->
+          <div style="font-size:9px;color:#333;text-transform:uppercase;letter-spacing:1px;margin:5px 0 3px;">I — Global</div>
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;flex-wrap:wrap;">
+            <label style="font-size:9px;color:#444;white-space:nowrap;">Clip</label>
+            <select id="gp-clip-method" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+              <option value="hard">Hard</option>
+              <option value="soft">Soft (tanh)</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:9px;color:#444;white-space:nowrap;">Phys. limits</label>
+            <span id="gp-physlimits-display" class="vec-display" style="flex:1;font-size:9px;color:#333;">—</span>
+            <button class="vec-edit-btn" onclick="_editPhysicalLimits()">Edit</button>
+          </div>
+        </div>
+      </div><!-- /ge-global -->
+      <!-- Base modulation: which state dims modulate the base track -->
+      <div style="padding:4px 8px 6px;border-bottom:1px solid #1a1a1a;margin-bottom:4px;">
+        <div style="font-size:9px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;">base modulation</div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <select id="interp-base-mod" style="flex:1;font-size:10px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:2px 4px;">
+            <option value="off">off</option>
+            <option value="gain">gain</option>
+            <option value="gain_center" selected>gain+center</option>
+            <option value="timbre">timbre (bright+filter)</option>
+            <option value="full">full (gain+timbre)</option>
+            <option value="custom">custom…</option>
+          </select>
+          <button id="interp-base-cog" title="Choose which dims modulate the base track" style="padding:2px 6px;font-size:11px;">&#9881;</button>
+        </div>
+      </div>
+      <button id="g-new-btn" style="width:100%;text-align:left;padding:6px 8px;font-size:11px;color:#7b5ea7;border-color:#7b5ea7;margin-bottom:2px;">+ New Golem</button>
+      <div id="golem-accordion"></div>
+    </div><!-- /palette-interpreter -->
+    </div><!-- /palette-content -->
+  </div><!-- /palette -->
   <div id="left-col">
     <div id="canvas-wrap">
       <canvas id="waveform-canvas"></canvas>
+    </div>
+    <!-- Golem timeline — always in DOM, shown when Interpreter tab is active -->
+    <div id="golem-timeline-wrap" style="display:none;">
+      <canvas id="golem-canvas"></canvas>
+      <div id="golem-timeline-label">golems — drag to create</div>
     </div>
     <div id="tracks-wrap" style="display:none;">
       <div id="tracks-header" onclick="toggleTracksPanel()"
@@ -62,33 +236,572 @@
       </div>
       <div id="score-load-row">
         <button id="view-toggle-btn">[ Score ]</button>
-        <button id="toggle-img-paths-btn" title="Show/hide image path inputs" onclick="toggleImgPaths()" style="font-size:10px;padding:1px 5px;color:#777;">&#9660; Paths</button>
-        <span id="img-paths-content">
-          <input id="score-path-input" type="text" placeholder="/path/to/score.png" />
-          <button id="load-score-btn">Load Score</button>
-          <label title="Audio time (s) that maps to the LEFT edge of the score image">img start:</label>
-          <input id="score-start-input" type="number" step="0.1" value="0" title="Audio time at left edge of score image">s
-          <label title="Audio time (s) that maps to the RIGHT edge of the score image">img end:</label>
-          <input id="score-end-input" type="number" step="0.1" value="0" title="Audio time at right edge of score image">s
-        </span>
-        <button id="toggle-score2-btn" style="margin-left:4px;" title="Show/hide metadata image panel">Metadata Img</button>
+        <label title="Audio time at left edge of score image">start:</label>
+        <input id="score-start-input" type="number" step="0.1" value="0" title="Audio time at left edge">s
+        <label title="Audio time at right edge of score image">end:</label>
+        <input id="score-end-input" type="number" step="0.1" value="0" title="Audio time at right edge">s
+        <button id="toggle-score2-btn" style="margin-left:auto;" title="Show/hide metadata image panel">Metadata</button>
       </div>
-      <div id="time-overlay">t = <span id="cur-time">0.000</span>s / <span id="dur-display">—</span>s</div>
     </div>
     <!-- Second independent image panel -->
     <div id="score2-container">
       <canvas id="score2-canvas"></canvas>
       <div id="score2-load-row">
         <button id="sync-imgs-btn" title="Sync metadata image time range to match score image" onclick="syncImageRanges()" style="font-size:10px;padding:1px 5px;color:#6af;">&#8596; Sync</button>
-        <input id="score2-path-input" type="text" placeholder="/path/to/metadata-image.png" />
-        <button id="load-score2-btn">Load</button>
         <label>start:</label>
         <input id="score2-start-input" type="number" step="0.1" value="0" title="Audio time at left edge">s
         <label>end:</label>
         <input id="score2-end-input" type="number" step="0.1" value="0" title="Audio time at right edge">s
         <button id="reset-score2-btn" title="Reset zoom &amp; pan">&#8635; Reset</button>
+      </div><!-- /score2-load-row -->
+    </div><!-- /score2-container -->
+
+    <!-- INTERPRETER SECTIONS: shown when Interpreter tab is active -->
+    <div id="interp-sections" style="display:none">
+
+      <!-- BOTTOM SPLIT: golem editor parking spot -->
+      <div id="interp-bottom-split">
+        <!-- GOLEM EDITOR: moved into accordion cards by JS -->
+        <div id="interp-golem-panel" style="display:none">
+          <div id="interp-golem-editor">
+            <div style="font-size:9px;color:#333;text-transform:uppercase;letter-spacing:1px;padding:3px 0 5px;border-bottom:1px solid #1a1a1a;margin-bottom:4px;">
+              Per-golem parameters
+            </div>
+
+            <!-- ENGINE TOGGLE -->
+            <div class="ge-section">
+              <div class="ge-label">engine</div>
+              <div class="ge-engine-btns">
+                <button class="ge-engine-btn active" data-engine="kalman">Kalman</button>
+                <button class="ge-engine-btn" data-engine="random_walk">Random Walk</button>
+                <button class="ge-engine-btn" data-engine="discrete">Discrete</button>
+              </div>
+            </div>
+
+            <!-- PRESETS + INTENSITY CONTROLS -->
+            <div id="ge-presets-section" class="ge-section">
+              <div class="ge-label">style preset</div>
+              <div id="ge-presets"></div>
+              <div style="margin-top:5px;padding-top:4px;border-top:1px solid #1a1a1a;">
+                <div style="display:flex;align-items:center;gap:5px;margin-bottom:3px;" title="How strongly the style's characteristic is applied (0=neutral, 1=preset, 2=amplified)">
+                  <label style="font-size:9px;color:#444;width:72px;">Intensity</label>
+                  <input type="range" id="ge-preset-intensity" min="0" max="2" step="0.05" value="1" style="flex:1;">
+                  <input type="number" id="ge-preset-intensity-val" value="1.0" min="0" max="2" step="0.05"
+                         style="width:36px;font-size:10px;background:#1a1a1a;border:1px solid #222;color:#aaa;padding:1px 3px;">
+                </div>
+                <div style="display:flex;align-items:center;gap:5px;" title="Higher=more momentum/stability, Lower=more jitter">
+                  <label style="font-size:9px;color:#444;width:72px;">Smoothness</label>
+                  <input type="range" id="ge-preset-smooth" min="0" max="2" step="0.05" value="1" style="flex:1;">
+                  <input type="number" id="ge-preset-smooth-val" value="1.0" min="0" max="2" step="0.05"
+                         style="width:36px;font-size:10px;background:#1a1a1a;border:1px solid #222;color:#aaa;padding:1px 3px;">
+                </div>
+              </div>
+            </div>
+
+            <!-- KALMAN SECTIONS A–D -->
+            <div id="ge-params-kalman" class="ge-params">
+
+              <!-- I. Starting values (μ₀) -->
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-i','ge-sec-i-chev')">
+                  <span id="ge-sec-i-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">I</span> Starting values (μ₀)
+                  <span class="ge-sec-desc">per-dim initial state override</span>
+                </div>
+                <div id="ge-sec-i" class="ge-coll-body" style="display:none;">
+                  <div id="ge-startvals-dims" style="display:flex;flex-direction:column;gap:3px;padding:0 4px;">
+                    <!-- populated by JS from DIM_NAMES -->
+                  </div>
+                  <button id="ge-startvals-reset" style="width:100%;margin-top:5px;font-size:10px;color:#888;border-color:#333;background:#111;" title="Clear all overrides (use character defaults)">Reset to character defaults</button>
+                </div>
+              </div>
+
+              <!-- A. Transition Model -->
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-a','ge-sec-a-chev')">
+                  <span id="ge-sec-a-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">A</span> Transition Model
+                  <span class="ge-sec-desc">AR(2) momentum coefficients</span>
+                </div>
+                <div id="ge-sec-a" class="ge-coll-body" style="display:none;">
+                  <div class="ge-param-row">
+                    <label title="Momentum coeff 1 (A1+A2 &lt; 1 for stability)">Momentum A1</label>
+                    <input type="range" id="ge-A1" min="0" max="0.95" step="0.01" value="0.70"
+                           oninput="document.getElementById('ge-A1-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-A1-val" value="0.70" min="0" max="0.95" step="0.01"
+                           oninput="const s=document.getElementById('ge-A1');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Memory coeff 2 (A1+A2 &lt; 1)">Memory A2</label>
+                    <input type="range" id="ge-A2" min="0" max="0.95" step="0.01" value="0.20"
+                           oninput="document.getElementById('ge-A2-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-A2-val" value="0.20" min="0" max="0.95" step="0.01"
+                           oninput="const s=document.getElementById('ge-A2');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-vec-row">
+                    <label>A1 per dim</label>
+                    <span id="ge-a1dims-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-a1dims','A1 per dimension',[0,0.95],0.01)">Edit</button>
+                  </div>
+                  <div class="ge-vec-row">
+                    <label>A2 per dim</label>
+                    <span id="ge-a2dims-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-a2dims','A2 per dimension',[0,0.95],0.01)">Edit</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- B. Process Noise -->
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-b','ge-sec-b-chev')">
+                  <span id="ge-sec-b-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">B</span> Process Noise
+                  <span class="ge-sec-desc">noise scaling &amp; drama sensitivity</span>
+                </div>
+                <div id="ge-sec-b" class="ge-coll-body" style="display:none;">
+                  <div class="ge-param-row">
+                    <label title="How much process noise scales up after dramatic events">Reactivity Q×</label>
+                    <input type="range" id="ge-Q-scale" min="0.05" max="5" step="0.05" value="1.00"
+                           oninput="document.getElementById('ge-Q-scale-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-Q-scale-val" value="1.00" min="0.05" max="5" step="0.05"
+                           oninput="const s=document.getElementById('ge-Q-scale');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-vec-row">
+                    <label title="Baseline process noise per dimension">Q base (dim)</label>
+                    <span id="ge-qbase-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-qbase','Q base per dimension',[0,5],0.01)">Edit</button>
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Shape of the drama→noise relationship">Drama shape</label>
+                    <select id="ge-drama-curve" style="background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="linear">Linear</option>
+                      <option value="square">Squared</option>
+                      <option value="exp">Exponential</option>
+                    </select>
+                    <span></span>
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Innovation energy decay rate">Innov. decay</label>
+                    <input type="number" id="ge-innov-decay" value="0.7" min="0" max="1" step="0.05"
+                           style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                    <span></span>
+                  </div>
+                  <div id="ge-rw-scatter-row" style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                    <label style="font-size:10px;color:#555;white-space:nowrap;" title="0=pure Kalman, 1=heavy scatter">RW scatter</label>
+                    <input id="ge-rw-scatter" type="range" min="0" max="1" step="0.05" value="0" style="flex:1;"
+                           oninput="document.getElementById('ge-rw-scatter-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-rw-scatter-val" value="0.00" min="0" max="1" step="0.05"
+                           oninput="const s=document.getElementById('ge-rw-scatter');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- C. Observation Model -->
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-c','ge-sec-c-chev')">
+                  <span id="ge-sec-c-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">C</span> Observation Model
+                  <span class="ge-sec-desc">how closely to follow dynamics</span>
+                </div>
+                <div id="ge-sec-c" class="ge-coll-body" style="display:none;">
+                  <div class="ge-param-row">
+                    <label title="Scales how closely the filter corrects towards observations">Obs scale R×</label>
+                    <input type="range" id="ge-R-scale" min="0.05" max="5" step="0.05" value="1.00"
+                           oninput="document.getElementById('ge-R-scale-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-R-scale-val" value="1.00" min="0.05" max="5" step="0.05"
+                           oninput="const s=document.getElementById('ge-R-scale');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="How closely this Golem follows dynamic markings (0=ignores, 2=strictly follows)">Marking pull</label>
+                    <input type="range" id="ge-obs-weight" min="0" max="2" step="0.05" value="1.00"
+                           oninput="document.getElementById('ge-obs-weight-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-obs-weight-val" value="1.00" min="0" max="2" step="0.05"
+                           oninput="const s=document.getElementById('ge-obs-weight');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-vec-row">
+                    <label title="Observation weight per dimension">Obs wt (dim)</label>
+                    <span id="ge-obswtdims-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-obswtdims','Obs weight per dimension',[0,3],0.05)">Edit</button>
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Window decay: recent markings count more (1=uniform, 0.7=moderate decay)">Window decay γ</label>
+                    <input type="range" id="ge-gamma-w" min="0.1" max="1" step="0.05" value="1.0"
+                           oninput="document.getElementById('ge-gamma-w-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-gamma-w-val" value="1.00" min="0.1" max="1" step="0.05"
+                           oninput="const s=document.getElementById('ge-gamma-w');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- D. Lookahead Prior -->
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-d','ge-sec-d-chev')">
+                  <span id="ge-sec-d-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">D</span> Lookahead Prior
+                  <span class="ge-sec-desc">familiarity &amp; future-pull</span>
+                </div>
+                <div id="ge-sec-d" class="ge-coll-body" style="display:none;">
+                  <div class="ge-param-row">
+                    <label title="How well the interpreter knows the piece (0.3=sight-reading, 0.9=memorised)">Familiarity λ</label>
+                    <input type="range" id="ge-lam" min="0.1" max="0.99" step="0.01" value="0.80"
+                           oninput="document.getElementById('ge-lam-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-lam-val" value="0.80" min="0.1" max="0.99" step="0.01"
+                           oninput="const s=document.getElementById('ge-lam');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Per-regime lookahead scale (blank = use global ξ)">ξ regime</label>
+                    <input type="number" id="ge-xi-regime" placeholder="global" min="0" step="0.01"
+                           style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                    <span></span>
+                  </div>
+                  <div class="ge-vec-row">
+                    <label title="Which dimensions the lookahead prior affects (1=on, 0=off)">φ mask</label>
+                    <span id="ge-fpmask-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVectorBinary('ge-fpmask','Lookahead mask (which dims φ affects)')">Edit</button>
+                  </div>
+                  <div class="ge-vec-row">
+                    <label title="Lookahead scale per dimension">φ scale (dim)</label>
+                    <span id="ge-fpscale-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-fpscale','Lookahead scale per dimension',[0,20],0.1)">Edit</button>
+                  </div>
+                </div>
+              </div>
+
+            </div><!-- /ge-params-kalman -->
+
+            <!-- G. Random Walk -->
+            <div id="ge-params-rw" class="ge-params" style="display:none;">
+              <div class="ge-collapsible">
+                <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-g','ge-sec-g-chev')">
+                  <span id="ge-sec-g-chev" class="ge-chev">&#9654;</span>
+                  <span class="ge-sec-letter">G</span> Random Walk
+                  <span class="ge-sec-desc">step size, drift, mean reversion</span>
+                </div>
+                <div id="ge-sec-g" class="ge-coll-body" style="display:none;">
+                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Step size (vol · bright · timing · attack · reverb)</div>
+                  <div style="display:flex;gap:3px;margin-bottom:4px;">
+                    <input id="ge-rw-step-0" type="number" value="1.5"  step="0.1"   min="0" title="volume"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-step-1" type="number" value="0.05" step="0.005" min="0" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-step-2" type="number" value="20.0" step="1"     min="0" title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-step-3" type="number" value="0.05" step="0.005" min="0" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-step-4" type="number" value="0.05" step="0.005" min="0" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Drift per dimension</div>
+                  <div style="display:flex;gap:3px;margin-bottom:4px;">
+                    <input id="ge-rw-drift-0" type="number" value="0.0" step="0.05"  title="volume"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-drift-1" type="number" value="0.0" step="0.005" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-drift-2" type="number" value="0.0" step="0.5"   title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-drift-3" type="number" value="0.0" step="0.005" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-drift-4" type="number" value="0.0" step="0.005" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Pull-back per dimension (0=free)</div>
+                  <div style="display:flex;gap:3px;margin-bottom:4px;">
+                    <input id="ge-rw-mr-0" type="number" value="0.0" step="0.01" min="0" max="1" title="volume"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-mr-1" type="number" value="0.0" step="0.01" min="0" max="1" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-mr-2" type="number" value="0.0" step="0.01" min="0" max="1" title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-mr-3" type="number" value="0.0" step="0.01" min="0" max="1" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-mr-4" type="number" value="0.0" step="0.01" min="0" max="1" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div class="ge-vec-row">
+                    <label title="Mean reversion resting level (default: 0)">MR target</label>
+                    <span id="ge-mrtarget-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-mrtarget','Mean reversion target',[-20,20],0.1)">Edit</button>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                    <label style="font-size:10px;color:#555;white-space:nowrap;">Boundary</label>
+                    <select id="ge-rw-boundary" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="clip">Clip</option>
+                      <option value="reflect">Reflect</option>
+                    </select>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap;">
+                    <label style="font-size:10px;color:#555;white-space:nowrap;">Breath period</label>
+                    <input id="ge-breath-period" type="number" placeholder="8.0" min="0" step="0.5"
+                           style="width:48px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                    <label style="font-size:10px;color:#555;white-space:nowrap;">amp</label>
+                    <input id="ge-breath-amp" type="number" placeholder="0.6" min="0" step="0.05"
+                           style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                    <label style="font-size:10px;color:#555;white-space:nowrap;" title="ω-driven step size scaling factor (blank=off)">ω step scale</label>
+                    <input id="ge-omega-step-scale" type="number" placeholder="off" min="0" step="0.1"
+                           style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                  </div>
+                  <div class="ge-vec-row" style="margin-top:4px;">
+                    <label>Correlation</label>
+                    <span id="ge-corr-display" class="vec-display">—</span>
+                    <button class="vec-edit-btn" onclick="_editCorrelation()">Edit</button>
+                  </div>
+                </div>
+              </div>
+            </div><!-- /ge-params-rw -->
+
+            <!-- DISCRETE GOLEM PARAMS -->
+            <div id="ge-params-discrete" class="ge-params" style="display:none;">
+              <div class="ge-section-title" style="margin-bottom:6px;">Fixed state values</div>
+              <div id="ge-discrete-dims" style="display:flex;flex-direction:column;gap:3px;padding:0 4px;">
+                <!-- populated by JS from DIM_NAMES -->
+              </div>
+            </div><!-- /ge-params-discrete -->
+
+            <!-- F. Distribution -->
+            <div class="ge-collapsible">
+              <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-f','ge-sec-f-chev')">
+                <span id="ge-sec-f-chev" class="ge-chev">&#9654;</span>
+                <span class="ge-sec-letter">F</span> Distribution
+                <span class="ge-sec-desc">noise shape &amp; covariance inflation</span>
+              </div>
+              <div id="ge-sec-f" class="ge-coll-body" style="display:none;">
+                <div class="ge-dist-btns">
+                  <button class="ge-dist-btn active" data-dist="gaussian">Natural</button>
+                  <button class="ge-dist-btn" data-dist="laplace">Edgy</button>
+                  <button class="ge-dist-btn" data-dist="cauchy">Wild</button>
+                  <button class="ge-dist-btn" data-dist="uniform">Even</button>
+                  <button class="ge-dist-btn" data-dist="beta">Curved</button>
+                  <button class="ge-dist-btn" data-dist="student_t">Heavy</button>
+                  <button class="ge-dist-btn" data-dist="bimodal">Bipolar</button>
+                  <button class="ge-dist-btn" data-dist="mixture">Bursting</button>
+                  <button class="ge-dist-btn" data-dist="skew_normal">Skewed</button>
+                  <button class="ge-dist-btn" data-dist="truncated">Bounded+</button>
+                </div>
+                <button id="ge-dist-config-btn" style="width:100%;margin-top:4px;font-size:10px;color:#6a8aaa;border-color:#2a4a6a;background:#111;">Configure distribution…</button>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                  <label style="font-size:10px;color:#555;white-space:nowrap;" title="Multiply posterior covariance before sampling (≥1)">Inflate Σ</label>
+                  <input id="ge-inflate" type="number" value="1.0" min="1" step="0.1"
+                         style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                </div>
+                <div class="ge-vec-row" style="margin-top:4px;">
+                  <label title="Per-dimension covariance inflation">Inflate (dim)</label>
+                  <span id="ge-inflatedims-display" class="vec-display">—</span>
+                  <button class="vec-edit-btn" onclick="_editVector('ge-inflatedims','Covariance inflation per dimension',[1,10],0.1)">Edit</button>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;" title="Clamp each posterior sample to mu ± N·σ to tame heavy-tailed outliers">
+                  <label style="font-size:10px;color:#555;white-space:nowrap;">
+                    <input id="ge-tame-outliers" type="checkbox" style="vertical-align:middle;" /> Tame outliers (σ cap)
+                  </label>
+                  <input id="ge-clip-sigma" type="number" value="3.0" min="0.5" max="10" step="0.1"
+                         style="width:50px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                </div>
+                <div class="ge-vec-row" style="margin-top:4px;">
+                  <label title="Per-dimension σ-cap override (overrides scalar cap)">σ cap (dim)</label>
+                  <span id="ge-clipsigmadims-display" class="vec-display">—</span>
+                  <button class="vec-edit-btn" onclick="_editVector('ge-clipsigmadims','σ cap per dimension (0 = no cap)',[0,10],0.1)">Edit</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- H. Envelope & Blending -->
+            <div class="ge-collapsible">
+              <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-h','ge-sec-h-chev')">
+                <span id="ge-sec-h-chev" class="ge-chev">&#9654;</span>
+                <span class="ge-sec-letter">H</span> Envelope &amp; Blending
+                <span class="ge-sec-desc">weight, fade shape, blend method</span>
+              </div>
+              <div id="ge-sec-h" class="ge-coll-body" style="display:none;">
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                  <label style="font-size:10px;color:#555;">w:</label>
+                  <input id="ge-weight"  type="number" value="1.0" step="0.1" min="0.1" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                  <label style="font-size:10px;color:#555;">↑</label>
+                  <input id="ge-fadein"  type="number" value="0"   step="0.5" min="0"   style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                  <label style="font-size:10px;color:#555;">↓</label>
+                  <input id="ge-fadeout" type="number" value="0"   step="0.5" min="0"   style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+                  <label style="font-size:10px;color:#555;white-space:nowrap;">Fade curve</label>
+                  <select id="ge-fade-curve" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                    <option value="linear">Linear</option>
+                    <option value="exp">Exponential</option>
+                    <option value="sigmoid">Sigmoid</option>
+                    <option value="cosine">Cosine</option>
+                  </select>
+                  <label style="font-size:10px;color:#555;white-space:nowrap;">Blend</label>
+                  <select id="ge-dist-blend" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                    <option value="dominant">Dominant</option>
+                    <option value="mixture">Mixture</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- ACTIONS (time range + CRUD) -->
+            <div class="ge-section ge-actions" style="margin-top:6px;">
+              <div class="ge-time-row">
+                <label>From</label>
+                <input id="ge-from" type="number" value="0" step="0.1" />
+                <label>To</label>
+                <input id="ge-to"   type="number" value="60" step="0.1" />
+                <span style="font-size:9px;color:#333;">s</span>
+              </div>
+              <div class="ge-crud-row">
+                <button id="ge-add-btn"    style="color:#7b5ea7;border-color:#7b5ea7;">+ Add</button>
+                <button id="ge-update-btn">Update</button>
+                <button id="ge-delete-btn" style="color:#c87070;border-color:#c87070;">✕ Del</button>
+              </div>
+            </div>
+
+            <!-- CUSTOM CHARACTERS (collapsible) -->
+            <div class="ge-section" style="border-top:1px solid #1a1a1a;margin-top:6px;padding-top:6px;">
+              <div class="ge-label" style="cursor:pointer;display:flex;align-items:center;gap:4px;"
+                   onclick="toggleBarContent('ge-cc-body','ge-cc-chev')">
+                <span id="ge-cc-chev" style="font-size:9px;">&#9654;</span> custom styles
+              </div>
+              <div id="ge-cc-body" style="display:none;margin-top:6px;">
+                <div style="display:flex;gap:5px;margin-bottom:5px;flex-wrap:wrap;">
+                  <input id="cc-name" type="text" placeholder="my_char" style="flex:1;min-width:80px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-family:inherit;font-size:11px;padding:2px 5px;" />
+                  <select id="cc-type" style="background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:11px;padding:2px 4px;" onchange="ccUpdateFields()">
+                    <option value="kalman">Kalman</option>
+                    <option value="random_walk">RW</option>
+                    <option value="discrete">Discrete</option>
+                  </select>
+                  <button id="cc-save-btn" style="color:#7b5ea7;border-color:#7b5ea7;">+ Save</button>
+                </div>
+                <!-- Kalman fields -->
+                <div id="cc-kalman-fields">
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:3px;">
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">A1</label><input id="cc-A1" type="number" value="0.7" step="0.05" min="0" max="1" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">A2</label><input id="cc-A2" type="number" value="0.2" step="0.05" min="0" max="1" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">Q×</label><input id="cc-Qscale" type="number" value="1.0" step="0.1" min="0.01" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">R×</label><input id="cc-Rscale" type="number" value="1.0" step="0.1" min="0.01" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">λ</label><input id="cc-lam" type="number" value="0.7" step="0.05" min="0.1" max="0.99" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                    <div style="display:flex;align-items:center;gap:2px;"><label style="font-size:9px;color:#444;">obs</label><input id="cc-obs-weight" type="number" value="1.0" step="0.05" min="0" max="2" style="width:44px;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" /></div>
+                  </div>
+                  <div style="cursor:pointer;margin-bottom:2px;display:flex;align-items:center;gap:3px;" onclick="toggleBarContent('cc-a1dims-body','cc-a1dims-chev')">
+                    <span id="cc-a1dims-chev" style="font-size:9px;color:#444;">&#9654;</span><span style="font-size:9px;color:#333;">A1 per dim</span>
+                  </div>
+                  <div id="cc-a1dims-body" style="display:none;margin-bottom:3px;">
+                    <div style="display:flex;gap:3px;">
+                      <input id="cc-a1d-0" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="volume"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a1d-1" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="brightness" style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a1d-2" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="timing"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a1d-3" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="attack"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a1d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="reverb"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    </div>
+                  </div>
+                  <div style="cursor:pointer;margin-bottom:2px;display:flex;align-items:center;gap:3px;" onclick="toggleBarContent('cc-a2dims-body','cc-a2dims-chev')">
+                    <span id="cc-a2dims-chev" style="font-size:9px;color:#444;">&#9654;</span><span style="font-size:9px;color:#333;">A2 per dim</span>
+                  </div>
+                  <div id="cc-a2dims-body" style="display:none;margin-bottom:3px;">
+                    <div style="display:flex;gap:3px;">
+                      <input id="cc-a2d-0" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="volume"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a2d-1" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="brightness" style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a2d-2" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="timing"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a2d-3" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="attack"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a2d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="reverb"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:5px;margin-bottom:3px;align-items:center;">
+                    <label style="font-size:9px;color:#444;white-space:nowrap;">Drama</label>
+                    <select id="cc-drama-curve" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="linear">Linear</option><option value="square">Squared</option><option value="exp">Exponential</option>
+                    </select>
+                    <label style="font-size:9px;color:#444;white-space:nowrap;">Variation</label>
+                    <select id="cc-sample-dist" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;" onchange="ccToggleMixture()">
+                      <option value="gaussian">Natural</option><option value="laplace">Edgy</option><option value="cauchy">Wild</option>
+                      <option value="student_t">Heavy</option><option value="bimodal">Bipolar</option><option value="mixture">Bursting</option>
+                    </select>
+                  </div>
+                  <div id="cc-mixture-fields" style="display:none;margin-bottom:3px;">
+                    <div style="display:flex;gap:5px;align-items:center;">
+                      <label style="font-size:9px;color:#444;">Spike %</label>
+                      <input id="cc-mixture-p" type="number" value="0.05" step="0.01" min="0" max="1" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" />
+                      <label style="font-size:9px;color:#444;">×</label>
+                      <input id="cc-mixture-scale" type="number" value="4.0" step="0.5" min="1" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" />
+                    </div>
+                  </div>
+                </div><!-- /cc-kalman-fields -->
+                <!-- RW fields -->
+                <div id="cc-rw-fields" style="display:none;">
+                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Step · Drift · Pull-back</div>
+                  <div style="display:flex;gap:3px;margin-bottom:3px;">
+                    <input id="cc-step-0"  type="number" value="1.5"  step="0.1"   min="0" title="vol step"   style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-step-1"  type="number" value="0.05" step="0.005" min="0" title="bright step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-step-2"  type="number" value="20"   step="1"     min="0" title="timing step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-step-3"  type="number" value="0.05" step="0.005" min="0" title="attack step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-step-4"  type="number" value="0.05" step="0.005" min="0" title="reverb step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div style="display:flex;gap:3px;margin-bottom:3px;">
+                    <input id="cc-drift-0" type="number" value="0" step="0.05"  title="vol drift"   style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-drift-1" type="number" value="0" step="0.005" title="bright drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-drift-2" type="number" value="0" step="0.5"   title="timing drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-drift-3" type="number" value="0" step="0.005" title="attack drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-drift-4" type="number" value="0" step="0.005" title="reverb drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div style="display:flex;gap:3px;margin-bottom:3px;">
+                    <input id="cc-mr-0" type="number" value="0" step="0.01" min="0" max="1" title="vol mr"   style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-mr-1" type="number" value="0" step="0.01" min="0" max="1" title="bright mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-mr-2" type="number" value="0" step="0.01" min="0" max="1" title="timing mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-mr-3" type="number" value="0" step="0.01" min="0" max="1" title="attack mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-mr-4" type="number" value="0" step="0.01" min="0" max="1" title="reverb mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                  </div>
+                  <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px;">
+                    <label style="font-size:9px;color:#444;white-space:nowrap;">Boundary</label>
+                    <select id="cc-boundary" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="clip">Clip</option><option value="reflect">Reflect</option>
+                    </select>
+                    <label style="font-size:9px;color:#444;white-space:nowrap;">Corr</label>
+                    <select id="cc-corr-preset" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="none">Independent</option>
+                      <option value="gain_bright">Vol↔Bright</option>
+                      <option value="expressive">Vol+Bright+Atk</option>
+                      <option value="temporal">Timing+Vol</option>
+                    </select>
+                  </div>
+                  <div id="cc-rw-mixture-fields" style="display:none;margin-bottom:3px;">
+                    <div style="display:flex;gap:5px;align-items:center;">
+                      <label style="font-size:9px;color:#444;">Spike %</label>
+                      <input id="cc-rw-mixture-p" type="number" value="0.05" step="0.01" min="0" max="1" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" />
+                      <label style="font-size:9px;color:#444;">×</label>
+                      <input id="cc-rw-mixture-scale" type="number" value="4.0" step="0.5" min="1" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#bbb;padding:2px 3px;font-size:10px;" />
+                    </div>
+                  </div>
+                  <select id="cc-rw-dist" onchange="ccToggleRWMixture()" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;margin-bottom:3px;">
+                    <option value="gaussian">Natural</option><option value="laplace">Edgy</option><option value="cauchy">Wild</option>
+                    <option value="student_t">Heavy</option><option value="bimodal">Bipolar</option><option value="mixture">Bursting</option>
+                  </select>
+                </div><!-- /cc-rw-fields -->
+                <div id="cc-status" class="interp-status"></div>
+                <div id="cc-list" style="margin-top:6px;"></div>
+              </div><!-- /ge-cc-body -->
+            </div><!-- /custom styles -->
+
+          </div><!-- /interp-golem-editor -->
+        </div><!-- /interp-golem-panel -->
+      </div><!-- /interp-bottom-split -->
+
+      <!-- DIMENSION TIMELINE -->
+      <div id="kalman-trace-wrap">
+        <canvas id="kalman-trace-canvas"></canvas>
       </div>
+
+    </div><!-- /interp-sections -->
+
+    <!-- BOTTOM BAR — outside interp-sections so it's always visible -->
+    <div id="interp-bottombar">
+      <label style="font-size:11px;color:#555;white-space:nowrap;">walks:</label>
+      <input id="interp-walks" type="number" value="1" min="1" max="20" step="1"
+             style="width:42px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:11px;" />
+      <button id="interp-trace-btn">&#9672; Trace</button>
+      <button id="interp-download-btn" style="color:#555;border-color:#333;" title="Download timeline as PNG">&#8681; PNG</button>
+      <span id="interp-render-status" style="font-size:10px;color:#c87070;margin-left:6px;"></span>
     </div>
+
+  </div><!-- /left-col -->
+  <div id="interp-info-panel" style="display:none;flex-direction:column;">
+    <div id="viz-panel-header" style="padding:4px 6px;border-bottom:1px solid #1a1a1a;flex-shrink:0;">
+      <select id="viz-panel-select" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:3px 4px;">
+        <!-- populated dynamically by refreshVizDropdown() based on active golem types -->
+      </select>
+    </div>
+    <canvas id="viz-panel-canvas" style="display:block;width:100%;flex:1;min-height:0;"></canvas>
+    <div id="viz-dim-row" style="display:none;padding:3px 6px;border-top:1px solid #1a1a1a;gap:4px;align-items:center;flex-wrap:wrap;flex-shrink:0;">
+      <label style="font-size:9px;color:#555;">X:</label>
+      <select id="viz-dim-x" style="flex:1;background:#1a1a1a;border:1px solid #222;color:#888;font-family:inherit;font-size:9px;padding:2px 3px;">
+      </select>
+      <label style="font-size:9px;color:#555;">Y:</label>
+      <select id="viz-dim-y" style="flex:1;background:#1a1a1a;border:1px solid #222;color:#888;font-family:inherit;font-size:9px;padding:2px 3px;">
+      </select>
+    </div>
+    <div id="viz-panel-status" style="font-size:9px;color:#666;padding:2px 6px;text-align:center;flex-shrink:0;">press ◈ Trace to visualize</div>
   </div>
   <div id="score-info-panel">
     <div id="history-header" onclick="toggleBarContent('history-body','history-chevron')"
@@ -103,63 +816,23 @@
   </div>
 </div>
 
-<div id="controls-bar">
-  <label style="cursor:pointer;user-select:none;" onclick="toggleBarContent('controls-content','controls-chevron')" title="Collapse/expand view controls">
-    <span id="controls-chevron" style="font-size:9px;">&#9660;</span> view:
-  </label>
-  <span id="controls-content">
-    <button id="tool-zoom" data-tool="zoom">&#8853; Zoom</button>
-    <button id="tool-pointer" data-tool="pointer" title="Pointer: click to seek, drag to pan score">&#8593; Pointer</button>
-    <span style="color:#555;padding:0 4px;">|</span>
-    <button id="quantize-btn" title="Snap events to a beat grid">&#9956; Quantize</button>
-    <span style="color:#555;padding:0 4px;">|</span>
-    <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
-    <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
-  </span>
-</div>
 
-<div id="export-bar">
-  <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;" onclick="toggleBarContent('export-content','export-chevron')" title="Collapse/expand export bar">
-    <span id="export-chevron" style="font-size:9px;">&#9660;</span> name:
-  </label>
-  <span id="export-content">
-    <input id="score-name" type="text" value="untitled" />
-    <button id="base-fx-btn" title="FX applied to the base audio track">Base FX: <span id="base-fx-label">none</span></button>
-    <!-- Engine selector -->
-    <span style="margin-left:12px;font-size:11px;color:#555;">engine:</span>
-    <select id="engine-select" title="Rendering engine" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 6px;font-size:11px;">
-      <option value="v1">V1</option>
-      <option value="v2">V2 β</option>
-    </select>
-    <!-- V2 config sub-panel (hidden when V1 active) -->
-    <span id="v2-panel" style="display:none;margin-left:8px;gap:6px;align-items:center;">
-      <span style="font-size:10px;color:#7b5ea7;font-weight:bold;">V2 β</span>
-      <select id="v2-mode" title="Markov mode" style="background:#111;color:#aaa;border:1px solid #333;padding:2px 5px;font-size:11px;">
-        <option value="joint">joint</option>
-        <option value="symbolic">symbolic</option>
-      </select>
-      <label style="font-size:11px;color:#555;">seed:</label>
-      <input id="v2-seed" type="number" placeholder="random" title="Set integer for reproducible runs" style="width:72px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
-      <label style="font-size:11px;color:#555;">order:</label>
-      <input id="v2-order" type="number" value="2" min="1" max="4" title="Markov order (1–4)" style="width:40px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;" />
-    </span>
-    <span style="color:#555;padding:0 4px;">|</span>
-    <button id="export-btn">&#8595; Export YAML</button>
-    <button id="export-mp4-btn" title="Export scrolling score video as MP4 file">&#8659; Export MP4</button>
-    <input id="import-path" type="text" placeholder="/path/to/score.yaml" style="width:180px;" />
-    <button id="import-btn">&#8593; Import YAML</button>
-    <span style="color:#555;padding:0 4px;">|</span>
-  </span><!-- /export-content -->
-  <button id="go-start-btn" title="Go to beginning" onclick="goToBeginning()" style="font-size:13px;padding:2px 6px;">&#9612;&#9664;</button>
-  <button id="play-base-btn" title="Play/pause source audio (s)" onclick="toggleBase()">&#9654; Source</button>
-  <button id="play-mix-btn" title="Render &amp; play composition (Space)" onclick="toggleMix()">&#9654; Mix</button>
-  <label style="font-size:11px;color:#555;margin-left:8px;">speed:</label>
-  <input id="playback-speed" type="number" value="1.0" min="0.1" max="4.0" step="0.05"
-         title="Playback speed (time only — pitch unchanged for source; re-render Mix for pitch-safe stretch)"
-         style="width:52px;background:#111;color:#aaa;border:1px solid #333;padding:2px 4px;font-size:11px;"
-         onchange="_applyPlaybackSpeed()" />
-  <span id="export-status" style="margin-left:6px;"></span>
-</div>
+
+<!-- ═══════════════════════════ CONDUCTOR ═══════════════════════════ -->
+<div id="ws-conductor" class="workspace" style="display:none;">
+  <div id="conductor-body">
+    <div style="color:#2a2a2a;font-size:14px;letter-spacing:4px;text-transform:uppercase;margin-bottom:16px;">Conductor</div>
+    <p style="color:#1e1e1e;font-size:12px;max-width:400px;line-height:2;text-align:center;margin-bottom:16px;">
+      Future workspace — coordinates multiple Composers and Interpreters.
+    </p>
+    <ul class="conductor-future">
+      <li>Batch rendering across seed sweeps</li>
+      <li>Multi-score sequencing and splicing</li>
+      <li>Automated A/B interpretation comparison</li>
+      <li>Export report: per-seed expressive parameter trajectories</li>
+    </ul>
+  </div>
+</div><!-- /ws-conductor -->
 
 <!-- Popup -->
 <div id="popup-overlay">
@@ -173,6 +846,22 @@
   </div>
 </div>
 
+<!-- File browser modal -->
+<div id="fb-modal">
+  <div id="fb-panel">
+    <div id="fb-header">
+      <span id="fb-path"></span>
+      <button id="fb-close-btn">✕</button>
+    </div>
+    <div id="fb-list"></div>
+    <div id="fb-save-row">
+      <input id="fb-filename" placeholder="filename" />
+      <button id="fb-save-btn">Save here</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/filebrowser.js"></script>
 <script src="js/state.js"></script>
 <script src="js/wa-mixer.js"></script>
 <script src="js/wa-mix.js"></script>
@@ -184,5 +873,10 @@
 <script src="js/image-view.js"></script>
 <script src="js/export.js"></script>
 <script src="js/editor.js"></script>
+<script src="js/workspace.js"></script>
+<script src="js/golems.js"></script>
+<script src="js/kalman-trace.js"></script>
+<script src="js/viz-panel.js"></script>
+<script src="js/interpreter.js"></script>
 </body>
 </html>

@@ -9,6 +9,37 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 
 ---
 
+## [0.4.0] — Golems
+
+### Changed
+- **V2 engine replaced with Kalman filter** — the Markov-chain expressive engine is gone.
+  The new V2 engine implements the full theoretical foundation: AR(2) momentum transitions,
+  adaptive Q (drama × volatility), window observations, fuzzy future lookahead, and piece
+  characters. Every run of the same score produces a different but internally consistent
+  interpretation.
+- **Golems** — new score key `golems:` accepts a list of `{from, to, character}` entries
+  that assign a named expressive personality to a time range. Built-in characters:
+  `dramatic`, `lyrical`, `sparse`, `turbulent`. Characters are blended when ranges overlap.
+- **Golems panel** in the web editor — accessible via the ◆ Golems button in the V2 toolbar.
+  Allows creating, editing, and removing Golem entries with live export/import support.
+- **config.yaml** restructured — old Markov params (`markov_mode`, `markov_order`,
+  `covariance`, `phrase_boundary`, `history_decay`) replaced with Kalman params under
+  `v2:` block (`A1`, `A2`, `Q_base`, `lambda`, `eta`, `xi`, `drama_weights`, `window_size`).
+- **Engine selector label** updated from "V2 β" to "V2 Golems".
+
+### Files added
+- `v2/kalman.py` — Kalman predict/update core
+- `v2/drama.py` — pre-rendering drama/salience/future_pull pass
+- `v2/observation.py` — window encoding and H/R lookup
+- `v2/character.py` — piece character presets and blending
+- `v2/transition_table.yaml` — H/R per window pattern + character definitions
+
+### Files removed
+- `v2/markov_symbolic.py`, `v2/markov_joint.py`, `v2/emission.py`, `v2/context.py`
+- `v2/transition_table.yaml` (old Markov table)
+
+---
+
 ## [0.3.1] — Bug Fixes
 
 ### Fixed

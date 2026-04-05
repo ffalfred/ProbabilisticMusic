@@ -1,40 +1,7 @@
 # --- Engine version ---
 # options: v1, v2
+# v2 = Kalman filter expressive engine (Golems)
 engine: v2
-
-# --- Markov mode (v2 only) ---
-# symbolic: conditions only on previous score markings
-# joint:    conditions on previous markings AND previous rendered outputs
-markov_mode: joint
-
-# --- Markov order (v2 only) ---
-# how many previous steps to consider — recommended: start with 2
-markov_order: 2
-
-# --- Covariance structure (v2 only) ---
-# diagonal: parameters vary independently
-# full:     parameters co-vary (requires correlation coefficients in transition table)
-covariance: diagonal
-
-# --- Phrase boundary behaviour (v2 only) ---
-# reset:      Markov history resets at each phrase boundary
-# continuous: history accumulates across the whole piece
-phrase_boundary: reset
-
-# --- History decay weight (joint mode only) ---
-# how strongly older history influences current emission
-# 1.0 = all steps weighted equally
-# 0.5 = each step half as influential as the previous one
-history_decay: 0.7
-
-# --- Cold start defaults (v2 only) ---
-cold_start_marking: mf
-cold_start_outputs:
-  gain_db: -12.0
-  brightness: 0.5
-  timing_offset_ms: 0.0
-  attack_shape: 0.5
-  reverb_wet: 0.3
 
 # --- Output files ---
 # each run writes a new numbered file — output/output_<score>_<base>_001.wav etc.
@@ -48,8 +15,59 @@ v1_stochastic:
   gain_db:  {enabled: true,  std: 1.0}
   timing:   {enabled: false, std: 0.0}
 
-# --- Bayesian update (v2 only) ---
-# false: use expert priors only
-# true:  update priors with MAESTRO data (not yet implemented)
-bayesian_update: false
-maestro_path: null
+# --- V2 Kalman engine parameters ---
+# Active when engine: v2
+# Golems (piece character time ranges) are defined in the score YAML
+# under the 'golems:' key: [{from: 0, to: 30, character: lyrical}, ...]
+v2:
+  # AR(2) momentum coefficients (scalar — applied as scalar * I)
+  # A1: weight of x(t-1), A2: weight of x(t-2)
+  # A1 + A2 < 1 for stability
+  A1: 0.7
+  A2: 0.2
+
+  # Baseline process noise — how much each state dimension can drift per step
+  # [gain_db, brightness, timing_ms, attack, release, reverb_wet,
+  #  filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center]
+  Q_base: [2.5, 0.04, 40.0, 0.04, 0.04, 0.04, 4000.0, 0.05, 0.04, 0.05, 8.0, 1.0]
+
+  # Future familiarity decay λ ∈ (0, 1)
+  # 0.9 = knows the piece well; 0.3 = essentially sight-reading
+  lambda: 0.7
+
+  # Volatility mixing weight η — how much recent innovations amplify Q
+  eta: 0.3
+
+  # Future pull scaling ξ — how strongly upcoming events bias the prior
+  xi: 0.05
+
+  # Drama component weights (must sum to 1.0)
+  drama_weights:
+    distance:   0.4   # how large is the dynamic jump?
+    structural: 0.3   # is it a structural marking (sfz, fp, subito)?
+    contrast:   0.2   # is it unusual for this local context?
+    boundary:   0.1   # is it at a phrase boundary?
+
+  # Window size N — how many consecutive markings form one observation
+  window_size: 3
+
+  # Look-ahead steps for future_pull computation
+  k_look: 10
+
+  # Volatility estimation window — how many recent innovations feed the adaptive Q
+  vol_window: 10
+
+  # Cold start — initial state when no history exists
+  cold_start_outputs:
+    gain_db: 0.0
+    brightness: 0.5
+    timing_offset_ms: 0.0
+    attack_shape: 0.5
+    release_shape: 0.5
+    reverb_wet: 0.3
+    filter_cutoff: 5000.0
+    filter_resonance: 0.0
+    stereo_width: 0.5
+    overdrive_drive: 0.0
+    pitch_dev_cents: 0.0
+    dynamic_center: -12.0

@@ -1,3 +1,6 @@
+// Normalize dynamics mark field (YAML uses 'marking', JS state uses 'mark')
+function _dmark(d) { return d.mark || d.marking || '?'; }
+
 // ─── Score image viewer state ─────────────────────────────────────────────────
 const scoreView = {
   img: null,       // HTMLImageElement; null = not loaded
@@ -28,6 +31,14 @@ function scoreScrollLeft() {
 const score2Canvas = document.getElementById("score2-canvas");
 const score2Ctx    = score2Canvas.getContext("2d");
 const score2View   = { img: null, path: "", start: 0, end: 0, scale: 1, panOffset: 0 };
+
+// Returns score annotation data: interpState.scoreData when Interpreter is active, else state
+function _sdd() {
+  if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter'
+      && typeof interpState !== 'undefined' && interpState.scoreData)
+    return interpState.scoreData;
+  return state;
+}
 
 // Resize score2Canvas to match its container
 function resizeScore2Canvas() {
@@ -148,7 +159,7 @@ function draw() {
   }
 
   // Sample regions
-  for (const [name, s] of Object.entries(state.samples)) {
+  for (const [name, s] of Object.entries(_sdd().samples)) {
     const x1 = tToX(s.from), x2 = tToX(s.to);
     ctx.fillStyle = hexAlpha(s.color, 0.12);
     ctx.fillRect(x1, RULER_H, x2 - x1, wH);
@@ -163,10 +174,10 @@ function draw() {
   }
 
   // Dynamic ranges (crescendo/decrescendo)
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.from !== undefined && d.to !== undefined) {
       const x1 = tToX(d.from), x2 = tToX(d.to);
-      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      const col = _dmark(d) === "crescendo" ? "#337755" : "#775533";
       ctx.fillStyle = hexAlpha(col, 0.18);
       ctx.fillRect(x1, RULER_H, x2 - x1, wH);
       ctx.strokeStyle = col;
@@ -176,12 +187,12 @@ function draw() {
       ctx.setLineDash([]);
       ctx.fillStyle = hexAlpha(col, 0.9);
       ctx.font = "10px 'Courier New', monospace";
-      ctx.fillText(d.mark, x1 + 3, midY - 4);
+      ctx.fillText(_dmark(d), x1 + 3, midY - 4);
     }
   }
 
   // Tempo ranges
-  for (const tp of state.tempo) {
+  for (const tp of _sdd().tempo) {
     const x1 = tToX(tp.from), x2 = tToX(tp.to);
     const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
     ctx.fillStyle = hexAlpha(col, 0.16);
@@ -197,7 +208,7 @@ function draw() {
   }
 
   // FX zones
-  for (const fz of state.fxRanges) {
+  for (const fz of _sdd().fxRanges) {
     const x1 = tToX(fz.from), x2 = tToX(fz.to);
     const col = "#8844cc";
     ctx.fillStyle = hexAlpha(col, 0.14);
@@ -216,7 +227,7 @@ function draw() {
 
   // Phrase markers
   const PHRASE_COL = "#8a6abf";
-  for (const ph of state.phrases) {
+  for (const ph of _sdd().phrases) {
     const x1 = tToX(ph.from), x2 = tToX(ph.to);
     // Subtle fill only in top strip
     ctx.fillStyle = hexAlpha(PHRASE_COL, 0.10);
@@ -236,7 +247,7 @@ function draw() {
   }
 
   // Note relationship markers on waveform
-  for (const nr of state.noteRel) {
+  for (const nr of _sdd().noteRel) {
     const x1 = tToX(nr.from), x2 = tToX(nr.to ?? nr.from);
     const col = nr.type === "glissando" ? "#44aadd" : "#44ddaa";
     ctx.strokeStyle = hexAlpha(col, 0.75); ctx.lineWidth = 1.5;
@@ -250,7 +261,7 @@ function draw() {
 
   // Articulation markers on waveform
   const ART_WAVE_COL = { staccato: "#ffaa44", legato: "#44ffaa", fermata: "#ff88cc", accent: "#ff6644" };
-  for (const ar of state.articulations) {
+  for (const ar of _sdd().articulations) {
     const col = ART_WAVE_COL[ar.type] || "#aaa";
     const xa = tToX(ar.t ?? ar.from);
     ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1.5; ctx.setLineDash([2,3]);
@@ -286,9 +297,9 @@ function draw() {
 
   // Event clips (drawn in the event lane as colored blocks)
   ctx.font = "9px 'Courier New', monospace";
-  for (const ev of state.events) {
-    const col = (state.samples[ev.sample] || {}).color || "#aaa";
-    const samp = state.samples[ev.sample];
+  for (const ev of _sdd().events) {
+    const col = (_sdd().samples[ev.sample] || {}).color || "#aaa";
+    const samp = _sdd().samples[ev.sample];
     const rawDur = samp ? (samp.to - samp.from) : 0.5;
     const speed = typeof ev.speed === "number" ? ev.speed : 1.0;
     const clipDur = rawDur / speed;
@@ -315,17 +326,17 @@ function draw() {
   }
 
   // Dynamic point marks
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.t !== undefined) {
       const x = tToX(d.t);
-      const col = DYNAMIC_COLORS[d.mark] || "#aaa";
+      const col = DYNAMIC_COLORS[_dmark(d)] || "#aaa";
       ctx.strokeStyle = col;
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
       ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, H); ctx.stroke();
       ctx.fillStyle = col;
       ctx.font = "10px 'Courier New', monospace";
-      ctx.fillText(d.mark, x + 3, laneY - 4);
+      ctx.fillText(_dmark(d), x + 3, laneY - 4);
     }
   }
 
@@ -486,7 +497,7 @@ function drawScoreOverlay(c, ctx, view) {
   const tx = t => tToXFor(t, c, view);
 
   // Sample regions
-  for (const [name, s] of Object.entries(state.samples)) {
+  for (const [name, s] of Object.entries(_sdd().samples)) {
     const x1 = tx(s.from), x2 = tx(s.to);
     ctx.fillStyle = hexAlpha(s.color, 0.18); ctx.fillRect(x1, 0, x2 - x1, H);
     ctx.strokeStyle = hexAlpha(s.color, 0.7); ctx.lineWidth = 1.5; ctx.setLineDash([]);
@@ -496,19 +507,19 @@ function drawScoreOverlay(c, ctx, view) {
     ctx.fillText("[" + name + "]", x1 + 4, 16);
   }
   // Dynamic ranges
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.from !== undefined) {
       const x1 = tx(d.from), x2 = tx(d.to);
-      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      const col = _dmark(d) === "crescendo" ? "#337755" : "#775533";
       ctx.fillStyle = hexAlpha(col, 0.15); ctx.fillRect(x1, 0, x2 - x1, H);
       ctx.strokeStyle = hexAlpha(col, 0.6); ctx.lineWidth = 1; ctx.setLineDash([4,3]);
       ctx.beginPath(); ctx.moveTo(x1, H/2); ctx.lineTo(x2, H/2); ctx.stroke();
       ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "10px 'Courier New', monospace";
-      ctx.fillText(d.mark, x1 + 3, H/2 - 4);
+      ctx.fillText(_dmark(d), x1 + 3, H/2 - 4);
     }
   }
   // Tempo ranges
-  for (const tp of state.tempo) {
+  for (const tp of _sdd().tempo) {
     const x1 = tx(tp.from), x2 = tx(tp.to);
     const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
     ctx.fillStyle = hexAlpha(col, 0.13); ctx.fillRect(x1, 0, x2 - x1, H);
@@ -518,7 +529,7 @@ function drawScoreOverlay(c, ctx, view) {
     ctx.fillText(tp.mark, x1 + 3, 36);
   }
   // FX zones
-  for (const fz of state.fxRanges) {
+  for (const fz of _sdd().fxRanges) {
     const x1 = tx(fz.from), x2 = tx(fz.to);
     ctx.fillStyle = hexAlpha("#8844cc", 0.12); ctx.fillRect(x1, 0, x2 - x1, H);
     ctx.strokeStyle = hexAlpha("#8844cc", 0.5); ctx.lineWidth = 1; ctx.setLineDash([2,3]);
@@ -528,7 +539,7 @@ function drawScoreOverlay(c, ctx, view) {
     ctx.fillText("fx:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
   }
   // Phrase / slur markers
-  for (const ph of state.phrases) {
+  for (const ph of _sdd().phrases) {
     const x1 = tx(ph.from), x2 = tx(ph.to);
     const pc = "#8a6abf";
     ctx.fillStyle = hexAlpha(pc, 0.09); ctx.fillRect(x1, 0, x2 - x1, H);
@@ -540,7 +551,7 @@ function drawScoreOverlay(c, ctx, view) {
     ctx.fillText(ph.label, x1 + 4, 14);
   }
   // Note relationship markers
-  for (const nr of state.noteRel) {
+  for (const nr of _sdd().noteRel) {
     const x1 = tx(nr.from), x2 = tx(nr.to ?? nr.from);
     if (nr.type === "glissando") {
       ctx.strokeStyle = hexAlpha("#44aadd", 0.85); ctx.lineWidth = 2; ctx.setLineDash([5,3]);
@@ -567,7 +578,7 @@ function drawScoreOverlay(c, ctx, view) {
     }
   }
   // Articulation markers
-  for (const ar of state.articulations) {
+  for (const ar of _sdd().articulations) {
     const ART_COL = { staccato: "#ffaa44", legato: "#44ffaa", fermata: "#ff88cc", accent: "#ff6644" };
     const col = ART_COL[ar.type] || "#aaa";
     if (ar.t !== undefined) {
@@ -593,23 +604,23 @@ function drawScoreOverlay(c, ctx, view) {
     }
   }
   // Event markers
-  for (const ev of state.events) {
+  for (const ev of _sdd().events) {
     const x = tx(ev.t);
-    const col = (state.samples[ev.sample] || {}).color || "#aaa";
+    const col = (_sdd().samples[ev.sample] || {}).color || "#aaa";
     ctx.strokeStyle = hexAlpha(col, 0.8); ctx.lineWidth = 1.5; ctx.setLineDash([3,2]);
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "9px 'Courier New', monospace";
     ctx.fillText("\u25b6" + ev.sample, x + 3, 28);
   }
   // Dynamic point marks
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.t !== undefined) {
       const x = tx(d.t);
-      const col = DYNAMIC_COLORS[d.mark] || "#aaa";
+      const col = DYNAMIC_COLORS[_dmark(d)] || "#aaa";
       ctx.strokeStyle = hexAlpha(col, 0.8); ctx.lineWidth = 2; ctx.setLineDash([]);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
       ctx.fillStyle = hexAlpha(col, 0.95); ctx.font = "11px 'Courier New', monospace";
-      ctx.fillText(d.mark, x + 3, H - 10);
+      ctx.fillText(_dmark(d), x + 3, H - 10);
     }
   }
   // Drag preview
@@ -669,7 +680,7 @@ function drawFrameOverlay() {
   }
 
   // Sample regions
-  for (const [name, s] of Object.entries(state.samples)) {
+  for (const [name, s] of Object.entries(_sdd().samples)) {
     const x1 = tToXF(s.from), x2 = tToXF(s.to);
     frameCtx.fillStyle = hexAlpha(s.color, 0.18);
     frameCtx.fillRect(x1, 0, x2 - x1, H);
@@ -684,10 +695,10 @@ function drawFrameOverlay() {
   }
 
   // Dynamic ranges
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.from !== undefined) {
       const x1 = tToXF(d.from), x2 = tToXF(d.to);
-      const col = d.mark === "crescendo" ? "#337755" : "#775533";
+      const col = _dmark(d) === "crescendo" ? "#337755" : "#775533";
       frameCtx.fillStyle = hexAlpha(col, 0.15);
       frameCtx.fillRect(x1, 0, x2 - x1, H);
       frameCtx.strokeStyle = hexAlpha(col, 0.6);
@@ -701,7 +712,7 @@ function drawFrameOverlay() {
   }
 
   // Tempo ranges
-  for (const tp of state.tempo) {
+  for (const tp of _sdd().tempo) {
     const x1 = tToXF(tp.from), x2 = tToXF(tp.to);
     const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
     frameCtx.fillStyle = hexAlpha(col, 0.13);
@@ -716,7 +727,7 @@ function drawFrameOverlay() {
   }
 
   // FX zones
-  for (const fz of state.fxRanges) {
+  for (const fz of _sdd().fxRanges) {
     const x1 = tToXF(fz.from), x2 = tToXF(fz.to);
     frameCtx.fillStyle = hexAlpha("#8844cc", 0.12);
     frameCtx.fillRect(x1, 0, x2 - x1, H);
@@ -731,7 +742,7 @@ function drawFrameOverlay() {
   }
 
   // Phrase markers
-  for (const ph of state.phrases) {
+  for (const ph of _sdd().phrases) {
     const x1 = tToXF(ph.from), x2 = tToXF(ph.to);
     const pc = "#8a6abf";
     frameCtx.fillStyle = hexAlpha(pc, 0.09);
@@ -748,9 +759,9 @@ function drawFrameOverlay() {
   }
 
   // Event markers
-  for (const ev of state.events) {
+  for (const ev of _sdd().events) {
     const x = tToXF(ev.t);
-    const col = (state.samples[ev.sample] || {}).color || "#aaa";
+    const col = (_sdd().samples[ev.sample] || {}).color || "#aaa";
     frameCtx.strokeStyle = hexAlpha(col, 0.8);
     frameCtx.lineWidth = 1.5; frameCtx.setLineDash([3,2]);
     frameCtx.beginPath(); frameCtx.moveTo(x, 0); frameCtx.lineTo(x, H); frameCtx.stroke();
@@ -761,10 +772,10 @@ function drawFrameOverlay() {
   }
 
   // Dynamic point marks
-  for (const d of state.dynamics) {
+  for (const d of _sdd().dynamics) {
     if (d.t !== undefined) {
       const x = tToXF(d.t);
-      const col = DYNAMIC_COLORS[d.mark] || "#aaa";
+      const col = DYNAMIC_COLORS[_dmark(d)] || "#aaa";
       frameCtx.strokeStyle = hexAlpha(col, 0.8);
       frameCtx.lineWidth = 2; frameCtx.setLineDash([]);
       frameCtx.beginPath(); frameCtx.moveTo(x, 0); frameCtx.lineTo(x, H); frameCtx.stroke();

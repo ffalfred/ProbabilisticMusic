@@ -10,6 +10,7 @@ let _mixBuf          = null;   // last decoded AudioBuffer (kept for seek re-pla
 let _mixPlaying      = false;
 let _mixStartCtxTime = 0;
 let _mixStartOffset  = 0;
+let _renderGen       = 0;      // increments on each new render or stopAll; stale renders self-cancel
 
 function _getMixCtx() {
   if (!_mixCtx) _mixCtx = new AudioContext();
@@ -21,10 +22,16 @@ function mixCurrentTime() {
   return _mixStartOffset + (_getMixCtx().currentTime - _mixStartCtxTime);
 }
 
+function isMixPlaying() { return _mixPlaying; }
+
 function stopMix() {
+  _renderGen++;                 // invalidate any in-flight render
   if (_mixSource) { try { _mixSource.stop(); } catch(e) {} _mixSource = null; }
   _mixPlaying = false;
 }
+
+// Returns the current render generation so callers can check for cancellation.
+function _claimRenderGen() { return ++_renderGen; }
 
 async function playMixBuffer(buf, offset) {
   stopMix();
@@ -46,10 +53,10 @@ async function playMixBuffer(buf, offset) {
   src.onended = () => {
     state.currentTime = mixCurrentTime();
     _mixPlaying = false;
-    document.getElementById("play-mix-btn").textContent = "▶ Mix";
+    if (typeof _setPlayBtn === 'function') _setPlayBtn("▶ Play");
     draw();
   };
 
-  document.getElementById("play-mix-btn").textContent = "⏸ Mix";
+  if (typeof _setPlayBtn === 'function') _setPlayBtn("⏸ Play");
   requestAnimationFrame(playTick);
 }
