@@ -36,7 +36,10 @@ function _claimRenderGen() { return ++_renderGen; }
 async function playMixBuffer(buf, offset) {
   stopMix();
   const ctx = _getMixCtx();
-  if (ctx.state === "suspended") await ctx.resume();
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch(e) { console.error('AudioContext resume failed:', e); }
+    if (ctx.state !== "running") { console.warn('AudioContext state:', ctx.state); return; }
+  }
 
   const src = ctx.createBufferSource();
   src.buffer = buf;
@@ -51,10 +54,14 @@ async function playMixBuffer(buf, offset) {
 
   src.start(0, _mixStartOffset);
   src.onended = () => {
-    state.currentTime = mixCurrentTime();
     _mixPlaying = false;
+    state.currentTime = _mixStartOffset + (ctx.currentTime - _mixStartCtxTime) * src.playbackRate.value;
+    try { src.disconnect(); } catch(_) {}
     if (typeof _setPlayBtn === 'function') _setPlayBtn("▶ Play");
+    // Final redraw of all canvases with correct end position
     draw();
+    if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+      drawKalmanTrace(_lastTraceData);
   };
 
   if (typeof _setPlayBtn === 'function') _setPlayBtn("⏸ Play");

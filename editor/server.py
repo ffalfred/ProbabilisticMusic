@@ -293,31 +293,63 @@ def export_interp_wav():
         score = _apply_phrase_tempo(score)
         bank, sr, base = build_bank(score)
 
-        from src.interpreter import interpret
-        events, _state_trace = interpret(score, config, return_trace=True)
-        score['_state_trace'] = _state_trace
-        score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
+        export_mode = data.get("export_mode", "interp")
+        time_from   = float(data.get("time_from", 0) or 0)
+        time_to     = float(data.get("time_to", 0) or 0)
 
-        mix = mix_events(events, bank, sr, score, base)
-        # Golem is the performer — skip blind dynamics/phrase envelopes.
+        from src.interpreter import interpret
+
+        if export_mode == "raw":
+            # Raw base — no events, no golem
+            mix = base.copy() if base is not None else np.zeros(sr, dtype=np.float32)
+        elif export_mode == "score_only":
+            # Events + golem, no base (events_only mix mode)
+            score['mix_mode'] = 'events_only'
+            events, _state_trace = interpret(score, config, return_trace=True)
+            score['_state_trace'] = _state_trace
+            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
+            mix = mix_events(events, bank, sr, score, base)
+        else:
+            # Full interpreter render (base + events + golem)
+            events, _state_trace = interpret(score, config, return_trace=True)
+            score['_state_trace'] = _state_trace
+            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
+            mix = mix_events(events, bank, sr, score, base)
+
         mix = normalise(mix)
 
-        # Build output path
-        out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
-        os.makedirs(out_dir, exist_ok=True)
-        # User-supplied name wins; fall back to score name + timestamp
+        # Time range trim
+        if time_to > time_from and time_from >= 0:
+            s_from = max(0, int(time_from * sr))
+            s_to   = min(len(mix), int(time_to * sr))
+            if s_to > s_from:
+                mix = mix[s_from:s_to]
+
+        # Build output path — user-chosen path wins, then name, then auto-generated
+        user_path = (data.get("out_path") or "").strip()
         user_name = (data.get("out_name") or "").strip()
-        if user_name:
-            # Sanitize and ensure .wav extension
+        if user_path:
+            # User chose a full path via the file browser
+            out_path = os.path.abspath(user_path)
+            if not out_path.lower().endswith(".wav"):
+                out_path += ".wav"
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            out_name = os.path.basename(out_path)
+        elif user_name:
+            out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+            os.makedirs(out_dir, exist_ok=True)
             safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
             if not safe.lower().endswith(".wav"):
                 safe += ".wav"
             out_name = safe
+            out_path = os.path.abspath(os.path.join(out_dir, out_name))
         else:
+            out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
+            os.makedirs(out_dir, exist_ok=True)
             score_name = os.path.splitext(os.path.basename(score_path))[0]
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             out_name = f"interp_{score_name}_{ts}.wav"
-        out_path = os.path.abspath(os.path.join(out_dir, out_name))
+            out_path = os.path.abspath(os.path.join(out_dir, out_name))
         sf.write(out_path, mix, sr)
         return jsonify({"path": out_path, "name": out_name})
     except Exception as e:

@@ -37,12 +37,13 @@
     navigate(null);   // always start at home
   }
 
-  // Expose for export.js to call for save dialogs
-  window.openSaveBrowser = function(callback, defaultName) {
+  // Expose for export.js and interpreter.js to call for save dialogs.
+  // Optional filterExts overrides the default YAML filter (e.g. ['.wav'] for audio export).
+  window.openSaveBrowser = function(callback, defaultName, filterExts) {
     _saveMode     = true;
     _saveCallback = callback;
     _targetInput  = null;
-    _filter       = YAML_EXTS;   // filter shown files (dirs always visible)
+    _filter       = filterExts || YAML_EXTS;
 
     const filenameEl = document.getElementById('fb-filename');
     if (filenameEl) filenameEl.value = defaultName || '';

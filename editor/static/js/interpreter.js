@@ -99,7 +99,11 @@ function _loadImageIntoView(imgPath, which) {
     }
     if (typeof draw === 'function') draw();
   };
-  img.onerror = () => console.warn('Failed to load image:', imgPath);
+  img.onerror = () => {
+    console.warn('Failed to load image:', imgPath);
+    const statusEl = document.getElementById('interp-save-status');
+    if (statusEl) statusEl.textContent = 'image not found: ' + imgPath.split('/').pop();
+  };
   img.src = `/image?path=${encodeURIComponent(imgPath)}`;
 }
 
@@ -171,8 +175,7 @@ async function renderInterpAndPlay() {
     if (gen !== _renderGen) return;   // cancelled while decoding
     const buf = await _getMixCtx().decodeAudioData(ab);
     _setPlayStatus('');
-    // Always play interp render from t=0 so viz cursor matches trace (0→total_dur)
-    await playMixBuffer(buf, 0);
+    await playMixBuffer(buf, state.currentTime || 0);
     // Fetch trace after audio starts — updateVizPanel self-animates while isMixPlaying()
     if (typeof fetchAndDrawTrace === 'function') fetchAndDrawTrace();
   } catch(e) { if (gen === _renderGen) _setPlayStatus('failed: ' + e); }
@@ -307,6 +310,65 @@ document.addEventListener('DOMContentLoaded', () => {
     const audioPath = (document.getElementById('interp-audio-path')?.value.trim()) || state.filePath;
     if (!audioPath) { setSaveStatus('load audio first'); return; }
     const nameVal = (document.getElementById('interp-name')?.value.trim()) || 'untitled_interp';
+    const dur = state.duration || interpState.scoreDuration || 0;
+    const durStr = dur > 0 ? dur.toFixed(1) : '?';
+
+    // Show export options popup
+    const html = `
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div>
+          <label style="font-size:11px;color:#888;">What to export:</label>
+          <select id="exp-mode" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
+            <option value="interp" selected>Interpreter (base + events + golem)</option>
+            <option value="score_only">Score only (events + golem, no base)</option>
+            <option value="raw">Raw base (no events, no golem)</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">Save to:</label>
+          <div style="display:flex;gap:4px;margin-top:3px;">
+            <input id="exp-path" type="text" value="" placeholder="click Browse to choose…" readonly
+                   style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;cursor:pointer;" />
+            <button id="exp-browse-btn" style="padding:4px 8px;font-size:11px;">Browse</button>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">Time range (seconds):</label>
+          <div style="display:flex;gap:6px;margin-top:3px;">
+            <input id="exp-from" type="number" value="0" min="0" step="0.1" placeholder="from"
+                   style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+            <span style="color:#555;align-self:center;">→</span>
+            <input id="exp-to" type="number" value="${durStr}" min="0" step="0.1" placeholder="to"
+                   style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+          </div>
+          <div style="font-size:9px;color:#555;margin-top:2px;">Full duration: ${durStr}s. Leave as-is for whole audio.</div>
+        </div>
+      </div>`;
+    // showPopup renders the HTML into the DOM, then returns a promise.
+    // We need to wire the Browse button BEFORE awaiting, so use a microtask.
+    const popupPromise = showPopup('Export WAV — ' + nameVal, html);
+
+    // Wire browse button inside the popup (now in DOM)
+    requestAnimationFrame(() => {
+      const browseBtn = document.getElementById('exp-browse-btn');
+      const pathInput = document.getElementById('exp-path');
+      if (browseBtn && pathInput) {
+        browseBtn.addEventListener('click', () => {
+          openSaveBrowser((fullPath) => {
+            pathInput.value = fullPath;
+          }, nameVal + '.wav', ['.wav']);
+        });
+      }
+    });
+
+    const ok = await popupPromise;
+    if (!ok) return;
+
+    const expMode = document.getElementById('exp-mode')?.value || 'interp';
+    const expFrom = parseFloat(document.getElementById('exp-from')?.value) || 0;
+    const expTo   = parseFloat(document.getElementById('exp-to')?.value)   || 0;
+    const expPath = document.getElementById('exp-path')?.value.trim() || '';
+
     exportWavBtn.disabled = true;
     setSaveStatus('rendering WAV…');
     try {
@@ -314,6 +376,10 @@ document.addEventListener('DOMContentLoaded', () => {
         path: audioPath,
         score_path: interpState.scorePath,
         out_name: nameVal,
+        out_path: expPath,   // full path chosen by user (empty = default output/ dir)
+        export_mode: expMode,
+        time_from: expFrom,
+        time_to: expTo > expFrom ? expTo : 0,
         interp: { golems: interpState.golems, v2config: interpState.v2config },
       };
       const res  = await fetch('/export_interp_wav', {
@@ -322,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const data = await res.json();
       if (data.error) { setSaveStatus('export error: ' + data.error); return; }
-      setSaveStatus('saved → output/' + data.name);
+      setSaveStatus('saved → ' + data.path);
       setTimeout(() => setSaveStatus(''), 5000);
     } catch (e) {
       setSaveStatus('export failed: ' + e);
