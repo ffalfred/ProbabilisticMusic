@@ -251,6 +251,7 @@ async function _doExportYaml(outputPath) {
     ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
     ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
     ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
+    mix_mode: state.mixMode || 'sidechain',
   };
   const statusEl = document.getElementById("export-status");
   statusEl.textContent = "saving…";
@@ -318,6 +319,9 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     if (sc.duck_base)    Object.assign(state.duckBase, sc.duck_base);
     if (sc.duck_key)     Object.assign(state.duckKey,  sc.duck_key);
     if (sc.auto_mix)     Object.assign(state.autoMix,  sc.auto_mix);
+    if (sc.mix_mode)     state.mixMode = sc.mix_mode;
+    const mmSel = document.getElementById('mix-mode-select');
+    if (mmSel) mmSel.value = state.mixMode;
     if (sc.golems)       interpState.golems = sc.golems;
 
     for (const k of Object.keys(state.samples)) {

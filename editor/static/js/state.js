@@ -17,6 +17,7 @@ const state = {
   lastScorePath: "",  // last exported or imported YAML score path
   duckBase: { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 },
   duckKey:  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 },
+  mixMode:  "sidechain",         // 'sidechain' | 'layer' | 'events_only'
   autoMix:  { enabled: false, mode: "sqrt" },
   history: [],        // for undo
 };

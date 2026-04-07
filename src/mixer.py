@@ -477,12 +477,12 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     # Phase C: optional Kalman state trace for continuous within-note modulation
     _state_trace   = (score or {}).get('_state_trace', None)
     _base_dims     = (score or {}).get('_interp_base_dims', [])
+    mix_mode       = (score or {}).get('mix_mode', 'sidechain')
 
-    mix = base.copy() if base is not None else np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
-
-    # --- Phase 1: state-driven base modulation (cheap gain-envelope pass) ---
-    if base is not None and _state_trace and _base_dims:
-        mix = _apply_state_to_base(mix, sr, _state_trace, _base_dims)
+    if mix_mode == 'events_only':
+        mix = np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
+    else:
+        mix = base.copy() if base is not None else np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
 
     # --- base fx (applied before events are layered) ---
     base_fx = (score or {}).get('base_fx', [])
@@ -666,7 +666,25 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         i1 = i0 + len(clip)
         if i1 > len(mix):
             mix = np.pad(mix, (0, i1 - len(mix)))
-        mix[i0:i1] += clip
+
+        # --- mix mode: how clip is placed onto the mix ---
+        if mix_mode == 'sidechain':
+            n_clip = len(clip)
+            xf = min(int(0.03 * sr), n_clip // 4)  # 30ms crossfade
+            duck = np.zeros(n_clip, dtype=np.float32)
+            if xf > 0:
+                duck[:xf]  = np.linspace(1.0, 0.0, xf, dtype=np.float32)
+                duck[-xf:] = np.linspace(0.0, 1.0, xf, dtype=np.float32)
+            if mix.ndim == 1:
+                mix[i0:i1] = mix[i0:i1] * duck + clip
+            else:
+                mix[i0:i1] = mix[i0:i1] * duck[:, None] + clip
+        else:  # 'layer' or 'events_only'
+            mix[i0:i1] += clip
+
+    # --- state-driven modulation applied ONCE to the combined signal ---
+    if _state_trace and _base_dims:
+        mix = _apply_state_to_base(mix, sr, _state_trace, set(_base_dims))
 
     # --- auto_mix: scale down overlapping events ---
     am = (score or {}).get('auto_mix')

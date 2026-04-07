@@ -813,7 +813,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const redoStack = [];
 
 function _snapshotState() {
-  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix });
+  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix, mixMode: state.mixMode });
 }
 
 function _applySnapshot(snap) {
@@ -830,6 +830,9 @@ function _applySnapshot(snap) {
   if (s.duckBase) Object.assign(state.duckBase, s.duckBase);
   if (s.duckKey)  Object.assign(state.duckKey,  s.duckKey);
   if (s.autoMix)  Object.assign(state.autoMix,  s.autoMix);
+  if (s.mixMode)  state.mixMode = s.mixMode;
+  const mmSel = document.getElementById('mix-mode-select');
+  if (mmSel) mmSel.value = state.mixMode;
   _updateBaseFxLabel();
 }
 

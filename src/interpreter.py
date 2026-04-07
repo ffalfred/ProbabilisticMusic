@@ -408,21 +408,23 @@ def _sample_posterior(rng, mu: np.ndarray, Sig: np.ndarray,
 
 # ── State → event ─────────────────────────────────────────────────────────────
 
-def _apply_state(ev: dict, x: np.ndarray) -> dict:
-    """Map the 12D Kalman state vector onto event fields."""
+def _apply_state(ev: dict, x: np.ndarray, skip_dims: set = None) -> dict:
+    """Map the 12D Kalman state vector onto event fields.
+    skip_dims: set of dim names to skip (already handled by base modulation)."""
     ev = dict(ev)
-    ev['gain_db']          = float(ev.get('gain_db', 0.0)) + float(x[0])
-    ev['brightness']       = float(np.clip(x[1], 0.0, 1.0))
-    ev['timing_offset_ms'] = float(x[2])
-    ev['attack_shape']     = float(np.clip(x[3], 0.0, 1.0))
-    ev['release_shape']    = float(np.clip(x[4], 0.0, 1.0))
-    ev['reverb_wet']       = float(np.clip(x[5], 0.0, 1.0))
-    ev['filter_cutoff']    = float(np.clip(x[6], 20.0, 20000.0))
-    ev['filter_resonance'] = float(np.clip(x[7], 0.0, 1.0))
-    ev['stereo_width']     = float(np.clip(x[8], 0.0, 1.0))
-    ev['overdrive_drive']  = float(np.clip(x[9], 0.0, 1.0))
-    ev['pitch_dev_cents']  = float(x[10])
-    ev['dynamic_center']   = float(np.clip(x[11], -30.0, 0.0))
+    _s = skip_dims or set()
+    if 'gain_db'          not in _s: ev['gain_db']          = float(ev.get('gain_db', 0.0)) + float(x[0])
+    if 'brightness'       not in _s: ev['brightness']       = float(np.clip(x[1], 0.0, 1.0))
+    if 'timing_offset_ms' not in _s: ev['timing_offset_ms'] = float(x[2])
+    if 'attack_shape'     not in _s: ev['attack_shape']     = float(np.clip(x[3], 0.0, 1.0))
+    if 'release_shape'    not in _s: ev['release_shape']    = float(np.clip(x[4], 0.0, 1.0))
+    if 'reverb_wet'       not in _s: ev['reverb_wet']       = float(np.clip(x[5], 0.0, 1.0))
+    if 'filter_cutoff'    not in _s: ev['filter_cutoff']    = float(np.clip(x[6], 20.0, 20000.0))
+    if 'filter_resonance' not in _s: ev['filter_resonance'] = float(np.clip(x[7], 0.0, 1.0))
+    if 'stereo_width'     not in _s: ev['stereo_width']     = float(np.clip(x[8], 0.0, 1.0))
+    if 'overdrive_drive'  not in _s: ev['overdrive_drive']  = float(np.clip(x[9], 0.0, 1.0))
+    if 'pitch_dev_cents'  not in _s: ev['pitch_dev_cents']  = float(x[10])
+    if 'dynamic_center'   not in _s: ev['dynamic_center']   = float(np.clip(x[11], -30.0, 0.0))
     return ev
 
 
@@ -465,6 +467,9 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
         'gain_db': 0.0, 'brightness': 0.5,
         'timing_offset_ms': 0.0, 'attack_shape': 0.5, 'reverb_wet': 0.3
     })
+
+    # Dims handled by base modulation — skip them in per-event _apply_state
+    _skip_dims = set(v2cfg.get('base_dims', []))
 
     # Seed: v2cfg takes priority over root config
     seed = v2cfg.get('seed', config.get('seed', None))
@@ -875,7 +880,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                 })
 
         if ev is not None:
-            enriched.append(_apply_state(ev, x_clipped))
+            enriched.append(_apply_state(ev, x_clipped, skip_dims=_skip_dims))
 
     if return_trace:
         return enriched, trace

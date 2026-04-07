@@ -118,6 +118,13 @@
       <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
       <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
       <!-- Mix -->
+      <span class="tool-sep">Mix</span>
+      <select id="mix-mode-select" style="font-size:10px;background:#1a1a1a;border:1px solid #333;color:#aaa;padding:2px 4px;"
+              title="How events mix with the base track" onchange="state.mixMode=this.value;">
+        <option value="sidechain" selected>Sidechain</option>
+        <option value="layer">Layer</option>
+        <option value="events_only">Events only</option>
+      </select>
       <span class="tool-sep">Base FX</span>
       <button id="base-fx-classic-btn" title="Add a Classic FX to the base track">+ &#9670; Classic</button>
       <button id="base-fx-morpho-btn" title="Add a Morphogenics FX to the base track">+ &#10022; Morpho</button>
@@ -306,7 +313,7 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-i','ge-sec-i-chev')">
                   <span id="ge-sec-i-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">I</span> Starting values (μ₀)
-                  <span class="ge-sec-desc">per-dim initial state override</span>
+                  <span class="ge-sec-desc">where the performer begins for each dimension</span>
                 </div>
                 <div id="ge-sec-i" class="ge-coll-body" style="display:none;">
                   <div id="ge-startvals-dims" style="display:flex;flex-direction:column;gap:3px;padding:0 4px;">
@@ -321,18 +328,18 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-a','ge-sec-a-chev')">
                   <span id="ge-sec-a-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">A</span> Transition Model
-                  <span class="ge-sec-desc">AR(2) momentum coefficients</span>
+                  <span class="ge-sec-desc">how smoothly the performer changes</span>
                 </div>
                 <div id="ge-sec-a" class="ge-coll-body" style="display:none;">
                   <div class="ge-param-row">
-                    <label title="Momentum coeff 1 (A1+A2 &lt; 1 for stability)">Momentum A1</label>
+                    <label title="A1: higher = smoother, slower transitions. A1+A2 &lt; 1 for stability">A1 (smoothness)</label>
                     <input type="range" id="ge-A1" min="0" max="0.95" step="0.01" value="0.70"
                            oninput="document.getElementById('ge-A1-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-A1-val" value="0.70" min="0" max="0.95" step="0.01"
                            oninput="const s=document.getElementById('ge-A1');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
                   </div>
                   <div class="ge-param-row">
-                    <label title="Memory coeff 2 (A1+A2 &lt; 1)">Memory A2</label>
+                    <label title="A2: adds inertia/overshoot. A1+A2 &lt; 1 for stability">A2 (inertia)</label>
                     <input type="range" id="ge-A2" min="0" max="0.95" step="0.01" value="0.20"
                            oninput="document.getElementById('ge-A2-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-A2-val" value="0.20" min="0" max="0.95" step="0.01"
@@ -356,11 +363,11 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-b','ge-sec-b-chev')">
                   <span id="ge-sec-b-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">B</span> Process Noise
-                  <span class="ge-sec-desc">noise scaling &amp; drama sensitivity</span>
+                  <span class="ge-sec-desc">how much the performer wanders between markings</span>
                 </div>
                 <div id="ge-sec-b" class="ge-coll-body" style="display:none;">
                   <div class="ge-param-row">
-                    <label title="How much process noise scales up after dramatic events">Reactivity Q×</label>
+                    <label title="Q scale: how much the performer drifts between markings. Higher = more wandering">Q× (drift amount)</label>
                     <input type="range" id="ge-Q-scale" min="0.05" max="5" step="0.05" value="1.00"
                            oninput="document.getElementById('ge-Q-scale-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-Q-scale-val" value="1.00" min="0.05" max="5" step="0.05"
@@ -372,7 +379,7 @@
                     <button class="vec-edit-btn" onclick="_editVector('ge-qbase','Q base per dimension',[0,5],0.01)">Edit</button>
                   </div>
                   <div class="ge-param-row">
-                    <label title="Shape of the drama→noise relationship">Drama shape</label>
+                    <label title="Drama curve: how expressive peaks scale the drift. Linear=proportional, Exp=dramatic peaks amplified">Drama curve (peak shape)</label>
                     <select id="ge-drama-curve" style="background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
                       <option value="linear">Linear</option>
                       <option value="square">Squared</option>
@@ -381,13 +388,13 @@
                     <span></span>
                   </div>
                   <div class="ge-param-row">
-                    <label title="Innovation energy decay rate">Innov. decay</label>
+                    <label title="Innovation decay: how quickly surprise from new markings fades. Lower = forgets faster">η decay (surprise memory)</label>
                     <input type="number" id="ge-innov-decay" value="0.7" min="0" max="1" step="0.05"
                            style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
                     <span></span>
                   </div>
                   <div id="ge-rw-scatter-row" style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-                    <label style="font-size:10px;color:#555;white-space:nowrap;" title="0=pure Kalman, 1=heavy scatter">RW scatter</label>
+                    <label style="font-size:10px;color:#555;white-space:nowrap;" title="RW scatter: adds random-walk noise on top of Kalman. 0=clean, 1=noisy">RW scatter (jitter)</label>
                     <input id="ge-rw-scatter" type="range" min="0" max="1" step="0.05" value="0" style="flex:1;"
                            oninput="document.getElementById('ge-rw-scatter-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-rw-scatter-val" value="0.00" min="0" max="1" step="0.05"
@@ -401,18 +408,18 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-c','ge-sec-c-chev')">
                   <span id="ge-sec-c-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">C</span> Observation Model
-                  <span class="ge-sec-desc">how closely to follow dynamics</span>
+                  <span class="ge-sec-desc">how closely the performer follows the score</span>
                 </div>
                 <div id="ge-sec-c" class="ge-coll-body" style="display:none;">
                   <div class="ge-param-row">
-                    <label title="Scales how closely the filter corrects towards observations">Obs scale R×</label>
+                    <label title="R scale: higher = looser interpretation, lower = stricter obedience to markings">R× (looseness)</label>
                     <input type="range" id="ge-R-scale" min="0.05" max="5" step="0.05" value="1.00"
                            oninput="document.getElementById('ge-R-scale-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-R-scale-val" value="1.00" min="0.05" max="5" step="0.05"
                            oninput="const s=document.getElementById('ge-R-scale');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
                   </div>
                   <div class="ge-param-row">
-                    <label title="How closely this Golem follows dynamic markings (0=ignores, 2=strictly follows)">Marking pull</label>
+                    <label title="Obs weight: how strongly the performer reacts to dynamic markings. 0=ignores them, 2=strictly follows">Obs wt (marking trust)</label>
                     <input type="range" id="ge-obs-weight" min="0" max="2" step="0.05" value="1.00"
                            oninput="document.getElementById('ge-obs-weight-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-obs-weight-val" value="1.00" min="0" max="2" step="0.05"
@@ -424,7 +431,7 @@
                     <button class="vec-edit-btn" onclick="_editVector('ge-obswtdims','Obs weight per dimension',[0,3],0.05)">Edit</button>
                   </div>
                   <div class="ge-param-row">
-                    <label title="Window decay: recent markings count more (1=uniform, 0.7=moderate decay)">Window decay γ</label>
+                    <label title="γ window decay: how quickly older markings lose influence. 1=all equal, 0.5=recent markings dominate">γ decay (memory of past markings)</label>
                     <input type="range" id="ge-gamma-w" min="0.1" max="1" step="0.05" value="1.0"
                            oninput="document.getElementById('ge-gamma-w-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-gamma-w-val" value="1.00" min="0.1" max="1" step="0.05"
@@ -438,18 +445,18 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-d','ge-sec-d-chev')">
                   <span id="ge-sec-d-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">D</span> Lookahead Prior
-                  <span class="ge-sec-desc">familiarity &amp; future-pull</span>
+                  <span class="ge-sec-desc">how much the performer anticipates upcoming markings</span>
                 </div>
                 <div id="ge-sec-d" class="ge-coll-body" style="display:none;">
                   <div class="ge-param-row">
-                    <label title="How well the interpreter knows the piece (0.3=sight-reading, 0.9=memorised)">Familiarity λ</label>
+                    <label title="λ familiarity: 0.3=sight-reading (surprised by changes), 0.9=memorised (knows what's coming)">λ (familiarity with the piece)</label>
                     <input type="range" id="ge-lam" min="0.1" max="0.99" step="0.01" value="0.80"
                            oninput="document.getElementById('ge-lam-val').value=parseFloat(this.value).toFixed(2);" />
                     <input type="number" class="ge-val-num" id="ge-lam-val" value="0.80" min="0.1" max="0.99" step="0.01"
                            oninput="const s=document.getElementById('ge-lam');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
                   </div>
                   <div class="ge-param-row">
-                    <label title="Per-regime lookahead scale (blank = use global ξ)">ξ regime</label>
+                    <label title="ξ anticipation: how much the performer prepares for upcoming markings. Higher = starts moving before the marking arrives">ξ (anticipation strength)</label>
                     <input type="number" id="ge-xi-regime" placeholder="global" min="0" step="0.01"
                            style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
                     <span></span>
@@ -475,7 +482,7 @@
                 <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-g','ge-sec-g-chev')">
                   <span id="ge-sec-g-chev" class="ge-chev">&#9654;</span>
                   <span class="ge-sec-letter">G</span> Random Walk
-                  <span class="ge-sec-desc">step size, drift, mean reversion</span>
+                  <span class="ge-sec-desc">step size, drift direction, pull-back strength</span>
                 </div>
                 <div id="ge-sec-g" class="ge-coll-body" style="display:none;">
                   <div style="font-size:9px;color:#444;margin:3px 0 2px;">Step size (vol · bright · timing · attack · reverb)</div>
@@ -549,7 +556,7 @@
               <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-f','ge-sec-f-chev')">
                 <span id="ge-sec-f-chev" class="ge-chev">&#9654;</span>
                 <span class="ge-sec-letter">F</span> Distribution
-                <span class="ge-sec-desc">noise shape &amp; covariance inflation</span>
+                <span class="ge-sec-desc">personality of randomness &amp; outlier control</span>
               </div>
               <div id="ge-sec-f" class="ge-coll-body" style="display:none;">
                 <div class="ge-dist-btns">
@@ -566,7 +573,7 @@
                 </div>
                 <button id="ge-dist-config-btn" style="width:100%;margin-top:4px;font-size:10px;color:#6a8aaa;border-color:#2a4a6a;background:#111;">Configure distribution…</button>
                 <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-                  <label style="font-size:10px;color:#555;white-space:nowrap;" title="Multiply posterior covariance before sampling (≥1)">Inflate Σ</label>
+                  <label style="font-size:10px;color:#555;white-space:nowrap;" title="Inflate Σ: widen the uncertainty before sampling. Higher = more extreme random draws">Inflate Σ (widen uncertainty)</label>
                   <input id="ge-inflate" type="number" value="1.0" min="1" step="0.1"
                          style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
                 </div>
@@ -595,7 +602,7 @@
               <div class="ge-coll-hdr" onclick="toggleBarContent('ge-sec-h','ge-sec-h-chev')">
                 <span id="ge-sec-h-chev" class="ge-chev">&#9654;</span>
                 <span class="ge-sec-letter">H</span> Envelope &amp; Blending
-                <span class="ge-sec-desc">weight, fade shape, blend method</span>
+                <span class="ge-sec-desc">golem weight, crossfade between golems</span>
               </div>
               <div id="ge-sec-h" class="ge-coll-body" style="display:none;">
                 <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">

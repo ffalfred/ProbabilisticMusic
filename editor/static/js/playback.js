@@ -158,6 +158,7 @@ async function renderAndPlay() {
       ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
       ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
       ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
+      mix_mode: state.mixMode || 'sidechain',
       ...(state.articulations.length ? { articulations: state.articulations } : {}),
       ...(state.noteRel.length       ? { note_rel: state.noteRel }            : {}),
     };
