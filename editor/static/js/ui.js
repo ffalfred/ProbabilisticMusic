@@ -187,9 +187,11 @@ function _readFxParamInput(id, spec) {
 // replace its params with the new type's defaults (each FX type has different
 // params; cross-type carry-over would be nonsensical).
 let _fxChain = [];   // [{type, ...params}]
+let _fxCollapsed = []; // parallel bool[] — true means row is minimised
 
 function _initFxChain(existingFx) {
   _fxChain = existingFx ? existingFx.map(fx => ({ ...fx })) : [];
+  _fxCollapsed = _fxChain.map(() => false);
   _renderFxChain();
 }
 
@@ -225,6 +227,7 @@ function _renderFxChain() {
 // Render a single editable FX row
 function _fxRowHTML(fx, idx) {
   const isMorpho = fx.type.startsWith("morpho_");
+  const collapsed = !!_fxCollapsed[idx];
   // Type dropdown — listing only types within the same scope
   let typeOpts;
   if (isMorpho) {
@@ -236,7 +239,9 @@ function _fxRowHTML(fx, idx) {
       `<option value="${t}"${t === fx.type ? " selected" : ""}>${t}</option>`).join("");
   }
 
-  // Param inputs
+  // Param inputs (rendered even when collapsed, but wrapped in a hideable div
+  // so that _syncRowsToModel still finds them; collapse only hides visually
+  // via display:none on the wrapper)
   const paramHTML = _fxParamSpecs(fx.type).map(spec => {
     const id  = `p-fxr-${idx}-${spec.key}`;
     const val = fx[spec.key] != null ? fx[spec.key] : spec.def;
@@ -260,17 +265,26 @@ function _fxRowHTML(fx, idx) {
     </div>`;
   }).join("");
 
+  const chev = collapsed ? "▶" : "▼";
   return `<div style="border:1px solid #222;background:#0d0d0d;padding:4px 6px;margin-bottom:4px;border-radius:2px;">
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
+      <button type="button" onclick="_toggleFxRowCollapse(${idx})" title="${collapsed ? 'expand' : 'collapse'}"
+              style="font-size:10px;color:#888;width:16px;flex:none;border:none;background:none;cursor:pointer;padding:0;">${chev}</button>
       <span style="font-size:10px;color:#555;flex:none;">${idx + 1}.</span>
       <select onchange="_changeFxRowType(${idx}, this.value)"
-              style="flex:1;background:#1a1a1a;border:1px solid #333;color:#7ab;font-family:inherit;font-size:11px;padding:2px 4px;">${typeOpts}</select>
+              style="flex:1;min-width:0;background:#1a1a1a;border:1px solid #333;color:#7ab;font-family:inherit;font-size:11px;padding:2px 4px;">${typeOpts}</select>
       <button type="button" onclick="_removeFxFromChain(${idx})"
               title="remove this FX"
-              style="font-size:14px;color:#a66;padding:0 6px;border:none;background:none;cursor:pointer;">×</button>
+              style="font-size:14px;color:#a66;padding:0 6px;border:none;background:none;cursor:pointer;flex:none;">×</button>
     </div>
-    ${paramHTML}
+    <div style="display:${collapsed ? 'none' : 'block'};">${paramHTML}</div>
   </div>`;
+}
+
+function _toggleFxRowCollapse(idx) {
+  _syncRowsToModel();
+  _fxCollapsed[idx] = !_fxCollapsed[idx];
+  _renderFxChain();
 }
 
 function _changeFxRowType(idx, newType) {
@@ -283,6 +297,7 @@ function _changeFxRowType(idx, newType) {
 function _removeFxFromChain(idx) {
   _syncRowsToModel();
   _fxChain.splice(idx, 1);
+  _fxCollapsed.splice(idx, 1);
   _renderFxChain();
 }
 
@@ -300,6 +315,7 @@ function _addFxToChain(scope) {
     defaultType = FX_CLASSIC_TYPES[0];   // 'reverb'
   }
   _fxChain.push(_fxDefaults(defaultType));
+  _fxCollapsed.push(false);
   _renderFxChain();
 }
 
@@ -575,26 +591,89 @@ async function editPhraseAt(i) {
   updateScoreInfo(); draw();
 }
 
+// ─── FX zone popup helpers ────────────────────────────────────────────────────
+function _fxZoneDefaultFadeS(durationS) {
+  // Mirror of src/mixer.py: default 1:10 of segment duration, clamped [0.01, 1.0] s
+  return Math.max(0.01, Math.min(1.0, durationS / 10));
+}
+function _popupSection(title, innerHTML) {
+  return `<div class="popup-group">
+    <div class="popup-group-title">${title}</div>
+    ${innerHTML}
+  </div>`;
+}
+function _fxZoneBodyHTML(t1, t2, fz, scope) {
+  const addBtns = `<div class="popup-addfx-row">
+      ${scope !== 'morpho'  ? `<button type="button" class="btn-addfx" onclick="_addFxToChain('classic')">+ Classic FX</button>` : ''}
+      ${scope !== 'classic' ? `<button type="button" class="btn-addfx" onclick="_addFxToChain('morpho')">+ Morpho FX</button>` : ''}
+    </div>`;
+  const chainSection = _popupSection("FX chain",
+    `<div id="p-fx-chain" class="popup-fx-chain"></div>${addBtns}`);
+
+  const rangeSection = _popupSection("Range",
+    `<div class="popup-row">
+       <label>from (s)</label>
+       <input id="p-fz-from" type="number" value="${t1.toFixed(3)}" step="0.001" min="0" style="flex:none;width:90px;">
+     </div>
+     <div class="popup-row">
+       <label>to (s)</label>
+       <input id="p-fz-to" type="number" value="${t2.toFixed(3)}" step="0.001" min="0" style="flex:none;width:90px;">
+     </div>`);
+
+  const defS   = _fxZoneDefaultFadeS(t2 - t1);
+  const fadeOn = !!(fz && fz.fade);
+  const fiCur  = (fz && fz.fade_in_s  != null) ? fz.fade_in_s  : defS;
+  const foCur  = (fz && fz.fade_out_s != null) ? fz.fade_out_s : defS;
+  const fadeSection = _popupSection("Fade (optional)",
+    `<div class="popup-row">
+       <label style="width:auto;">
+         <input id="p-fz-fade" type="checkbox" ${fadeOn ? 'checked' : ''}
+                onchange="document.querySelectorAll('.p-fz-fade-input').forEach(el=>el.disabled=!this.checked);">
+         smooth enter/exit
+       </label>
+     </div>
+     <div class="popup-row">
+       <label>fade in</label>
+       <input class="p-fz-fade-input" id="p-fz-fi" type="number" value="${fiCur.toFixed(3)}"
+              min="0" max="5" step="0.01" style="flex:none;width:72px;" ${fadeOn ? '' : 'disabled'}>
+       <span style="font-size:10px;color:#666;">s</span>
+     </div>
+     <div class="popup-row">
+       <label>fade out</label>
+       <input class="p-fz-fade-input" id="p-fz-fo" type="number" value="${foCur.toFixed(3)}"
+              min="0" max="5" step="0.01" style="flex:none;width:72px;" ${fadeOn ? '' : 'disabled'}>
+       <span style="font-size:10px;color:#666;">s</span>
+     </div>
+     <div style="font-size:10px;color:#444;padding-left:98px;">default 1:10 of zone duration</div>`);
+
+  return chainSection + rangeSection + fadeSection;
+}
+function _collectFxZoneFade() {
+  const cb = document.getElementById("p-fz-fade");
+  if (!cb || !cb.checked) return null;
+  return {
+    fade: true,
+    fade_in_s:  Math.max(0, parseFloat(document.getElementById("p-fz-fi").value) || 0),
+    fade_out_s: Math.max(0, parseFloat(document.getElementById("p-fz-fo").value) || 0),
+  };
+}
+
 // ─── Edit FX zone ─────────────────────────────────────────────────────────────
 async function editFxZoneAt(i) {
   const fz = state.fxRanges[i];
-  const html = `<div><label style="font-size:10px;color:#666;">FX chain:</label>
-      <div id="p-fx-chain"></div>
-      <div style="display:flex;gap:4px;margin-top:4px;">
-        <button type="button" onclick="_addFxToChain('classic')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>
-        <button type="button" onclick="_addFxToChain('morpho')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>
-      </div></div>`
-    + row("from (s)", `<input id="p-fz-from" type="number" value="${fz.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
-    + row("to (s)",   `<input id="p-fz-to"   type="number" value="${fz.to.toFixed(3)}"   step="0.001" min="0" style="width:90px;">`);
-  const res = await showPopup("✎ Edit FX Zone", html, () => _initFxChain(fz.fx || []));
+  const res = await showPopup("✎ Edit FX Zone",
+    _fxZoneBodyHTML(fz.from, fz.to, fz, 'all'),
+    () => _initFxChain(fz.fx || []));
   if (!res) return;
   const newFrom = parseFloat(document.getElementById("p-fz-from").value);
   const newTo   = parseFloat(document.getElementById("p-fz-to").value);
+  const fade    = _collectFxZoneFade();
   pushHistory();
   state.fxRanges[i] = {
     from: isNaN(newFrom) ? fz.from : newFrom,
     to:   isNaN(newTo)   ? fz.to   : newTo,
-    fx: collectFxChain() };
+    fx: collectFxChain(),
+    ...(fade || {}) };
   updateScoreInfo(); draw();
 }
 
@@ -926,22 +1005,25 @@ function _dupHist(type, i) {
 // ─── FX Zone popup ────────────────────────────────────────────────────────────
 async function openFxZonePopup(t1, t2, scope) {
   scope = scope || 'all';
-  const title = scope === 'morpho' ? '✦ Morpho Zone — region'
-              : scope === 'classic' ? '◆ Classic FX Zone — region'
-              : '◆ FX Zone — base audio range';
-  const html = `<div style="margin-bottom:4px;"><label style="font-size:10px;color:#666;">FX chain:</label>
-      <div id="p-fx-chain"></div>
-      <div style="display:flex;gap:4px;margin-top:4px;">
-        ${scope !== 'morpho' ? '<button type="button" onclick="_addFxToChain(\'classic\')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>' : ''}
-        ${scope !== 'classic' ? '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>' : ''}
-      </div></div>`
-    + `<div style="font-size:10px;color:#444;margin-top:6px;">applies to base audio ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
-  const res = await showPopup(title, html, () => _initFxChain([]));
+  const title = scope === 'morpho'  ? '✦ Morpho Zone'
+              : scope === 'classic' ? '◆ Classic FX Zone'
+              : '◆ FX Zone';
+  const res = await showPopup(title,
+    _fxZoneBodyHTML(t1, t2, null, scope),
+    () => _initFxChain([]));
   if (!res) return;
   const fx = collectFxChain();
   if (!fx.length) return;
+  const newFrom = parseFloat(document.getElementById("p-fz-from").value);
+  const newTo   = parseFloat(document.getElementById("p-fz-to").value);
+  const fade    = _collectFxZoneFade();
   pushHistory();
-  state.fxRanges.push({ from: t1, to: t2, fx });
+  state.fxRanges.push({
+    from: isNaN(newFrom) ? t1 : newFrom,
+    to:   isNaN(newTo)   ? t2 : newTo,
+    fx,
+    ...(fade || {})
+  });
   updateScoreInfo();
   draw();
 }

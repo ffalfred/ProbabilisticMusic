@@ -673,11 +673,46 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
             continue
         segment  = mix[i0:i1].copy()
         processed = apply_fx(segment, sr, fr['fx'])
-        mix[i0:i1] = 0.0
-        out_end = i0 + len(processed)
-        if out_end > len(mix):
-            mix = np.pad(mix, (0, out_end - len(mix)))
-        mix[i0:out_end] += processed
+        core_len = i1 - i0
+
+        if fr.get('fade'):
+            # Opt-in linear crossfade at zone boundaries. Default fade is 1:10
+            # of segment duration, clamped to [0.01, 1.0] seconds.
+            seg_dur_s = core_len / sr
+            default_s = max(0.01, min(1.0, seg_dur_s / 10.0))
+            fi_s = float(fr.get('fade_in_s',  default_s))
+            fo_s = float(fr.get('fade_out_s', default_s))
+            fi_n = min(int(fi_s * sr), core_len // 2)
+            fo_n = min(int(fo_s * sr), core_len // 2)
+
+            # Wet-delta = FX contribution on top of dry. Applying the envelope
+            # to the delta (not the whole processed buffer) keeps dry intact at
+            # the boundaries and bounds the tail extension.
+            dry_padded = np.zeros_like(processed)
+            dry_padded[:core_len] = segment
+            delta = processed - dry_padded
+
+            env = np.ones(len(delta), dtype=np.float32)
+            if fi_n > 0:
+                env[:fi_n] = np.linspace(0.0, 1.0, fi_n, dtype=np.float32)
+            if fo_n > 0:
+                fo_end = min(len(delta), core_len + fo_n)
+                env[core_len:fo_end] = np.linspace(1.0, 0.0, fo_end - core_len, dtype=np.float32)
+                env[fo_end:] = 0.0
+            else:
+                env[core_len:] = 0.0  # no tail bleed if fade_out is 0
+            delta *= env
+
+            out_end = i0 + len(delta)
+            if out_end > len(mix):
+                mix = np.pad(mix, (0, out_end - len(mix)))
+            mix[i0:out_end] += delta           # dry already in mix, add wet contribution
+        else:
+            mix[i0:i1] = 0.0
+            out_end = i0 + len(processed)
+            if out_end > len(mix):
+                mix = np.pad(mix, (0, out_end - len(mix)))
+            mix[i0:out_end] += processed
 
     # --- duck_base: duck the base track before events are added ---
     db = (score or {}).get('duck_base')

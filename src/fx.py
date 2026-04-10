@@ -34,37 +34,49 @@ def _wet_dry_mix(dry: np.ndarray, wet_processed: np.ndarray, wet_amount: float,
         than the dry, which is below the just-noticeable threshold.
 
     mode='replace'  (overdrive, flanger):
-        out = dry * (1 - wet_amount) + wet_norm * wet_amount
-        Linear crossfade between dry and the loudness-matched wet. Used for
-        FX where the wet IS the transformed source — no separate "tail" is
-        added on top. wet=1 → pure wet at dry loudness.
+        out = dry * sqrt(1 - wet_amount) + wet_norm * sqrt(wet_amount)
+        Equal-power crossfade between dry and the loudness-matched wet. For
+        decorrelated signals (which reverb/delay wets are, due to diffusion
+        and delay-line phase) the sqrt gains sum to unity RMS at every mix
+        position, so the crossfade is level-preserving. Used for FX where
+        the wet IS the transformed source — no separate "tail" is added on
+        top. wet=1 → pure wet at dry loudness.
 
     Both modes RMS-normalise the wet (in 'add' mode to half the dry's RMS,
     in 'replace' mode to the full dry's RMS) so the wet is always audibly
     present without raising perceived loudness.
 
     Pads the shorter signal with zeros so tails extending past the dry are
-    preserved.
+    preserved. IMPORTANT: RMS is computed on the ORIGINAL (unpadded) signals,
+    not the padded buffers — otherwise a long reverb tail dilutes the dry's
+    RMS calculation and the wet ends up normalised against a too-low target,
+    causing an audible level drop inside the effect region.
     """
     wet_amount = float(np.clip(wet_amount, 0.0, 1.0))
-    n = max(len(dry), len(wet_processed))
-    if len(dry) < n:
-        dry = np.pad(dry, (0, n - len(dry)))
-    if len(wet_processed) < n:
-        wet_processed = np.pad(wet_processed, (0, n - len(wet_processed)))
     dry = dry.astype(np.float32)
     wet = wet_processed.astype(np.float32)
+
+    # Compute RMS on the original (unpadded) signals so neither side dilutes
+    # the other's energy measurement with zero-padding.
+    in_rms  = float(np.sqrt(np.mean(dry.astype(np.float64) ** 2))) if len(dry) > 0 else 0.0
+    wet_rms = float(np.sqrt(np.mean(wet.astype(np.float64) ** 2))) if len(wet) > 0 else 0.0
+
+    # Pad to the same length for the final combination step.
+    n = max(len(dry), len(wet))
+    if len(dry) < n:
+        dry = np.pad(dry, (0, n - len(dry)))
+    if len(wet) < n:
+        wet = np.pad(wet, (0, n - len(wet)))
+
     if wet_amount < 1e-6:
         return dry
-
-    in_rms  = float(np.sqrt(np.mean(dry.astype(np.float64) ** 2)))
-    wet_rms = float(np.sqrt(np.mean(wet.astype(np.float64) ** 2)))
 
     if mode == "replace":
         if in_rms > 1e-6 and wet_rms > 1e-6:
             wet = wet * (in_rms / wet_rms)
         # Equal-power crossfade: sqrt gains keep perceived loudness constant
-        # across the blend (linear crossfade causes -3 dB at the midpoint).
+        # across the blend (linear crossfade causes -3 dB at the midpoint
+        # for decorrelated signals).
         dry_gain = float(np.sqrt(1.0 - wet_amount))
         wet_gain = float(np.sqrt(wet_amount))
         return (dry * dry_gain + wet * wet_gain).astype(np.float32)
