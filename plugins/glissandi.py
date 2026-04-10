@@ -1,7 +1,7 @@
 """Desyatnikov: Glissandi — portamento slides at a random subset of onset boundaries."""
 import numpy as np
 
-NAME     = "Glissandi"
+NAME     = "Desyatnikov: Glissandi"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissandi"
 

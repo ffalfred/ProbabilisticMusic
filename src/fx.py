@@ -20,6 +20,63 @@ def _resolve(val, default=0):
     return float(val)
 
 
+def _wet_dry_mix(dry: np.ndarray, wet_processed: np.ndarray, wet_amount: float,
+                 mode: str = "add") -> np.ndarray:
+    """Length-aligned dry/wet mix in two flavours.
+
+    mode='add'  (reverb, delay):
+        out = dry + wet_norm * wet_amount
+        Dry passes through at unity. Wet is normalised to HALF the dry's RMS
+        and layered on top. The wet builds up naturally (reverb tail, delay
+        echoes), so at the start of the segment the wet contribution is ~0
+        and the output equals the dry — no boundary click, no "silence at
+        the start". Steady-state: at wet=1 the region is at most +1 dB louder
+        than the dry, which is below the just-noticeable threshold.
+
+    mode='replace'  (overdrive, flanger):
+        out = dry * (1 - wet_amount) + wet_norm * wet_amount
+        Linear crossfade between dry and the loudness-matched wet. Used for
+        FX where the wet IS the transformed source — no separate "tail" is
+        added on top. wet=1 → pure wet at dry loudness.
+
+    Both modes RMS-normalise the wet (in 'add' mode to half the dry's RMS,
+    in 'replace' mode to the full dry's RMS) so the wet is always audibly
+    present without raising perceived loudness.
+
+    Pads the shorter signal with zeros so tails extending past the dry are
+    preserved.
+    """
+    wet_amount = float(np.clip(wet_amount, 0.0, 1.0))
+    n = max(len(dry), len(wet_processed))
+    if len(dry) < n:
+        dry = np.pad(dry, (0, n - len(dry)))
+    if len(wet_processed) < n:
+        wet_processed = np.pad(wet_processed, (0, n - len(wet_processed)))
+    dry = dry.astype(np.float32)
+    wet = wet_processed.astype(np.float32)
+    if wet_amount < 1e-6:
+        return dry
+
+    in_rms  = float(np.sqrt(np.mean(dry.astype(np.float64) ** 2)))
+    wet_rms = float(np.sqrt(np.mean(wet.astype(np.float64) ** 2)))
+
+    if mode == "replace":
+        if in_rms > 1e-6 and wet_rms > 1e-6:
+            wet = wet * (in_rms / wet_rms)
+        # Equal-power crossfade: sqrt gains keep perceived loudness constant
+        # across the blend (linear crossfade causes -3 dB at the midpoint).
+        dry_gain = float(np.sqrt(1.0 - wet_amount))
+        wet_gain = float(np.sqrt(wet_amount))
+        return (dry * dry_gain + wet * wet_gain).astype(np.float32)
+
+    # 'add' mode: layer wet on top of unity dry. Normalise wet to half the
+    # dry RMS so adding it at wet=1 raises the region by at most √(1+0.25)
+    # ≈ +1 dB — well below the just-noticeable threshold (~3 dB).
+    if in_rms > 1e-6 and wet_rms > 1e-6:
+        wet = wet * (in_rms * 0.5 / wet_rms)
+    return (dry + wet * wet_amount).astype(np.float32)
+
+
 # ── Per-event FX dispatch ────────────────────────────────────────────────────
 
 def apply_fx(clip: np.ndarray, sr: int, fx_list: list) -> np.ndarray:
@@ -103,84 +160,109 @@ def apply_global_fx(audio: np.ndarray, sr: int, fx_global: list) -> np.ndarray:
 # ── Classic FX implementations ───────────────────────────────────────────────
 
 def _delay(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
-    time     = np.clip(_resolve(fx.get('time', fx.get('delay_sec', 0.3)), 0.3), 0.01, 4.0)
-    feedback = np.clip(_resolve(fx.get('feedback', 0.4), 0.4), 0.0, 0.99)
-    wet      = np.clip(_resolve(fx.get('wet', 1.0), 1.0), 0.0, 1.0)
-    ping_pong = bool(fx.get('ping_pong', False))
+    time     = float(np.clip(_resolve(fx.get('time', fx.get('delay_sec', 0.3)), 0.3), 0.01, 4.0))
+    feedback = float(np.clip(_resolve(fx.get('feedback', 0.6), 0.6), 0.0, 0.95))
+    wet      = _resolve(fx.get('wet', 0.5), 0.5)
 
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
+    # Manual multi-tap delay in numpy: pure echoes (no dry mixed in), so the
+    # additive blend below doesn't double-count the dry. Up to 8 taps with
+    # each tap at feedback**tap — at feedback=0.6 the 8th tap is still ~1.7%,
+    # giving a long natural-sounding decay.
+    n_taps = 8
+    delay_samples = int(round(time * sr))
+    if delay_samples < 1 or len(clip) == 0:
+        return clip.astype(np.float32, copy=False)
 
-    subprocess.run([
-        'sox', tmp_in, tmp_out,
-        'echo',
-        '0.8', str(round(wet, 3)),
-        str(time * 1000),  str(round(feedback, 3)),
-        str(time * 2000),  str(round(feedback ** 2, 3)),
-        str(time * 3000),  str(round(feedback ** 3, 3)),
-    ], check=True, capture_output=True)
+    out_len = len(clip) + delay_samples * n_taps
+    wet_only = np.zeros(out_len, dtype=np.float32)
+    for tap in range(1, n_taps + 1):
+        offset = delay_samples * tap
+        amp    = feedback ** tap
+        if amp < 1e-4:
+            break
+        end_in_out = offset + len(clip)
+        if end_in_out > out_len:
+            end_in_out = out_len
+        wet_only[offset:end_in_out] += clip[:end_in_out - offset].astype(np.float32) * amp
 
-    return _read_and_clean(tmp_in, tmp_out)
+    return _wet_dry_mix(clip, wet_only, wet, mode="replace")
 
 
 def _reverb(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
-    # Support both old 'reverberance' param and new 'room'/'wet' params
+    # Support both old 'reverberance' param and new 'room' alias
     room = _resolve(fx.get('room', None), None)
-    wet  = _resolve(fx.get('wet', None), None)
     if room is not None:
         reverberance = int(np.clip(room * 100, 0, 100))
     else:
-        reverberance = int(np.clip(_resolve(fx.get('reverberance', 50), 50), 0, 100))
+        reverberance = int(np.clip(_resolve(fx.get('reverberance', 100), 100), 0, 100))
 
-    pre_delay = int(np.clip(_resolve(fx.get('pre_delay', 0), 0), 0, 500))
-    damping   = int(np.clip(_resolve(fx.get('damping', 50), 50), 0, 100))
+    damping     = int(np.clip(_resolve(fx.get('damping', 50), 50), 0, 100))
+    room_scale  = int(np.clip(_resolve(fx.get('room_scale', 100), 100), 0, 100))
+    pre_delay   = int(np.clip(_resolve(fx.get('pre_delay', 0), 0), 0, 500))
+    wet         = _resolve(fx.get('wet', 0.5), 0.5)
 
     tmp_in, tmp_out = _tmp_paths()
     sf.write(tmp_in, clip, sr)
 
-    args = ['sox', tmp_in, tmp_out, 'reverb',
-            str(reverberance), str(damping), '100']
-    if pre_delay > 0:
-        args.extend([str(pre_delay)])
+    # sox reverb syntax (positional, all required if you want pre_delay):
+    #   reverb [-w] reverberance damping room_scale stereo_depth pre_delay wet_gain
+    # `-w` makes sox output ONLY the wet signal (no dry mixed in). Stereo
+    # depth is hardcoded to 100 (full); wet_gain is 0 dB (we apply our own
+    # blend via _wet_dry_mix).
+    args = ['sox', tmp_in, tmp_out, 'reverb', '-w',
+            str(reverberance), str(damping), str(room_scale), '100',
+            str(pre_delay), '0']
     subprocess.run(args, check=True, capture_output=True)
 
-    result = _read_and_clean(tmp_in, tmp_out)
-    # Apply wet/dry mix
-    if wet is not None and wet < 1.0:
-        min_len = min(len(clip), len(result))
-        result = clip[:min_len] * (1.0 - wet) + result[:min_len] * wet
-    return result
+    wet_only = _read_and_clean(tmp_in, tmp_out)
+    return _wet_dry_mix(clip, wet_only, wet, mode="replace")
 
 
 def _overdrive(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     # Support both old 'gain' param and new 'drive' param
     drive = fx.get('drive', None)
     if drive is not None:
-        gain = int(np.clip(_resolve(drive, 0.2) * 100, 0, 100))
+        gain = int(np.clip(_resolve(drive, 0.6) * 100, 0, 100))
     else:
-        gain = int(np.clip(_resolve(fx.get('gain', 20), 20), 0, 100))
-    tone   = int(np.clip(_resolve(fx.get('tone', fx.get('colour', 20)), 20), 0, 100))
+        gain = int(np.clip(_resolve(fx.get('gain', 60), 60), 0, 100))
+    tone = int(np.clip(_resolve(fx.get('tone', fx.get('colour', 20)), 20), 0, 100))
+    wet  = _resolve(fx.get('wet', 1.0), 1.0)
+
     tmp_in, tmp_out = _tmp_paths()
     sf.write(tmp_in, clip, sr)
     subprocess.run(['sox', tmp_in, tmp_out, 'overdrive', str(gain), str(tone)],
                    check=True, capture_output=True)
-    return _read_and_clean(tmp_in, tmp_out)
+    distorted = _read_and_clean(tmp_in, tmp_out)
+    # 'replace' mode: at wet=1 the signal IS the distorted version (loudness
+    # matched to dry, so no volume jump). At wet=0 it's pure dry. Drop wet
+    # for parallel distortion blends.
+    return _wet_dry_mix(clip, distorted, wet, mode="replace")
 
 
 def _flanger(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     delay = np.clip(_resolve(fx.get('delay_ms', 0),   0),   0,   30)
-    depth = np.clip(_resolve(fx.get('depth', fx.get('depth_ms', 2)), 2), 0, 10)
-    speed = np.clip(_resolve(fx.get('rate', fx.get('speed_hz', 0.5)), 0.5), 0.1, 10)
-    feedback = np.clip(_resolve(fx.get('feedback', 0), 0), -95, 95)
+    depth = np.clip(_resolve(fx.get('depth', fx.get('depth_ms', 6)), 6), 0, 10)
+    speed = np.clip(_resolve(fx.get('rate', fx.get('speed_hz', 2.0)), 2.0), 0.1, 10)
+    feedback = np.clip(_resolve(fx.get('feedback', 80), 80), -95, 95)
+    wet      = _resolve(fx.get('wet', 0.7), 0.7)
+
     tmp_in, tmp_out = _tmp_paths()
     sf.write(tmp_in, clip, sr)
+    # sox flanger args: delay depth regen width speed shape phase interp
+    # regen (-95..95) = feedback %, width 71 = sox default, phase 25 = sox default
     subprocess.run([
         'sox', tmp_in, tmp_out, 'flanger',
-        str(round(delay, 2)), str(round(depth, 2)), '0',
-        str(round(feedback + 71, 0)),
-        str(round(speed, 2)), 'sine', 'linear'
+        str(round(delay, 2)),
+        str(round(depth, 2)),
+        str(round(feedback, 0)),
+        '71',
+        str(round(speed, 2)),
+        'sine', '25', 'linear'
     ], check=True, capture_output=True)
-    return _read_and_clean(tmp_in, tmp_out)
+    flanged = _read_and_clean(tmp_in, tmp_out)
+    # 'replace' mode: at wet=1 you hear pure flanged signal at dry loudness
+    # (source replaced by the modulated version).
+    return _wet_dry_mix(clip, flanged, wet, mode="replace")
 
 
 def _pitch(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
@@ -306,7 +388,7 @@ def _chorus(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
             else:
                 result[i] = clip[i]
 
-    return (clip * (1 - wet) + result * wet).astype(np.float32)
+    return _wet_dry_mix(clip, result, wet, mode="replace")
 
 
 def _tremolo(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
@@ -360,6 +442,13 @@ def _spectral_inversion(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     D_inv = mag * np.exp(1j * phase)
     y_inv = librosa.istft(D_inv, length=len(audio))
 
+    # RMS-match y_inv to the input so spectral peaks don't cause the whole
+    # track to be normalised down after render.
+    in_rms  = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+    out_rms = float(np.sqrt(np.mean(y_inv.astype(np.float64) ** 2)))
+    if in_rms > 1e-6 and out_rms > 1e-6:
+        y_inv = y_inv * (in_rms / out_rms)
+
     result = audio * (1.0 - dry_wet) + y_inv * dry_wet
     return result.astype(np.float32)
 
@@ -372,7 +461,7 @@ def _overtones(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
         return clip
 
     n_harmonics = max(1, int(fx.get('n_harmonics', 3)))
-    gain_db     = np.clip(_resolve(fx.get('gain_db', -12), -12), -60, 12)
+    gain_db     = np.clip(_resolve(fx.get('gain_db', -6), -6), -60, 12)
     gain_lin    = 10.0 ** (gain_db / 20.0)
 
     result = clip.astype(np.float32).copy()
@@ -385,7 +474,8 @@ def _overtones(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
             )
         except Exception:
             continue
-        h_gain = gain_lin / (h - 1)
+        # Gentler falloff: 1/sqrt(h-1) so higher harmonics stay audible
+        h_gain = gain_lin / float(np.sqrt(h - 1))
         min_len = min(len(result), len(harmonic))
         result[:min_len] += harmonic[:min_len] * h_gain
 

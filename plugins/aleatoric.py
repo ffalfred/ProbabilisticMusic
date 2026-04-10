@@ -1,7 +1,7 @@
 """Penderecki: Aleatoric — controlled random pitch displacement per segment (Devil's Staircase style)."""
 import numpy as np
 
-NAME     = "Aleatoric"
+NAME     = "Penderecki: Aleatoric"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_aleatoric"
 

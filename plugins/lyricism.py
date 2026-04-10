@@ -1,7 +1,7 @@
 """Desyatnikov: Lyricism — add non-functional harmonies (maj7 +11 st, dim11 +17 st) under the melodic line."""
 import numpy as np
 
-NAME     = "Lyricism"
+NAME     = "Desyatnikov: Lyricism"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_lyricism"
 

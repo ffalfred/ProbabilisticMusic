@@ -37,10 +37,18 @@ function stopAll() {
   vid.pause();
   baseAudio.pause();
   if (_waPlaying)  { state.currentTime = _waCurrentTime(); _waStop(); }
-  if (_mixPlaying) { state.currentTime = mixCurrentTime(); stopMix(); }
+  if (_mixPlaying) { state.currentTime = realToScore(mixCurrentTime()); stopMix(); }
   else _renderGen++;            // cancel any in-flight render even if not yet playing
+  if (typeof clearMixBuf === 'function') clearMixBuf();
+  state.currentTime = 0;
+  document.getElementById("cur-time").textContent = "0.000";
+  _updatePlaybackBar();
   _setPlayBtn("▶ Play");
   _setPlayStatus("");
+  if (vid.src && vid.readyState >= 1) vid.currentTime = 0;
+  draw();
+  if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+    drawKalmanTrace(_lastTraceData);
 }
 
 async function togglePlay() {
@@ -48,8 +56,36 @@ async function togglePlay() {
   if      (mode === "source") toggleBase();
   else if (mode === "mix")    toggleMix();
   else if (mode === "raw")    toggleBase();
-  else if (mode === "score")  renderScoreAndPlay();
-  else if (mode === "interp") renderInterpAndPlay();
+  else if (mode === "score")  toggleScore();
+  else if (mode === "interp") toggleInterp();
+}
+
+async function toggleScore() {
+  if (_mixPlaying) {
+    state.currentTime = realToScore(mixCurrentTime());
+    stopMix();
+    _setPlayBtn("▶ Play");
+    return;
+  }
+  if (_mixBuf) {
+    await playMixBuffer(_mixBuf, scoreToReal(state.currentTime || 0));
+    return;
+  }
+  await renderScoreAndPlay();
+}
+
+async function toggleInterp() {
+  if (_mixPlaying) {
+    state.currentTime = realToScore(mixCurrentTime());
+    stopMix();
+    _setPlayBtn("▶ Play");
+    return;
+  }
+  if (_mixBuf) {
+    await playMixBuffer(_mixBuf, scoreToReal(state.currentTime || 0));
+    return;
+  }
+  await renderInterpAndPlay();
 }
 
 function _updatePlaybackBar() {
@@ -89,7 +125,7 @@ async function toggleBase() {
 
 async function toggleMix() {
   if (_mixPlaying) {
-    state.currentTime = mixCurrentTime();
+    state.currentTime = realToScore(mixCurrentTime());
     stopMix();
     _setPlayBtn("▶ Play");
     return;
@@ -124,7 +160,7 @@ function seekTo(t) {
   if (pl && pl.src && pl.readyState >= 1) pl.currentTime = t;
   if (vid.src && vid.readyState >= 1) vid.currentTime = t;
   if (_waPlaying) { void _waStart(t); }
-  if (_mixPlaying && _mixBuf) { playMixBuffer(_mixBuf, t); }
+  if (_mixPlaying && _mixBuf) { playMixBuffer(_mixBuf, scoreToReal(t)); }
   draw();
 }
 
@@ -153,12 +189,14 @@ async function renderAndPlay() {
         fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
       })),
       ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
-        path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted
+        path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
+        ...(tk.from != null ? { from: tk.from } : {}),
+        ...(tk.to   != null ? { to:   tk.to   } : {}),
+        ...(tk.fx?.length   ? { fx:   tk.fx   } : {}),
       })) } : {}),
       ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
       ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
       ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
-      mix_mode: state.mixMode || 'sidechain',
       ...(state.articulations.length ? { articulations: state.articulations } : {}),
       ...(state.noteRel.length       ? { note_rel: state.noteRel }            : {}),
     };
@@ -173,6 +211,11 @@ async function renderAndPlay() {
     if (gen !== _renderGen) return;
     if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
 
+    // Tempo map: score→real timing returned by server. Drives cursor/event
+    // remapping between the score timeline and the rendered audio timeline.
+    state.tempoMap     = Array.isArray(data.tempo_map) ? data.tempo_map : [];
+    state.durationReal = data.duration_real || 0;
+
     // 2. Fetch the rendered audio and decode via Web Audio API.
     //    This replaces <audio>.canplay which would silently hang on load errors.
     const audioRes = await fetch(data.url);
@@ -181,8 +224,8 @@ async function renderAndPlay() {
     if (gen !== _renderGen) return;
     const buf = await _getMixCtx().decodeAudioData(ab);
 
-    // 3. Play
-    await playMixBuffer(buf, state.currentTime);
+    // 3. Play — convert score time (state.currentTime) to real time for the buffer offset
+    await playMixBuffer(buf, scoreToReal(state.currentTime));
   } catch(e) {
     if (gen === _renderGen) alert("Render failed: " + e);
   } finally {
@@ -201,7 +244,10 @@ function playTick() {
     return;
   }
   if (_mixPlaying) {
-    state.currentTime = mixCurrentTime();
+    // Convert real-time playback position back to score time so all score-time
+    // drawing (cursor on score image, event ticks, etc.) stays correct when
+    // the mix has been stretched by tempo ranges.
+    state.currentTime = realToScore(mixCurrentTime());
     document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);
     _updatePlaybackBar();
     draw();
@@ -220,11 +266,11 @@ function playTick() {
 }
 
 
-vid.addEventListener("play",  () => { _setPlayBtn("⏸ Play"); requestAnimationFrame(playTick); });
+vid.addEventListener("play",  () => { _setPlayBtn("⏸ Pause"); requestAnimationFrame(playTick); });
 vid.addEventListener("pause", () => { _setPlayBtn("▶ Play"); });
 vid.addEventListener("ended", () => { _setPlayBtn("▶ Play"); state.currentTime = vid.currentTime; draw(); });
 
-baseAudio.addEventListener("play",  () => { _setPlayBtn("⏸ Play"); requestAnimationFrame(playTick); });
+baseAudio.addEventListener("play",  () => { _setPlayBtn("⏸ Pause"); requestAnimationFrame(playTick); });
 baseAudio.addEventListener("pause", () => { _setPlayBtn("▶ Play"); });
 baseAudio.addEventListener("ended", () => { _setPlayBtn("▶ Play"); state.currentTime = baseAudio.currentTime; draw(); });
 

@@ -1,7 +1,7 @@
 """Spectral: Smooth — blur magnitude spectrum across frequency bins (spectral envelope smoothing)."""
 import numpy as np
 
-NAME     = "Spectral Smooth"
+NAME     = "Spectral: Smooth"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_spectral_smooth"
 

@@ -17,10 +17,42 @@ const state = {
   lastScorePath: "",  // last exported or imported YAML score path
   duckBase: { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 },
   duckKey:  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 },
-  mixMode:  "sidechain",         // 'sidechain' | 'layer' | 'events_only'
   autoMix:  { enabled: false, mode: "sqrt" },
   history: [],        // for undo
+  tempoMap: [],       // [[score_t, real_t], ...] — set after each render, empty = identity
+  durationReal: 0,    // rendered mix duration in real seconds (may differ from score duration when tempo stretches)
 };
+
+// ─── Tempo map helpers: translate between score time and real (wall-clock) time
+// ────────────────────────────────────────────────────────────────────────────
+function scoreToReal(t) {
+  const tm = state.tempoMap;
+  if (!tm || tm.length < 2) return t;
+  if (t <= tm[0][0]) return tm[0][1];
+  for (let i = 0; i < tm.length - 1; i++) {
+    const [s0, r0] = tm[i], [s1, r1] = tm[i + 1];
+    if (t <= s1) {
+      if (s1 === s0) return r0;
+      return r0 + (t - s0) * (r1 - r0) / (s1 - s0);
+    }
+  }
+  const [sL, rL] = tm[tm.length - 1];
+  return rL + (t - sL);
+}
+function realToScore(t) {
+  const tm = state.tempoMap;
+  if (!tm || tm.length < 2) return t;
+  if (t <= tm[0][1]) return tm[0][0];
+  for (let i = 0; i < tm.length - 1; i++) {
+    const [s0, r0] = tm[i], [s1, r1] = tm[i + 1];
+    if (t <= r1) {
+      if (r1 === r0) return s0;
+      return s0 + (t - r0) * (s1 - s0) / (r1 - r0);
+    }
+  }
+  const [sL, rL] = tm[tm.length - 1];
+  return sL + (t - rL);
+}
 
 // ─── 12D state dimension metadata ────────────────────────────────────────────
 const DIM_NAMES = [
@@ -78,8 +110,7 @@ const interpState = {
   v2config: {
     engine: 'v2',
     seed: null,
-    v2: { lambda: 0.7, A1: 0.7, A2: 0.2, eta: 0.3, xi: 0.05, window_size: 3, trace_step: 0.5,
-          base_dims: ['gain_db', 'dynamic_center'] },
+    v2: { lambda: 0.7, A1: 0.7, A2: 0.2, eta: 0.3, xi: 0.05, window_size: 3, trace_step: 0.5 },
   },
 };
 

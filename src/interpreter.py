@@ -29,6 +29,7 @@ import numpy as np
 
 from src.kalman      import build_F, build_Q_aug, build_Sigma0, predict, update
 from src.drama       import compute_drama, compute_future_pull
+from src.envelope    import DYNAMIC_LEVELS
 from src.observation import build_window_obs, lookup_HR
 from src.character   import (character_at, make_AR_matrices,
                               rw_character_at, D, BUILTIN as _KALMAN_BUILTIN,
@@ -408,23 +409,17 @@ def _sample_posterior(rng, mu: np.ndarray, Sig: np.ndarray,
 
 # ── State → event ─────────────────────────────────────────────────────────────
 
-def _apply_state(ev: dict, x: np.ndarray, skip_dims: set = None) -> dict:
-    """Map the 12D Kalman state vector onto event fields.
-    skip_dims: set of dim names to skip (already handled by base modulation)."""
+def _apply_state(ev: dict, x: np.ndarray) -> dict:
+    """Map golem state onto per-event fields.
+
+    Only timing_offset_ms, attack_shape, and release_shape are per-event.
+    All other dims are applied to the combined mix in a single pass
+    by _apply_state_to_mix in mixer.py.
+    """
     ev = dict(ev)
-    _s = skip_dims or set()
-    if 'gain_db'          not in _s: ev['gain_db']          = float(ev.get('gain_db', 0.0)) + float(x[0])
-    if 'brightness'       not in _s: ev['brightness']       = float(np.clip(x[1], 0.0, 1.0))
-    if 'timing_offset_ms' not in _s: ev['timing_offset_ms'] = float(x[2])
-    if 'attack_shape'     not in _s: ev['attack_shape']     = float(np.clip(x[3], 0.0, 1.0))
-    if 'release_shape'    not in _s: ev['release_shape']    = float(np.clip(x[4], 0.0, 1.0))
-    if 'reverb_wet'       not in _s: ev['reverb_wet']       = float(np.clip(x[5], 0.0, 1.0))
-    if 'filter_cutoff'    not in _s: ev['filter_cutoff']    = float(np.clip(x[6], 20.0, 20000.0))
-    if 'filter_resonance' not in _s: ev['filter_resonance'] = float(np.clip(x[7], 0.0, 1.0))
-    if 'stereo_width'     not in _s: ev['stereo_width']     = float(np.clip(x[8], 0.0, 1.0))
-    if 'overdrive_drive'  not in _s: ev['overdrive_drive']  = float(np.clip(x[9], 0.0, 1.0))
-    if 'pitch_dev_cents'  not in _s: ev['pitch_dev_cents']  = float(x[10])
-    if 'dynamic_center'   not in _s: ev['dynamic_center']   = float(np.clip(x[11], -30.0, 0.0))
+    ev['timing_offset_ms'] = float(x[2])
+    ev['attack_shape']     = float(np.clip(x[3], 0.0, 1.0))
+    ev['release_shape']    = float(np.clip(x[4], 0.0, 1.0))
     return ev
 
 
@@ -467,9 +462,6 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
         'gain_db': 0.0, 'brightness': 0.5,
         'timing_offset_ms': 0.0, 'attack_shape': 0.5, 'reverb_wet': 0.3
     })
-
-    # Dims handled by base modulation — skip them in per-event _apply_state
-    _skip_dims = set(v2cfg.get('base_dims', []))
 
     # Seed: v2cfg takes priority over root config
     seed = v2cfg.get('seed', config.get('seed', None))
@@ -806,6 +798,14 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                     _remain = np.maximum(1.0 - np.diag(A1_mat) - np.diag(A2_mat), 0.0)
                     X_mu_bar[:D] += _remain * _mu_eq
 
+            # Direct target pull for gain_db (dim 0) from dynamics marking level.
+            # The marking defines WHERE gain should be; the Kalman controls HOW it gets there.
+            _marking_name = marking_pairs[m_idx][1] if marking_pairs else 'mf'
+            _target_lin = DYNAMIC_LEVELS.get(_marking_name, 0.65)
+            _target_db = float(20.0 * np.log10(max(_target_lin, 0.01)))
+            _pull_strength = float(obs_w) * 0.15
+            X_mu_bar[0] += (_target_db - X_mu_bar[0]) * _pull_strength
+
             y    = build_window_obs(markings_list, m_idx, N)
             H, R = lookup_HR(markings_list, m_idx, N, windows_table, augmented_d=2*D)
 
@@ -880,7 +880,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                 })
 
         if ev is not None:
-            enriched.append(_apply_state(ev, x_clipped, skip_dims=_skip_dims))
+            enriched.append(_apply_state(ev, x_clipped))
 
     if return_trace:
         return enriched, trace

@@ -1,7 +1,7 @@
 """Spectral: Inharmonic — shift partials to inharmonic ratios (×1.3, ×2.7, ×4.5)."""
 import numpy as np
 
-NAME     = "Inharmonic"
+NAME     = "Spectral: Inharmonic"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_inharmonic"
 

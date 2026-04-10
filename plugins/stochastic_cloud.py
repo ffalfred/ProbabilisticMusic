@@ -1,7 +1,7 @@
 """Xenakis: Stochastic Cloud — dense probabilistically generated sine-burst clusters."""
 import numpy as np
 
-NAME     = "Stochastic Cloud"
+NAME     = "Xenakis: Stochastic Cloud"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_stochastic_cloud"
 

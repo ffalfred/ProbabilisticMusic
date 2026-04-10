@@ -1,7 +1,7 @@
 """Desyatnikov: Minimalism — every Nth onset segment displaced by a sharp quote interval (polystylistic)."""
 import numpy as np
 
-NAME     = "Minimalism"
+NAME     = "Desyatnikov: Minimalism"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_minimalism"
 

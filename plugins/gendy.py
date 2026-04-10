@@ -1,7 +1,7 @@
 """Xenakis: GENDY — Weibull-distributed amplitude envelope with abrupt mathematically-derived cuts."""
 import numpy as np
 
-NAME     = "GENDY"
+NAME     = "Xenakis: GENDY"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_gendy"
 

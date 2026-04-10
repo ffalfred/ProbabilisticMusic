@@ -1,7 +1,7 @@
 """Saariaho: Microtonal — detune by ±cents driven by spectral brightness of the source."""
 import numpy as np
 
-NAME     = "Microtonal"
+NAME     = "Saariaho: Microtonal"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_microtonal"
 

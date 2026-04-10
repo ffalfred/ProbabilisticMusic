@@ -1,7 +1,7 @@
 """Penderecki: Cluster — dense pitch-cluster chords (Threnody style)."""
 import numpy as np
 
-NAME     = "Cluster"
+NAME     = "Penderecki: Cluster"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_cluster"
 

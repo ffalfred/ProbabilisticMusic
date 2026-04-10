@@ -28,20 +28,24 @@
   <div class="ctb-row" id="ctb-row-files">
     <span class="composer-title">opus one</span>
     <span class="ctb-sep">|</span>
-    <input id="path-input" type="text" placeholder="audio…" class="path-select ctb-input" readonly />
-    <button id="load-btn" class="ctb-btn" title="Reload audio">&#8635;</button>
-    <input id="score-path-input" type="text" placeholder="score img…" class="path-select ctb-input" readonly />
-    <button id="load-score-btn" class="ctb-btn" title="Load score image">&#8635;</button>
-    <input id="score2-path-input" type="text" placeholder="metadata…" class="path-select ctb-input" readonly />
-    <button id="load-score2-btn" class="ctb-btn" title="Load metadata image">&#8635;</button>
+    <input id="path-input" type="text" placeholder="audio…" class="path-select ctb-input" />
+    <button id="browse-audio-btn" class="ctb-btn" title="Browse audio files">&#128193;</button>
+    <button id="load-btn" class="ctb-btn" style="display:none;"></button>
+    <input id="score-path-input" type="text" placeholder="score img…" class="path-select ctb-input" />
+    <button id="browse-score-btn" class="ctb-btn" title="Browse score images">&#128193;</button>
+    <button id="load-score-btn" class="ctb-btn" style="display:none;"></button>
+    <input id="score2-path-input" type="text" placeholder="metadata…" class="path-select ctb-input" />
+    <button id="browse-score2-btn" class="ctb-btn" title="Browse metadata images">&#128193;</button>
+    <button id="load-score2-btn" class="ctb-btn" style="display:none;"></button>
     <span class="ctb-sep">|</span>
-    <input id="export-yaml-path" type="text" placeholder="save score…" class="path-select ctb-input" readonly />
+    <input id="export-yaml-path" type="text" placeholder="save score…" class="path-select ctb-input" />
     <button id="export-btn" class="ctb-btn" title="Save score as YAML">&#8595;</button>
-    <input id="export-mp4-path" type="text" placeholder="save audio…" class="path-select ctb-input" readonly />
+    <input id="export-mp4-path" type="text" placeholder="save audio…" class="path-select ctb-input" />
     <button id="export-mp4-btn" class="ctb-btn" title="Save scrolling score video">&#8659;</button>
     <span class="ctb-sep">|</span>
-    <input id="import-path" type="text" placeholder="import score…" class="path-select ctb-input" readonly />
-    <button id="import-btn" class="ctb-btn" title="Import score from YAML">&#8593;</button>
+    <input id="import-path" type="text" placeholder="import score…" class="path-select ctb-input" />
+    <button id="browse-import-btn" class="ctb-btn" title="Browse score YAML files">&#128193;</button>
+    <button id="import-btn" class="ctb-btn" style="display:none;"></button>
     <span id="export-status" class="ctb-status"></span>
   </div>
 
@@ -50,19 +54,22 @@
 <!-- INTERPRETER TOP BAR (hidden initially, shown when Interpreter tab is active) -->
 <div id="interp-topbar" style="display:none">
   <div id="interp-topbar-score">
-    <input id="interp-score-path" type="text" placeholder="click to select score…" class="path-select" readonly />
-    <button id="interp-load-score-btn">Load</button>
+    <input id="interp-score-path" type="text" placeholder="score yaml…" class="path-select" />
+    <button id="interp-browse-score-btn" title="Browse score files" style="padding:2px 5px;">&#128193;</button>
+    <button id="interp-load-score-btn" style="display:none;"></button>
     <span id="interp-score-status" class="interp-status" style="display:none;"></span>
   </div>
   <div id="interp-topbar-media">
-    <label class="itb-label">audio</label>
-    <input id="interp-audio-path" type="text" placeholder="click to select audio…" class="path-select" readonly />
-    <button id="interp-load-wave-btn">Load</button>
+    <input id="interp-audio-path" type="text" placeholder="audio file…" class="path-select" />
+    <button id="interp-browse-audio-btn" title="Browse audio files" style="padding:2px 5px;">&#128193;</button>
+    <button id="interp-load-wave-btn" style="display:none;"></button>
     <span class="itb-sep">|</span>
-    <input id="interp-score-img-path" type="text" placeholder="score image…" class="path-select" readonly style="width:120px;" />
-    <button id="interp-load-score-img-btn">Score Img</button>
-    <input id="interp-meta-img-path" type="text" placeholder="metadata image…" class="path-select" readonly style="width:120px;" />
-    <button id="interp-load-meta-img-btn">Meta Img</button>
+    <input id="interp-score-img-path" type="text" placeholder="score image…" class="path-select" style="width:140px;" />
+    <button id="interp-browse-score-img-btn" title="Browse images" style="padding:2px 5px;">&#128193;</button>
+    <button id="interp-load-score-img-btn" style="display:none;"></button>
+    <input id="interp-meta-img-path" type="text" placeholder="metadata image…" class="path-select" style="width:140px;" />
+    <button id="interp-browse-meta-img-btn" title="Browse images" style="padding:2px 5px;">&#128193;</button>
+    <button id="interp-load-meta-img-btn" style="display:none;"></button>
   </div>
   <div id="interp-topbar-meta">
     <label style="font-size:10px;color:#555;">seed</label>
@@ -72,8 +79,9 @@
     <label style="font-size:10px;color:#555;">name</label>
     <input id="interp-name" type="text" value="untitled_interp" style="width:110px;" />
     <button id="interp-save-btn">&#8595; Save</button>
-    <button id="interp-load-btn">&#8593; Load</button>
-    <input id="interp-load-path" type="text" placeholder="click to select interpretation…" class="path-select" readonly style="width:150px;" />
+    <input id="interp-load-path" type="text" placeholder="interpretation…" class="path-select" style="width:160px;" />
+    <button id="interp-browse-load-btn" title="Browse interpretations" style="padding:2px 5px;">&#128193;</button>
+    <button id="interp-load-btn" style="display:none;"></button>
     <span class="itb-sep">|</span>
     <button id="interp-export-wav-btn-top" title="Render and save interpreted mix as WAV (uses 'name' field above)">&#8595; WAV</button>
     <span id="interp-save-status" class="interp-status"></span>
@@ -103,7 +111,7 @@
 
 <div id="mid">
   <div id="palette">
-    <label onclick="toggleBarContent('palette-content','palette-chevron')" title="Collapse/expand panel">
+    <label onclick="_collapsePalette()" title="Collapse/expand panel" style="cursor:pointer;">
       <span id="palette-chevron" style="font-size:9px;">&#9660;</span> <span id="palette-label">tools</span>
     </label>
     <div id="palette-content">
@@ -118,13 +126,6 @@
       <button id="undo-btn" style="color:#c96;">&#8592; Undo</button>
       <button id="redo-btn" style="color:#c96;">&#8594; Redo</button>
       <!-- Mix -->
-      <span class="tool-sep">Mix</span>
-      <select id="mix-mode-select" style="font-size:10px;background:#1a1a1a;border:1px solid #333;color:#aaa;padding:2px 4px;"
-              title="How events mix with the base track" onchange="state.mixMode=this.value;">
-        <option value="sidechain" selected>Sidechain</option>
-        <option value="layer">Layer</option>
-        <option value="events_only">Events only</option>
-      </select>
       <span class="tool-sep">Base FX</span>
       <button id="base-fx-classic-btn" title="Add a Classic FX to the base track">+ &#9670; Classic</button>
       <button id="base-fx-morpho-btn" title="Add a Morphogenics FX to the base track">+ &#10022; Morpho</button>
@@ -193,21 +194,6 @@
           </div>
         </div>
       </div><!-- /ge-global -->
-      <!-- Base modulation: which state dims modulate the base track -->
-      <div style="padding:4px 8px 6px;border-bottom:1px solid #1a1a1a;margin-bottom:4px;">
-        <div style="font-size:9px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;">base modulation</div>
-        <div style="display:flex;align-items:center;gap:4px;">
-          <select id="interp-base-mod" style="flex:1;font-size:10px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:2px 4px;">
-            <option value="off">off</option>
-            <option value="gain">gain</option>
-            <option value="gain_center" selected>gain+center</option>
-            <option value="timbre">timbre (bright+filter)</option>
-            <option value="full">full (gain+timbre)</option>
-            <option value="custom">custom…</option>
-          </select>
-          <button id="interp-base-cog" title="Choose which dims modulate the base track" style="padding:2px 6px;font-size:11px;">&#9881;</button>
-        </div>
-      </div>
       <button id="g-new-btn" style="width:100%;text-align:left;padding:6px 8px;font-size:11px;color:#7b5ea7;border-color:#7b5ea7;margin-bottom:2px;">+ New Golem</button>
       <div id="golem-accordion"></div>
     </div><!-- /palette-interpreter -->
@@ -218,9 +204,17 @@
       <canvas id="waveform-canvas"></canvas>
     </div>
     <!-- Golem timeline — always in DOM, shown when Interpreter tab is active -->
-    <div id="golem-timeline-wrap" style="display:none;">
-      <canvas id="golem-canvas"></canvas>
-      <div id="golem-timeline-label">golems — drag to create</div>
+    <div id="golem-timeline-outer" style="display:none;">
+      <div onclick="toggleBarContent('golem-timeline-wrap','golem-tl-chevron')"
+           style="cursor:pointer;user-select:none;font-size:9px;text-transform:uppercase;
+                  letter-spacing:1px;color:#444;padding:2px 8px;background:#0d0d0d;
+                  border-bottom:1px solid #1a1a1a;display:flex;align-items:center;gap:4px;">
+        <span id="golem-tl-chevron">&#9660;</span> Golem timeline
+      </div>
+      <div id="golem-timeline-wrap">
+        <canvas id="golem-canvas"></canvas>
+        <div id="golem-timeline-label">drag to create</div>
+      </div>
     </div>
     <div id="tracks-wrap" style="display:none;">
       <div id="tracks-header" onclick="toggleTracksPanel()"
@@ -794,6 +788,12 @@
 
   </div><!-- /left-col -->
   <div id="interp-info-panel" style="display:none;flex-direction:column;">
+    <div onclick="_collapsePanel('interp-info-panel','viz-chevron')"
+         style="cursor:pointer;user-select:none;font-size:9px;text-transform:uppercase;
+                letter-spacing:1px;color:#555;padding:4px 8px;border-bottom:1px solid #1a1a1a;
+                display:flex;align-items:center;gap:4px;flex-shrink:0;">
+      <span id="viz-chevron">&#9660;</span> Visualizations
+    </div>
     <div id="viz-panel-header" style="padding:4px 6px;border-bottom:1px solid #1a1a1a;flex-shrink:0;">
       <select id="viz-panel-select" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:3px 4px;">
         <!-- populated dynamically by refreshVizDropdown() based on active golem types -->
@@ -811,7 +811,7 @@
     <div id="viz-panel-status" style="font-size:9px;color:#666;padding:2px 6px;text-align:center;flex-shrink:0;">press ◈ Trace to visualize</div>
   </div>
   <div id="score-info-panel">
-    <div id="history-header" onclick="toggleBarContent('history-body','history-chevron')"
+    <div id="history-header" onclick="_collapsePanel('score-info-panel','history-chevron')"
          style="cursor:pointer;user-select:none;font-size:9px;text-transform:uppercase;
                 letter-spacing:1px;color:#555;padding:4px 8px;border-bottom:1px solid #1a1a1a;
                 display:flex;align-items:center;gap:4px;">

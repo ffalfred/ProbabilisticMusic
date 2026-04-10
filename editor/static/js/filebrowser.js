@@ -5,18 +5,19 @@
   const YAML_EXTS  = ['.yaml','.yml'];
   const IMG_EXTS   = ['.png','.jpg','.jpeg','.webp','.gif','.bmp','.svg'];
 
-  // Map input id → { filter, autoClickId }
-  // autoClickId: button to programmatically click after a file is chosen
+  // Map input id → { filter, autoClickId, browseId }
+  // autoClickId: button to programmatically click after a file is chosen (triggers load)
+  // browseId:    button that opens the file browser modal
   const INPUT_CONFIG = {
-    'path-input':         { filter: AUDIO_EXTS, autoClickId: 'load-btn' },
-    'score-path-input':   { filter: IMG_EXTS,   autoClickId: 'load-score-btn' },
-    'score2-path-input':  { filter: IMG_EXTS,   autoClickId: 'load-score2-btn' },
-    'import-path':        { filter: YAML_EXTS,  autoClickId: 'import-btn' },
-    'interp-score-path':     { filter: YAML_EXTS,  autoClickId: 'interp-load-score-btn' },
-    'interp-load-path':      { filter: YAML_EXTS,  autoClickId: 'interp-load-btn' },
-    'interp-audio-path':     { filter: AUDIO_EXTS, autoClickId: 'interp-load-wave-btn' },
-    'interp-score-img-path': { filter: IMG_EXTS,   autoClickId: 'interp-load-score-img-btn' },
-    'interp-meta-img-path':  { filter: IMG_EXTS,   autoClickId: 'interp-load-meta-img-btn' },
+    'path-input':            { filter: AUDIO_EXTS, autoClickId: 'load-btn',                  browseId: 'browse-audio-btn' },
+    'score-path-input':      { filter: IMG_EXTS,   autoClickId: 'load-score-btn',             browseId: 'browse-score-btn' },
+    'score2-path-input':     { filter: IMG_EXTS,   autoClickId: 'load-score2-btn',            browseId: 'browse-score2-btn' },
+    'import-path':           { filter: YAML_EXTS,  autoClickId: 'import-btn',                 browseId: 'browse-import-btn' },
+    'interp-score-path':     { filter: YAML_EXTS,  autoClickId: 'interp-load-score-btn',      browseId: 'interp-browse-score-btn' },
+    'interp-load-path':      { filter: YAML_EXTS,  autoClickId: 'interp-load-btn',            browseId: 'interp-browse-load-btn' },
+    'interp-audio-path':     { filter: AUDIO_EXTS, autoClickId: 'interp-load-wave-btn',       browseId: 'interp-browse-audio-btn' },
+    'interp-score-img-path': { filter: IMG_EXTS,   autoClickId: 'interp-load-score-img-btn',  browseId: 'interp-browse-score-img-btn' },
+    'interp-meta-img-path':  { filter: IMG_EXTS,   autoClickId: 'interp-load-meta-img-btn',   browseId: 'interp-browse-meta-img-btn' },
   };
 
   let _targetInput  = null;
@@ -149,11 +150,23 @@
       });
     }
 
-    // Wire each path-select input
+    // Wire browse buttons and Enter-to-load on path inputs
     for (const [id, cfg] of Object.entries(INPUT_CONFIG)) {
       const el = document.getElementById(id);
       if (!el) continue;
-      el.addEventListener('click', () => open(el, cfg.filter, cfg.autoClickId));
+      // Browse button → opens file browser
+      const browseBtn = document.getElementById(cfg.browseId);
+      if (browseBtn) {
+        browseBtn.addEventListener('click', () => open(el, cfg.filter, cfg.autoClickId));
+      }
+      // Enter key in input → trigger load
+      el.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const loadBtn = document.getElementById(cfg.autoClickId);
+          if (loadBtn) loadBtn.click();
+        }
+      });
     }
   });
 })();

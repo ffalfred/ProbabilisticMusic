@@ -1,7 +1,7 @@
 """Spectral: Harmonic Stretch — scale upper partials outward by stretch_ratio via bin remapping."""
 import numpy as np
 
-NAME     = "Harmonic Stretch"
+NAME     = "Spectral: Harmonic Stretch"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_harmonic_stretch"
 

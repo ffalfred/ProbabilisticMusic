@@ -16,9 +16,10 @@ _BETA_DIR = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(_BETA_DIR))
 from src.sample_engine import build_bank
 from src.scheduler     import get_events
-from src.mixer         import mix_events, normalise
+from src.mixer         import mix_events, normalise, _stretch_mix_by_tempo
 from src.envelope      import build_dynamics_envelope, build_duck_envelope, build_phrase_envelope
-from src.renderer      import _apply_phrase_tempo
+from src.renderer      import _apply_phrase_tempo, _remap_dynamics, _remap_phrases, _remap_events
+from src.fx            import apply_section_fx, apply_global_fx
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
@@ -222,35 +223,44 @@ def preview():
             events, _state_trace = interpret(score, config, return_trace=True)
             score['_state_trace'] = _state_trace
             # per-dim toggles for state-to-base modulation
-            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
         else:
             events = get_events(score)
 
+        # 1. Mix in score time
         mix = mix_events(events, bank, sr, score, base)
-        # When a golem is interpreting (v2), the golem IS the performer — it has
-        # already read dynamics/phrases and shaped the audio. Skip the blind
-        # envelopes that would otherwise fight the golem's decisions.
-        _golem_active = bool(score.get('_state_trace'))
+
+        # 2. Stretch by tempo ranges (length may change). Returns score→real map.
+        mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
+
+        # 3. FX after stretch, in real time
+        mix = apply_section_fx(mix, sr, score.get('fx_sections', []))
+        mix = apply_global_fx(mix, sr, score.get('fx_global', []))
+
+        # 4. Envelopes (remap score-time positions → real time)
+        _golem_active = bool(score.get('_state_trace')) and bool(score.get('golems'))
         if not _golem_active:
             dynamics = score.get('dynamics', [])
             if dynamics:
-                mix *= build_dynamics_envelope(len(mix), sr, dynamics)
+                mix *= build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map))
             phrases = score.get('phrases', [])
             if phrases:
-                mix *= build_phrase_envelope(len(mix), sr, phrases)
+                mix *= build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map))
         dk = score.get('duck_key')
         if dk and dk.get('enabled') and dk.get('key') and events:
             mix *= build_duck_envelope(
-                len(mix), sr, events,
+                len(mix), sr, _remap_events(events, tempo_map),
                 trigger_fn=lambda ev: ev.get('sample') == dk['key'],
                 amount_db=dk.get('amount_db', -10.0),
                 attack=dk.get('attack', 0.01),
                 release=dk.get('release', 0.3),
-                tempo_ranges=score.get('tempo', []),
             )
         mix = normalise(mix)
         sf.write(PREVIEW_TMP, mix, sr)
-        return jsonify({"url": f"/preview_audio?v={int(_time.time())}"})
+        return jsonify({
+            "url": f"/preview_audio?v={int(_time.time())}",
+            "tempo_map": tempo_map,
+            "duration_real": float(len(mix) / sr),
+        })
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
@@ -307,15 +317,16 @@ def export_interp_wav():
             score['mix_mode'] = 'events_only'
             events, _state_trace = interpret(score, config, return_trace=True)
             score['_state_trace'] = _state_trace
-            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
             mix = mix_events(events, bank, sr, score, base)
         else:
             # Full interpreter render (base + events + golem)
             events, _state_trace = interpret(score, config, return_trace=True)
             score['_state_trace'] = _state_trace
-            score['_interp_base_dims'] = (config.get('v2') or {}).get('base_dims', [])
             mix = mix_events(events, bank, sr, score, base)
 
+        # Apply tempo stretch so interpreter export matches preview behavior
+        if export_mode != "raw":
+            mix, _tm = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
         mix = normalise(mix)
 
         # Time range trim
@@ -497,8 +508,9 @@ def separate():
             load_kwargs["duration"] = float(to_t)
         audio, sr_lib = librosa.load(path, **load_kwargs)
         base_name = os.path.splitext(os.path.basename(path))[0]
+        # Method-specific subdirectory prevents overwriting across different stemize runs
         out_dir   = os.path.join(os.path.dirname(os.path.abspath(path)),
-                                 base_name + "_stems")
+                                 base_name + "_stems", method)
         os.makedirs(out_dir, exist_ok=True)
 
         stems = []

@@ -1,7 +1,7 @@
 """Wagner: Leitmotif — onset-segmented motifs, each transposed and optionally time-stretched + repeated."""
 import numpy as np
 
-NAME     = "Leitmotif"
+NAME     = "Wagner: Leitmotif"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_leitmotif"
 

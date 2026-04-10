@@ -1,7 +1,7 @@
 """Nørgaard: Undertones — add synthetic undertones below the fundamental (Per Nørgaard)."""
 import numpy as np
 
-NAME     = "Undertones"
+NAME     = "Nørgaard: Undertones"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_undertones"
 

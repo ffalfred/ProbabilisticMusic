@@ -61,6 +61,13 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 setTimeout(resizeCanvas, 50);
 
+// Redraw when switching back to Composer so score images + data loaded
+// in the Interpreter are visible.
+document.addEventListener('workspace:activated', e => {
+  if (e.detail !== 'composer') return;
+  requestAnimationFrame(() => { resizeCanvas(); draw(); });
+});
+
 // Size the frame canvas whenever its container changes (handles initial layout)
 const frameResizeObserver = new ResizeObserver(() => {
   const p = frameCanvas.parentElement;
@@ -306,22 +313,26 @@ function draw() {
     const x1 = tToX(ev.t);
     const x2 = tToX(ev.t + clipDur);
     const bw = Math.max(2, x2 - x1);
+    const muted = !!ev.muted;
+    const alphaScale = muted ? 0.2 : 1.0;
     // thin trigger line up through waveform area
-    ctx.strokeStyle = hexAlpha(col, 0.35);
-    ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = hexAlpha(col, 0.35 * alphaScale);
+    ctx.lineWidth = 1; ctx.setLineDash(muted ? [4, 4] : [2, 3]);
     ctx.beginPath(); ctx.moveTo(x1, RULER_H); ctx.lineTo(x1, laneY); ctx.stroke();
     ctx.setLineDash([]);
     // clip block in lane
-    ctx.fillStyle = hexAlpha(col, 0.28);
+    ctx.fillStyle = hexAlpha(col, 0.28 * alphaScale);
     ctx.fillRect(x1, laneY + 2, bw, EVENT_LANE_H - 4);
-    ctx.strokeStyle = hexAlpha(col, 0.8);
+    ctx.strokeStyle = hexAlpha(col, 0.8 * alphaScale);
     ctx.lineWidth = 1;
+    if (muted) ctx.setLineDash([3, 3]);
     ctx.strokeRect(x1, laneY + 2, bw, EVENT_LANE_H - 4);
+    ctx.setLineDash([]);
     // label clipped to block width
     ctx.save();
     ctx.beginPath(); ctx.rect(x1 + 1, laneY + 2, bw - 2, EVENT_LANE_H - 4); ctx.clip();
-    ctx.fillStyle = hexAlpha(col, 0.95);
-    ctx.fillText("▶" + ev.sample, x1 + 4, laneY + EVENT_LANE_H / 2 + 4);
+    ctx.fillStyle = hexAlpha(col, 0.95 * alphaScale);
+    ctx.fillText((muted ? "⊘" : "▶") + ev.sample, x1 + 4, laneY + EVENT_LANE_H / 2 + 4);
     ctx.restore();
   }
 

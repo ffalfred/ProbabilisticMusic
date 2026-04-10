@@ -1,7 +1,7 @@
 """Wagner: Tristan — overlay Tristan chord (4:5:6:7 just-intonation) on every Nth onset segment."""
 import numpy as np
 
-NAME     = "Tristan Chord"
+NAME     = "Wagner: Tristan Chord"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_tristan_chord"
 

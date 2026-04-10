@@ -53,6 +53,9 @@ async function _loadInterpScore() {
     state.baseFx        = sc.base_fx       || [];
     state.fxRanges      = sc.fx_ranges     || [];
     state.lastScorePath = path;
+    // Sync to Composer's import path input
+    const _impIn = document.getElementById('import-path');
+    if (_impIn) _impIn.value = path;
     for (const k of Object.keys(state.samples)) {
       if (!state.samples[k].color) state.samples[k].color = nextColor();
     }
@@ -240,61 +243,6 @@ function _setInput(id, val) {
   if (el) el.value = val;
 }
 
-// ─── Base modulation — dropdown presets & custom dim set ────────────────────
-const _BASE_MOD_PRESETS = {
-  off:         [],
-  gain:        ['gain_db'],
-  gain_center: ['gain_db', 'dynamic_center'],
-  timbre:      ['brightness', 'filter_cutoff', 'filter_resonance'],
-  full:        ['gain_db', 'dynamic_center', 'brightness', 'filter_cutoff', 'filter_resonance'],
-};
-// Dims allowed in custom popup. Phase 1 (amplitude) + Phase 2 (timbre/filter).
-const _BASE_MOD_ACTIVE = new Set([
-  'gain_db', 'dynamic_center',         // Phase 1 — amplitude
-  'brightness', 'filter_cutoff', 'filter_resonance',  // Phase 2 — timbre
-]);
-
-function _applyBaseModSelection() {
-  const sel = document.getElementById('interp-base-mod');
-  if (!sel) return;
-  const v = sel.value;
-  if (v !== 'custom') {
-    interpState.v2config.v2.base_dims = [..._BASE_MOD_PRESETS[v] || []];
-  }
-  // 'custom' keeps whatever is currently in v2config.v2.base_dims
-}
-
-function _openBaseModPopup() {
-  // Build checkbox grid of all 12 dims, greying out disabled ones.
-  const current = new Set(interpState.v2config.v2.base_dims || []);
-  const rows = DIM_NAMES.map((name, i) => {
-    const active = _BASE_MOD_ACTIVE.has(name);
-    const checked = current.has(name);
-    const disabled = active ? '' : 'disabled';
-    const suffix = active ? '' : ' <span style="color:#555;">(needs DSP phase)</span>';
-    return `<div style="display:flex;align-items:center;gap:5px;margin:3px 0;">
-      <input type="checkbox" id="bm-${i}" ${checked ? 'checked' : ''} ${disabled} data-dim="${name}">
-      <label for="bm-${i}" style="color:${_BASE_MOD_ACTIVE.has(name) ? DIM_COLORS[i] : '#444'};font-size:11px;">${DIM_LABELS[i]}</label>
-      ${suffix}
-    </div>`;
-  }).join('');
-  const body = `<div style="max-height:320px;overflow-y:auto;">${rows}</div>
-    <div style="font-size:10px;color:#555;margin-top:6px;">
-      Checked dims modulate the base track continuously across the rendered audio.
-    </div>`;
-  showPopup('Base track modulation dims', body).then(ok => {
-    if (!ok) return;
-    const dims = [];
-    DIM_NAMES.forEach((name, i) => {
-      const el = document.getElementById(`bm-${i}`);
-      if (el && el.checked && _BASE_MOD_ACTIVE.has(name)) dims.push(name);
-    });
-    interpState.v2config.v2.base_dims = dims;
-    const sel = document.getElementById('interp-base-mod');
-    if (sel) sel.value = 'custom';
-  });
-}
-
 // ─── DOMContentLoaded wiring ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   // Score load
@@ -426,17 +374,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Save / Load
-  // Base modulation dropdown + cog
-  const baseModSel = document.getElementById('interp-base-mod');
-  if (baseModSel) baseModSel.addEventListener('change', () => {
-    if (baseModSel.value === 'custom') _openBaseModPopup();
-    else _applyBaseModSelection();
-  });
-  const baseModCog = document.getElementById('interp-base-cog');
-  if (baseModCog) baseModCog.addEventListener('click', _openBaseModPopup);
-  // Sync default preset → state at startup
-  _applyBaseModSelection();
-
   const saveBtn = document.getElementById('interp-save-btn');
   if (saveBtn) saveBtn.addEventListener('click', saveInterp);
   const loadBtn = document.getElementById('interp-load-btn');

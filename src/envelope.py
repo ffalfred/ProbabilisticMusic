@@ -1,8 +1,8 @@
 import numpy as np
 
 DYNAMIC_LEVELS = {
-    'ppp': 0.10, 'pp': 0.20, 'p': 0.35, 'mp': 0.50,
-    'mf':  0.65, 'f':  0.80, 'ff': 0.90, 'fff': 1.00,
+    'ppp': 0.05, 'pp': 0.10, 'p': 0.20, 'mp': 0.45,
+    'mf':  0.65, 'f':  0.85, 'ff': 1.00, 'fff': 1.20,
 }
 
 # Smooth transition time between adjacent dynamic marks, based on gap duration.
@@ -21,66 +21,138 @@ def _transition_samples(gap_sec: float, sr: int) -> int:
     return int(ms * sr / 1000)
 
 
+def _is_crescendo(mark: str) -> bool:
+    m = mark.lower().strip().rstrip('.')
+    return m in ('crescendo', 'cresc', 'cr')
+
+def _is_decrescendo(mark: str) -> bool:
+    m = mark.lower().strip().rstrip('.')
+    return m in ('decrescendo', 'decresc', 'diminuendo', 'dim', 'decr')
+
+
 def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarray:
     """
     Build amplitude envelope from dynamics markings.
 
     Point markings  — { t: 4.0, mark: mf }
       Define the amplitude level at a moment in time.
-      Transitions between adjacent marks are smoothed to avoid jarring jumps.
 
     Range markings  — { from: 2.0, to: 5.0, mark: crescendo }
       Linearly interpolate across the span.
-      Works even without surrounding point marks.
+      After the range ends, the level HOLDS until the next marking.
     """
     if not dynamics:
         return np.ones(n_samples, dtype=np.float32)
 
-    env = np.ones(n_samples, dtype=np.float32)
+    # Filter out muted dynamics
+    active = [d for d in dynamics if not d.get('muted')]
+    if not active:
+        return np.ones(n_samples, dtype=np.float32)
 
-    points = sorted(
-        [(d['t'], DYNAMIC_LEVELS[d['mark']]) for d in dynamics if 't' in d],
+    # Build a single sorted event list from all markings
+    events = []  # [(time_samples, type, ...data)]
+
+    # Point markings
+    for d in active:
+        if 't' not in d:
+            continue
+        mark = d.get('mark') or d.get('marking') or ''
+        level = DYNAMIC_LEVELS.get(mark)
+        if level is None:
+            continue  # skip invalid/unknown point marks
+        events.append((int(d['t'] * sr), 'set', level))
+
+    # Range markings (crescendo / decrescendo)
+    # Sort point marks by time for next-point lookups
+    sorted_points = sorted(
+        [(d['t'], DYNAMIC_LEVELS.get(d.get('mark') or d.get('marking') or '', None))
+         for d in active if 't' in d and DYNAMIC_LEVELS.get(d.get('mark') or d.get('marking') or '')],
         key=lambda p: p[0]
     )
-    ranges = [d for d in dynamics if 'from' in d]
 
-    # ── Step-wise fill from point marks (with smooth cross-fades at transitions) ──
-    if points:
-        first_t, first_v = points[0]
-        # Everything before the first mark holds at the first mark's level
-        env[:int(first_t * sr)] = first_v
-
-        for i, (t, v) in enumerate(points):
-            i0 = int(t * sr)
-            i1 = int(points[i + 1][0] * sr) if i + 1 < len(points) else n_samples
-            env[i0:i1] = v
-
-            # Smooth transition from previous level into this level
-            if i > 0:
-                prev_v = points[i - 1][1]
-                gap    = t - points[i - 1][0]
-                trans  = min(_transition_samples(gap, sr), (i1 - i0) // 2)
-                if trans > 1:
-                    env[i0:i0 + trans] = np.linspace(prev_v, v, trans, dtype=np.float32)
-
-    # ── Overlay crescendo / decrescendo ranges ─────────────────────────────────
-    for rng in ranges:
-        i0 = min(int(rng['from'] * sr), n_samples - 1)
-        i1 = min(int(rng['to']   * sr), n_samples)
-        if i0 >= i1:
+    for d in active:
+        if 'from' not in d:
+            continue
+        mark = d.get('mark') or d.get('marking') or ''
+        t_from = int(d['from'] * sr)
+        t_to   = min(int(d['to'] * sr), n_samples)
+        if t_to <= t_from:
             continue
 
-        start_v = float(env[i0])
-        end_v   = float(env[min(i1, n_samples - 1)])
+        # Determine the ramp target
+        next_pts = [v for t, v in sorted_points if t >= d['to'] and v is not None]
 
-        # When there are no surrounding point marks, use sensible defaults
-        if not points:
-            if rng['mark'] == 'crescendo':
-                start_v, end_v = DYNAMIC_LEVELS['p'],  DYNAMIC_LEVELS['f']
+        if _is_crescendo(mark):
+            if next_pts:
+                target = next_pts[0]
             else:
-                start_v, end_v = DYNAMIC_LEVELS['f'],  DYNAMIC_LEVELS['p']
+                target = None  # resolved at render time from current level
+            events.append((t_from, 'ramp', t_to, target, 'up'))
+        elif _is_decrescendo(mark):
+            if next_pts:
+                target = next_pts[0]
+            else:
+                target = None
+            events.append((t_from, 'ramp', t_to, target, 'down'))
 
-        env[i0:i1] = np.linspace(start_v, end_v, i1 - i0, dtype=np.float32)
+    # Sort all events by time
+    events.sort(key=lambda e: e[0])
+
+    # Build envelope by walking through events chronologically
+    env = np.ones(n_samples, dtype=np.float32)
+    current_level = 0.65  # default: mf
+    cursor = 0  # current sample position
+
+    # If there are point marks, start at the first one's level
+    if sorted_points:
+        current_level = sorted_points[0][1]
+
+    for ev in events:
+        t = ev[0]
+        if t < 0:
+            t = 0
+        if t > n_samples:
+            break
+
+        # Fill from cursor to this event with current level
+        if t > cursor:
+            env[cursor:t] = current_level
+
+        if ev[1] == 'set':
+            # Point marking — smooth transition to new level
+            new_level = ev[2]
+            gap_sec = (t - cursor) / sr if cursor < t else 0.5
+            trans = min(_transition_samples(gap_sec, sr), max(1, (n_samples - t) // 2))
+            if trans > 1 and t + trans <= n_samples:
+                env[t:t + trans] = np.linspace(current_level, new_level, trans, dtype=np.float32)
+                cursor = t + trans
+            else:
+                cursor = t
+            current_level = new_level
+
+        elif ev[1] == 'ramp':
+            # Range marking (crescendo / decrescendo)
+            t_to   = ev[2]
+            target = ev[3]
+            direction = ev[4]
+            start_v = current_level
+
+            if target is not None:
+                end_v = target
+            elif direction == 'up':
+                end_v = min(start_v * 2.5, 1.2)
+            else:
+                end_v = max(start_v * 0.4, 0.05)
+
+            ramp_len = min(t_to, n_samples) - t
+            if ramp_len > 0:
+                env[t:t + ramp_len] = np.linspace(start_v, end_v, ramp_len, dtype=np.float32)
+            current_level = end_v
+            cursor = min(t_to, n_samples)
+
+    # Fill remainder after last event
+    if cursor < n_samples:
+        env[cursor:] = current_level
 
     return env
 
@@ -107,8 +179,7 @@ def apply_fade(clip: np.ndarray, sr: int,
 
 def build_duck_envelope(n_samples: int, sr: int, events: list, trigger_fn,
                         amount_db: float = -6.0, attack: float = 0.01,
-                        release: float = 0.3, tempo_ranges: list = None) -> np.ndarray:
-    from src.mixer import _warp_time
+                        release: float = 0.3) -> np.ndarray:
     duck  = 10 ** (amount_db / 20.0)
     atk_s = max(1, int(attack  * sr))
     rel_s = max(1, int(release * sr))
@@ -116,7 +187,7 @@ def build_duck_envelope(n_samples: int, sr: int, events: list, trigger_fn,
     for ev in events:
         if not trigger_fn(ev):
             continue
-        i0 = int(_warp_time(ev['t'], tempo_ranges or []) * sr)
+        i0 = int(float(ev['t']) * sr)
         if i0 >= n_samples:
             continue
         a1 = min(i0 + atk_s, n_samples)
@@ -152,13 +223,12 @@ def build_phrase_envelope(n_samples: int, sr: int, phrases: list) -> np.ndarray:
 
 
 def build_density_scale(n_samples: int, sr: int, events: list, samples_spec: dict,
-                        tempo_ranges: list = None, mode: str = "sqrt",
+                        mode: str = "sqrt",
                         silence_start: float = 0.0) -> np.ndarray:
-    from src.mixer import _warp_time
     density = np.ones(n_samples, dtype=np.float32)
     for ev in events:
         spec   = samples_spec.get(ev.get('sample', ''), {})
-        t_real = _warp_time(ev['t'], tempo_ranges or []) + silence_start
+        t_real = float(ev['t']) + silence_start
         i0     = int(t_real * sr)
         dur    = (spec.get('to', 0) - spec.get('from', 0)) / max(ev.get('speed', 1.0), 0.01)
         i1     = min(i0 + max(1, int(dur * sr)), n_samples)

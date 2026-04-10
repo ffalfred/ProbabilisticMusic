@@ -1,7 +1,7 @@
 """Penderecki: Textural — layered clusters + aleatoric detune (Polymorphia style)."""
 import numpy as np
 
-NAME     = "Textural"
+NAME     = "Penderecki: Textural"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_textural"
 

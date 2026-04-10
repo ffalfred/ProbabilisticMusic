@@ -126,7 +126,11 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
     + row("time range (s)", `<input id="p-sep-from" type="number" value="0" min="0" step="0.1" style="width:70px;" placeholder="start">
       &nbsp;–&nbsp;
       <input id="p-sep-to" type="number" value="${durStr}" min="0" step="0.1" style="width:70px;" placeholder="end (blank=full)">
-      <span style="font-size:10px;color:#777;margin-left:6px;">leave blank for full file</span>`);
+      <span style="font-size:10px;color:#777;margin-left:6px;">leave blank for full file</span>`)
+    + `<div class="popup-row" style="margin-top:6px;">
+        <label><input type="checkbox" id="stem-replace"> Replace existing stems</label>
+        <span style="font-size:10px;color:#666;margin-left:6px;">unchecked = append new stems to tracks</span>
+      </div>`;
 
   const popupPromise = showPopup("&#9881; Separate audio", html);
   _renderBands();   // populate band list immediately after innerHTML is set
@@ -156,7 +160,8 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
     if (data.error) { status.textContent = "error: " + data.error; return; }
     baseAudio.pause();
     vid.pause();
-    state.tracks.splice(1);
+    const replaceStem = document.getElementById('stem-replace')?.checked;
+    if (replaceStem) state.tracks.splice(1);
     Object.keys(_waCache).forEach(k => delete _waCache[k]);
     for (const stem of data.stems) {
       const wr = await fetch("/load", {
@@ -165,7 +170,9 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
       });
       const wd = await wr.json();
       state.tracks.push({ name: stem.name, path: stem.path,
-                          gain_db: 0, muted: false, waveform: wd.waveform || [] });
+                          gain_db: 0, muted: false,
+                          from: from_t || 0, to: to_t || state.duration,
+                          waveform: wd.waveform || [] });
     }
     currentSourcePath = null;
     renderTracksPanel();
@@ -236,7 +243,10 @@ async function _doExportYaml(outputPath) {
     ...(state.noteRel.length ? { note_rel: state.noteRel } : {}),
     ...(state.articulations.length ? { articulations: state.articulations } : {}),
     ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
-      path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted
+      path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
+      ...(tk.from != null ? { from: tk.from } : {}),
+      ...(tk.to   != null ? { to:   tk.to   } : {}),
+      ...(tk.fx?.length   ? { fx:   tk.fx   } : {}),
     })) } : {}),
     ...(scoreView.path ? {
       score_image: scoreView.path,
@@ -251,7 +261,6 @@ async function _doExportYaml(outputPath) {
     ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
     ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
     ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
-    mix_mode: state.mixMode || 'sidechain',
   };
   const statusEl = document.getElementById("export-status");
   statusEl.textContent = "saving…";
@@ -319,9 +328,6 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     if (sc.duck_base)    Object.assign(state.duckBase, sc.duck_base);
     if (sc.duck_key)     Object.assign(state.duckKey,  sc.duck_key);
     if (sc.auto_mix)     Object.assign(state.autoMix,  sc.auto_mix);
-    if (sc.mix_mode)     state.mixMode = sc.mix_mode;
-    const mmSel = document.getElementById('mix-mode-select');
-    if (mmSel) mmSel.value = state.mixMode;
     if (sc.golems)       interpState.golems = sc.golems;
 
     for (const k of Object.keys(state.samples)) {
@@ -329,6 +335,10 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     }
 
     state.lastScorePath = path;
+    // Sync to Interpreter's score path
+    interpState.scorePath = path;
+    const _interpScIn = document.getElementById('interp-score-path');
+    if (_interpScIn) _interpScIn.value = path;
 
     if (sc.base_track && !state.filePath) {
       document.getElementById("path-input").value = sc.base_track;

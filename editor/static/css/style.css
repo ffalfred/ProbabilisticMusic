@@ -60,7 +60,7 @@
   }
   .ctb-sep { color: #252525; padding: 0 1px; user-select: none; flex-shrink: 0; }
   .ctb-label { font-size: 10px; color: #444; white-space: nowrap; flex-shrink: 0; }
-  .ctb-input { width: 80px; flex-shrink: 0; }
+  .ctb-input { width: 140px; flex-shrink: 1; min-width: 60px; }
   .ctb-btn { padding: 2px 7px; font-size: 11px; flex-shrink: 0; }
   .ctb-status { font-size: 10px; color: #3a5a3a; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #playback-progress {
@@ -243,6 +243,7 @@
     overflow-x: hidden;
     padding: 6px 0;
     transition: width 0.15s;
+    min-width: 24px;
   }
   #palette > label {
     font-size: 10px;
@@ -944,10 +945,11 @@
 
 /* Read-only path display inputs — click to open file browser */
 input.path-select {
-  cursor: pointer;
+  cursor: text;
   color: #666;
   background: #0f0f0f;
   border-color: #1e1e1e;
+  min-width: 100px;
 }
 input.path-select:hover { border-color: #3a3a3a; color: #999; }
 input.path-select:focus { outline: none; border-color: #3a3a3a; }

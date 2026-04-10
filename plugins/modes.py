@@ -1,7 +1,7 @@
 """Messiaen: Modes — sliding-window pitch quantization to Messiaen's modes of limited transposition."""
 import numpy as np
 
-NAME     = "Modes"
+NAME     = "Messiaen: Modes"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_modes"
 

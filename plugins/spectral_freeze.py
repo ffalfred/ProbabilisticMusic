@@ -1,7 +1,7 @@
 """Saariaho: Spectral Freeze — sustain top-N partials via STFT with slow phase evolution."""
 import numpy as np
 
-NAME     = "Spectral Freeze"
+NAME     = "Saariaho: Spectral Freeze"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_spectral_freeze"
 
@@ -36,7 +36,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         frozen_mag[top_idx, f] = frame_mag[top_idx]
 
     # Advance phase slowly (freeze_rate 1.0 = natural, 0.0 = frozen)
-    phase_increment = 2 * np.pi * np.arange(n_bins).reshape(-1, 1) / n_fft
+    phase_increment = 2 * np.pi * np.arange(n_bins) / n_fft
     new_phase = phase.copy()
     for f in range(1, n_frames):
         new_phase[:, f] = new_phase[:, f - 1] + phase_increment * freeze_rate

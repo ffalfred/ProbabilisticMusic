@@ -1,7 +1,7 @@
 """Penderecki: Glissando — linear pitch slides spanning each segment."""
 import numpy as np
 
-NAME     = "Glissando"
+NAME     = "Penderecki: Glissando"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissando"
 

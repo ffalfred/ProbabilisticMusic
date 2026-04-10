@@ -1,7 +1,7 @@
 """Xenakis: Granular Cloud — stochastic granular synthesis with pitch/time randomization."""
 import numpy as np
 
-NAME     = "Grain Scatter"
+NAME     = "Xenakis: Grain Scatter"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_grain_scatter"
 

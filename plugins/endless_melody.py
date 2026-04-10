@@ -1,7 +1,7 @@
 """Wagner: Endless Melody — smooth crossfades + chromatic passing tones at motif boundaries."""
 import numpy as np
 
-NAME     = "Endless Melody"
+NAME     = "Wagner: Endless Melody"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_endless_melody"
 

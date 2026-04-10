@@ -23,10 +23,20 @@ function mixCurrentTime() {
 }
 
 function isMixPlaying() { return _mixPlaying; }
+function clearMixBuf()  {
+  _mixBuf = null;
+  // Tempo map belongs to a specific rendered buffer; clear it alongside the buffer.
+  if (typeof state !== 'undefined') { state.tempoMap = []; state.durationReal = 0; }
+}
 
 function stopMix() {
   _renderGen++;                 // invalidate any in-flight render
-  if (_mixSource) { try { _mixSource.stop(); } catch(e) {} _mixSource = null; }
+  if (_mixSource) {
+    _mixSource.onended = null;  // prevent stale callback from overwriting _mixPlaying
+    try { _mixSource.stop(); } catch(e) {}
+    try { _mixSource.disconnect(); } catch(e) {}
+    _mixSource = null;
+  }
   _mixPlaying = false;
 }
 
@@ -55,7 +65,9 @@ async function playMixBuffer(buf, offset) {
   src.start(0, _mixStartOffset);
   src.onended = () => {
     _mixPlaying = false;
-    state.currentTime = _mixStartOffset + (ctx.currentTime - _mixStartCtxTime) * src.playbackRate.value;
+    // Real-time position at end of playback → convert back to score time.
+    const realEnd = _mixStartOffset + (ctx.currentTime - _mixStartCtxTime) * src.playbackRate.value;
+    state.currentTime = (typeof realToScore === 'function') ? realToScore(realEnd) : realEnd;
     try { src.disconnect(); } catch(_) {}
     if (typeof _setPlayBtn === 'function') _setPlayBtn("▶ Play");
     // Final redraw of all canvases with correct end position
@@ -64,6 +76,16 @@ async function playMixBuffer(buf, offset) {
       drawKalmanTrace(_lastTraceData);
   };
 
-  if (typeof _setPlayBtn === 'function') _setPlayBtn("⏸ Play");
+  if (typeof _setPlayBtn === 'function') _setPlayBtn("⏸ Pause");
   requestAnimationFrame(playTick);
+  // Kick the bottom timeline cursor animation
+  _animateBottomCursor();
+}
+
+function _animateBottomCursor() {
+  if (!_mixPlaying) return;
+  if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData) {
+    drawKalmanTrace(_lastTraceData);
+  }
+  requestAnimationFrame(_animateBottomCursor);
 }

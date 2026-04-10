@@ -46,13 +46,32 @@ async function _waStart(offset) {
   _waStartOffset  = offset;
   _waPlaying      = true;
   let ended = 0;
+  let scheduled = 0;
   buffers.forEach((buf, i) => {
+    const tk    = unmuted[i];
+    const tFrom = tk.from ?? 0;
+    const tTo   = tk.to   != null ? tk.to : Infinity;
+
+    // Skip track entirely if playback cursor is past its end
+    if (offset >= tTo) { ended++; return; }
+
+    scheduled++;
     const src  = ctx.createBufferSource();
     const gain = ctx.createGain();
     src.buffer = buf;
-    gain.gain.value = 10 ** ((unmuted[i].gain_db || 0) / 20);
+    gain.gain.value = 10 ** ((tk.gain_db || 0) / 20);
     src.connect(gain); gain.connect(ctx.destination);
-    src.start(0, offset);
+
+    if (offset <= tFrom) {
+      // Cursor is before this stem's region — schedule a delayed start
+      const delay = tFrom - offset;
+      src.start(ctx.currentTime + delay, 0);
+    } else {
+      // Cursor is inside the region — seek into buffer
+      const bufOffset = offset - tFrom;
+      src.start(ctx.currentTime, bufOffset);
+    }
+
     src.onended = () => {
       if (gen !== _waGen) return;  // stale handler from a cancelled start
       ended++;
@@ -65,6 +84,14 @@ async function _waStart(offset) {
     };
     _waSources.push(src); _waGains.push(gain);
   });
+  // If all tracks were skipped (all past their end), stop immediately
+  if (scheduled === 0) {
+    state.currentTime = offset;
+    _waStop();
+    document.getElementById("play-base-btn").textContent = "▶ Source";
+    draw();
+    return;
+  }
   document.getElementById("play-base-btn").textContent = "⏸ Source";
   requestAnimationFrame(playTick);
 }

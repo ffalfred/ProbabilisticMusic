@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import soundfile as sf
 import numpy as np
+from src.fx import apply_fx
 
 def _extract_audio(video_path: str) -> str:
     tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
@@ -39,15 +40,28 @@ def build_bank(score: dict) -> tuple[dict, int, np.ndarray]:
                 audio = audio.mean(axis=1)
             if sr is None:
                 sr = file_sr
-            tracks_audio.append(audio)
+            # Apply per-track FX before mixing
+        fx_list = tk.get('fx', [])
+        if fx_list:
+            audio = apply_fx(audio, sr, fx_list)
+        tracks_audio.append(audio)
 
-        max_len = max(len(a) for a in tracks_audio)
-        combined = np.zeros(max_len, dtype=np.float32)
+        # Place each track at its correct timeline position (from_t offset)
+        track_data = []
+        max_end = 0
         for tk, audio in zip(tracks_spec, tracks_audio):
+            t_from = float(tk.get('from', 0))
+            offset_s = int(t_from * sr)
+            end_s    = offset_s + len(audio)
+            max_end  = max(max_end, end_s)
+            track_data.append((tk, audio, offset_s))
+
+        combined = np.zeros(max_end, dtype=np.float32)
+        for tk, audio, offset_s in track_data:
             if tk.get('muted', False):
                 continue
             gain = 10 ** (tk.get('gain_db', 0.0) / 20.0)
-            combined[:len(audio)] += audio * gain
+            combined[offset_s:offset_s + len(audio)] += audio * gain
         base = combined
     else:
         path = score['base_track']
