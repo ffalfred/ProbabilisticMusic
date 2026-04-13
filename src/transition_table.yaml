@@ -26,14 +26,22 @@
 windows:
 
   # ── Default (no specific pattern match) ────────────────────────────────────
+  # Dims: [gain_db, brightness, timing_ms, attack, release, reverb_wet,
+  #         filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center]
+  #
+  # brightness (dim 1):    0→1 same scale as y, moderate pull
+  # reverb_wet (dim 5):    0→1 same scale as y, gentle pull (reverb changes should be subtle)
+  # filter_cutoff (dim 6): 20→20000 Hz; y≈0.57(mf) should map to ~8000 Hz → H≈0.57/8000≈0.00007
+  #                         At ff y≈0.86 → target ~16000 → H≈0.86/16000≈0.00005
+  #                         Use 0.00006 as compromise
   default:
     H:
-      # slot 0 (current): gain, bright, timing, attack, release, reverb, cutoff, res, stereo, drive, pitch, dyn_center
-      - [0.143, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02]
+      # slot 0 (current):
+      - [0.143, 0.12, 0.0, 0.0, 0.0, 0.08, 0.00006, 0.0, 0.0, 0.0, 0.0, 0.02]
       # slot 1 (prev) — half weight
-      - [0.071, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01]
+      - [0.071, 0.06, 0.0, 0.0, 0.0, 0.04, 0.00003, 0.0, 0.0, 0.0, 0.0, 0.01]
       # slot 2 (prev-prev) — quarter weight
-      - [0.036, 0.025, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.005]
+      - [0.036, 0.03, 0.0, 0.0, 0.0, 0.02, 0.000015, 0.0, 0.0, 0.0, 0.0, 0.005]
     R: [4.0, 6.0, 8.0]
 
   # ── Abrupt structural markings (snap fast, trust the score) ────────────────

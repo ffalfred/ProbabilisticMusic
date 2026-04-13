@@ -211,6 +211,13 @@ function _syncRowsToModel() {
       const el = document.getElementById(id);
       if (el) fx[spec.key] = _readFxParamInput(id, spec);
     }
+    // Freq targeting (global, not per-type)
+    const ffEl = document.getElementById(`p-fxr-${i}-freq_from`);
+    const ftEl = document.getElementById(`p-fxr-${i}-freq_to`);
+    const ff = ffEl ? parseFloat(ffEl.value) : NaN;
+    const ft = ftEl ? parseFloat(ftEl.value) : NaN;
+    if (!isNaN(ff) && ff > 0) fx.freq_from = ff; else delete fx.freq_from;
+    if (!isNaN(ft) && ft > 0) fx.freq_to   = ft; else delete fx.freq_to;
   });
 }
 
@@ -265,6 +272,23 @@ function _fxRowHTML(fx, idx) {
     </div>`;
   }).join("");
 
+  // Freq targeting — global to all FX types, rendered outside per-type params
+  const freqFrom = fx.freq_from != null ? fx.freq_from : '';
+  const freqTo   = fx.freq_to   != null ? fx.freq_to   : '';
+  const freqHTML = `<div style="border-top:1px solid #282828;margin-top:4px;padding-top:4px;">
+    <div style="display:flex;gap:4px;align-items:center;margin:1px 0;">
+      <span style="font-size:10px;color:#557;width:90px;flex:none;">freq range</span>
+      <input id="p-fxr-${idx}-freq_from" type="number" value="${freqFrom}" placeholder="20"
+             min="20" max="20000" step="100"
+             style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:11px;">
+      <span style="font-size:10px;color:#666;">–</span>
+      <input id="p-fxr-${idx}-freq_to" type="number" value="${freqTo}" placeholder="20000"
+             min="20" max="20000" step="100"
+             style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:11px;">
+      <span style="font-size:10px;color:#666;">Hz</span>
+    </div>
+  </div>`;
+
   const chev = collapsed ? "▶" : "▼";
   return `<div style="border:1px solid #222;background:#0d0d0d;padding:4px 6px;margin-bottom:4px;border-radius:2px;">
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
@@ -277,7 +301,7 @@ function _fxRowHTML(fx, idx) {
               title="remove this FX"
               style="font-size:14px;color:#a66;padding:0 6px;border:none;background:none;cursor:pointer;flex:none;">×</button>
     </div>
-    <div style="display:${collapsed ? 'none' : 'block'};">${paramHTML}</div>
+    <div style="display:${collapsed ? 'none' : 'block'};">${paramHTML}${freqHTML}</div>
   </div>`;
 }
 
@@ -785,9 +809,9 @@ async function openTempoPopup(t1, t2) {
 async function openPhrasePopup(t1, t2) {
   const n = state.phrases.length + 1;
   const html = row("label",    `<input id="p-phrase-label" type="text" value="slur ${n}" />`)
-    + row("gain dB",  `<input id="p-ph-gain"  type="number" value="0"   step="0.5" style="width:60px;">`, "-20–20")
-    + row("fade in",  `<input id="p-ph-fi"    type="number" value="0"   min="0" max="50" step="1" style="width:60px;"> %`)
-    + row("fade out", `<input id="p-ph-fo"    type="number" value="0"   min="0" max="50" step="1" style="width:60px;"> %`)
+    + row("gain dB",  `<input id="p-ph-gain"  type="number" value="2"   step="0.5" style="width:60px;">`, "-20–20")
+    + row("fade in",  `<input id="p-ph-fi"    type="number" value="10"  min="0" max="50" step="1" style="width:60px;"> %`)
+    + row("fade out", `<input id="p-ph-fo"    type="number" value="15"  min="0" max="50" step="1" style="width:60px;"> %`)
     + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="1.0" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change; affects event timing only)</span>`)
     + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("&#8994; Slur", html);
@@ -815,6 +839,7 @@ async function openNoteRelPopup(type, t1, t2) {
         ? row("from pitch", `<input id="p-nr-fp" type="number" value="0" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
           + row("to pitch", `<input id="p-nr-tp" type="number" value="2" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
         : "")
+    + _freqTargetRow(null)
     + `<div style="font-size:10px;color:#444;margin-top:4px;">${label} — ${rangeStr}</div>`;
   const res = await showPopup(label, html);
   if (!res) return;
@@ -825,11 +850,35 @@ async function openNoteRelPopup(type, t1, t2) {
     entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
     entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
   }
+  _collectFreqTarget(entry);
   state.noteRel.push(entry);
   updateScoreInfo(); draw();
 }
 
 // ─── Articulation popup ───────────────────────────────────────────────────────
+// ─── Shared freq-targeting row for articulations / note-relationships ────────
+function _freqTargetRow(obj) {
+  const ff = (obj && obj.freq_from != null) ? obj.freq_from : '';
+  const ft = (obj && obj.freq_to   != null) ? obj.freq_to   : '';
+  return `<div style="display:flex;gap:4px;align-items:center;margin:4px 0;">
+    <span style="font-size:10px;color:#557;width:90px;flex:none;">freq range</span>
+    <input id="p-art-freq-from" type="number" value="${ff}" placeholder="20"
+           min="20" max="20000" step="100"
+           style="flex:none;width:64px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:11px;">
+    <span style="font-size:10px;color:#666;">–</span>
+    <input id="p-art-freq-to" type="number" value="${ft}" placeholder="20000"
+           min="20" max="20000" step="100"
+           style="flex:none;width:64px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:11px;">
+    <span style="font-size:10px;color:#666;">Hz</span>
+  </div>`;
+}
+function _collectFreqTarget(entry) {
+  const ff = parseFloat(document.getElementById("p-art-freq-from")?.value);
+  const ft = parseFloat(document.getElementById("p-art-freq-to")?.value);
+  if (!isNaN(ff) && ff > 0) entry.freq_from = ff; else delete entry.freq_from;
+  if (!isNaN(ft) && ft > 0) entry.freq_to   = ft; else delete entry.freq_to;
+}
+
 async function openArticulationPopup(type, t1, t2) {
   const isRange = (t2 !== undefined && Math.abs(t2 - t1) >= 0.01);
   const titles = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
@@ -849,6 +898,7 @@ async function openArticulationPopup(type, t1, t2) {
   const html = row("label", `<input id="p-art-label" type="text" placeholder="optional label" />`)
     + silenceRow
     + fermataRow
+    + _freqTargetRow(null)
     + `<div style="font-size:10px;color:#555;margin-top:4px;">${descs[type] || ""}</div>`
     + `<div style="font-size:10px;color:#444;margin-top:4px;">${titles[type] || type} — ${posStr}</div>`;
   const res = await showPopup(titles[type] || type, html);
@@ -865,6 +915,7 @@ async function openArticulationPopup(type, t1, t2) {
     const holdEl = document.getElementById("p-art-hold");
     if (holdEl) entry.hold_s = parseFloat(holdEl.value) || 2.0;
   }
+  _collectFreqTarget(entry);
   state.articulations.push(entry);
   updateScoreInfo(); draw();
 }
@@ -879,6 +930,7 @@ async function editNoteRelAt(i) {
         ? row("from pitch", `<input id="p-nr-fp" type="number" value="${nr.from_pitch || 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
           + row("to pitch", `<input id="p-nr-tp" type="number" value="${nr.to_pitch || 2}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
         : "")
+    + _freqTargetRow(nr)
     + row("from (s)", `<input id="p-nr-from" type="number" value="${nr.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
     + (!isPoint ? row("to (s)", `<input id="p-nr-to" type="number" value="${(nr.to||nr.from).toFixed(3)}" step="0.001" min="0" style="width:90px;">`) : '');
   const res = await showPopup("✎ Edit " + label, html);
@@ -894,6 +946,7 @@ async function editNoteRelAt(i) {
     entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
     entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
   }
+  _collectFreqTarget(entry);
   state.noteRel[i] = entry;
   updateScoreInfo(); draw();
 }
@@ -911,6 +964,7 @@ async function editArticulationAt(i) {
     : '';
   const html = row("label", `<input id="p-art-label" type="text" value="${ar.label || ''}" placeholder="optional label" />`)
     + silenceRow + fermataRow
+    + _freqTargetRow(ar)
     + (isRange
         ? row("from (s)", `<input id="p-ar-from" type="number" value="${ar.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
           + row("to (s)", `<input id="p-ar-to"   type="number" value="${ar.to.toFixed(3)}"   step="0.001" min="0" style="width:90px;">`)
@@ -936,6 +990,7 @@ async function editArticulationAt(i) {
     const newT = parseFloat(document.getElementById("p-ar-t").value);
     if (!isNaN(newT)) updated.t = newT;
   }
+  _collectFreqTarget(updated);
   state.articulations[i] = updated;
   updateScoreInfo(); draw();
 }

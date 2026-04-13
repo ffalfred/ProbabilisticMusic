@@ -41,6 +41,23 @@ def _load_server_config(override: dict = None) -> dict:
 
 PREVIEW_TMP = os.path.join(tempfile.gettempdir(), "opacity_toke_preview.wav")
 
+# Audio export quality settings
+_AUDIO_FORMATS = {
+    'wav16':   {'ext': '.wav',  'subtype': 'PCM_16',  'label': '16-bit WAV'},
+    'wav24':   {'ext': '.wav',  'subtype': 'PCM_24',  'label': '24-bit WAV (studio)'},
+    'wav32f':  {'ext': '.wav',  'subtype': 'FLOAT',   'label': '32-bit float WAV'},
+    'flac':    {'ext': '.flac', 'subtype': 'PCM_24',  'label': 'FLAC (lossless)'},
+}
+
+def _write_audio(path: str, mix, sr: int, fmt: str = 'wav24'):
+    """Write audio in the requested format, adjusting file extension if needed."""
+    spec = _AUDIO_FORMATS.get(fmt, _AUDIO_FORMATS['wav24'])
+    # Replace extension to match format
+    base, _ = os.path.splitext(path)
+    path = base + spec['ext']
+    sf.write(path, mix, sr, subtype=spec['subtype'])
+    return path
+
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -201,10 +218,13 @@ def preview():
         if not path:
             path = score.get("base_track", "")
 
-    # Merge interpretation block (golems + v2config)
+    # Merge interpretation block (golems + v2config + mix_dims)
     interp = data.get("interp", {})
     if interp.get("golems"):
         score["golems"] = interp["golems"]
+    mix_dims = data.get("score", {}).get("mix_dims") or interp.get("mix_dims")
+    if mix_dims:
+        score["mix_dims"] = mix_dims
 
     config = _load_server_config(data.get("_config") or interp.get("v2config"))
 
@@ -337,21 +357,23 @@ def export_interp_wav():
                 mix = mix[s_from:s_to]
 
         # Build output path — user-chosen path wins, then name, then auto-generated
+        audio_fmt = data.get("audio_format", "wav24")
+        fmt_ext   = _AUDIO_FORMATS.get(audio_fmt, _AUDIO_FORMATS['wav24'])['ext']
         user_path = (data.get("out_path") or "").strip()
         user_name = (data.get("out_name") or "").strip()
         if user_path:
             # User chose a full path via the file browser
             out_path = os.path.abspath(user_path)
-            if not out_path.lower().endswith(".wav"):
-                out_path += ".wav"
+            base_p, _ = os.path.splitext(out_path)
+            out_path = base_p + fmt_ext
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             out_name = os.path.basename(out_path)
         elif user_name:
             out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
             os.makedirs(out_dir, exist_ok=True)
             safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
-            if not safe.lower().endswith(".wav"):
-                safe += ".wav"
+            base_n, _ = os.path.splitext(safe)
+            safe = base_n + fmt_ext
             out_name = safe
             out_path = os.path.abspath(os.path.join(out_dir, out_name))
         else:
@@ -359,9 +381,10 @@ def export_interp_wav():
             os.makedirs(out_dir, exist_ok=True)
             score_name = os.path.splitext(os.path.basename(score_path))[0]
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            out_name = f"interp_{score_name}_{ts}.wav"
+            out_name = f"interp_{score_name}_{ts}{fmt_ext}"
             out_path = os.path.abspath(os.path.join(out_dir, out_name))
-        sf.write(out_path, mix, sr)
+        out_path = _write_audio(out_path, mix, sr, audio_fmt)
+        out_name = os.path.basename(out_path)
         return jsonify({"path": out_path, "name": out_name})
     except Exception as e:
         import traceback
@@ -517,7 +540,7 @@ def separate():
 
         def _save(name, y):
             p = os.path.join(out_dir, f"{name}.wav")
-            sf.write(p, y.astype(np.float32), sr_lib)
+            sf.write(p, y.astype(np.float32), sr_lib, subtype='PCM_24')
             stems.append({"name": name, "path": p})
 
         if method in ("hpss", "both"):

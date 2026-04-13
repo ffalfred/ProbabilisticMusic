@@ -30,7 +30,7 @@ import numpy as np
 from src.kalman      import build_F, build_Q_aug, build_Sigma0, predict, update
 from src.drama       import compute_drama, compute_future_pull
 from src.envelope    import DYNAMIC_LEVELS
-from src.observation import build_window_obs, lookup_HR
+from src.observation import build_window_obs, lookup_HR, encode_marking
 from src.character   import (character_at, make_AR_matrices,
                               rw_character_at, D, BUILTIN as _KALMAN_BUILTIN,
                               DIM_NAMES, DIM_RANGES as _CHAR_DIM_RANGES,
@@ -450,6 +450,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
     lambda_      = float(v2cfg.get('lambda', 0.7))
     eta          = float(v2cfg.get('eta', 0.3))
     xi           = float(v2cfg.get('xi', 0.05))
+    timbral_pull = float(v2cfg.get('timbral_pull', 0.25))
     N            = int(v2cfg.get('window_size', 3))
     K_look       = int(v2cfg.get('k_look', 10))
     vol_window   = int(v2cfg.get('vol_window', 10))
@@ -798,13 +799,32 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                     _remain = np.maximum(1.0 - np.diag(A1_mat) - np.diag(A2_mat), 0.0)
                     X_mu_bar[:D] += _remain * _mu_eq
 
-            # Direct target pull for gain_db (dim 0) from dynamics marking level.
-            # The marking defines WHERE gain should be; the Kalman controls HOW it gets there.
+            # Direct target pull from dynamics marking level.
+            # The marking defines WHERE each dim should be; the Kalman controls
+            # HOW it gets there. Decoupled from H/R — no observation model changes.
             _marking_name = marking_pairs[m_idx][1] if marking_pairs else 'mf'
             _target_lin = DYNAMIC_LEVELS.get(_marking_name, 0.65)
+            _dyn_level  = encode_marking(_marking_name)  # 0–1 scalar
+
+            # dim 0: gain_db
             _target_db = float(20.0 * np.log10(max(_target_lin, 0.01)))
-            _pull_strength = float(obs_w) * 0.15
+            _pull_strength = float(obs_w) * 0.45
             X_mu_bar[0] += (_target_db - X_mu_bar[0]) * _pull_strength
+
+            # dims 1/5/6: brightness, reverb_wet, filter_cutoff
+            # Conservative ranges — subtle timbral movement, not transformation.
+            # Pull is weaker than gain (0.25 vs 0.45) so the golem has more
+            # creative freedom on these dimensions.
+            _timbral_pull = float(obs_w) * timbral_pull
+            # dim 1: brightness — 0.4 (warm at pp) to 0.65 (bright at ff)
+            _bright_target = 0.4 + _dyn_level * 0.25
+            X_mu_bar[1] += (_bright_target - X_mu_bar[1]) * _timbral_pull
+            # dim 5: reverb_wet — 0.03 (dry at pp) to 0.20 (light hall at ff)
+            _reverb_target = 0.03 + _dyn_level * 0.17
+            X_mu_bar[5] += (_reverb_target - X_mu_bar[5]) * _timbral_pull
+            # dim 6: filter_cutoff — normalized 0–1; 0.3 (6kHz) to 0.9 (18kHz)
+            _cutoff_target = 0.3 + _dyn_level * 0.6
+            X_mu_bar[6] += (_cutoff_target - X_mu_bar[6]) * _timbral_pull
 
             y    = build_window_obs(markings_list, m_idx, N)
             H, R = lookup_HR(markings_list, m_idx, N, windows_table, augmented_d=2*D)

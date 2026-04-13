@@ -2,7 +2,7 @@ import numpy as np
 import librosa
 from scipy.signal import butter, sosfilt
 from src.envelope import apply_fade, build_duck_envelope, build_density_scale
-from src.fx       import apply_fx
+from src.fx       import apply_fx, _band_split
 from src.pitch    import resolve_event_pitch, apply_pitch_shift, apply_noterel_to_mix
 
 
@@ -327,21 +327,72 @@ def _apply_seg_shelf(base: np.ndarray, sr: int, bright_env: np.ndarray,
     return np.clip(base + hf * lin_delta[:, None], -1.0, 1.0).astype(np.float32)
 
 
-def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list) -> np.ndarray:
-    """Apply golem gain modulation to the combined mix.
+def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
+                        mix_dims: list = None) -> np.ndarray:
+    """Apply golem state modulation to the combined mix.
 
-    Called AFTER events are blended. Only gain_db + dynamic_center applied.
+    Called AFTER events are blended. Each dimension is gated by mix_dims —
+    a list of dimension names the user has enabled. Default: ['gain_db'] only
+    (backwards compatible).
+
+    Wired dimensions:
+      dim 0  gain_db         — amplitude envelope
+      dim 1  brightness      — time-varying high-shelf EQ via _apply_seg_shelf
+      dim 5  reverb_wet      — time-varying reverb send (full-wet pass + blend)
+      dim 6  filter_cutoff   — time-varying lowpass via _apply_seg_filter
+      dim 7  filter_resonance— paired with filter_cutoff
+
+    Per-event dimensions (applied in event loop, not here):
+      dim 2  timing_offset_ms
+      dim 3  attack_shape
+      dim 4  release_shape
+
+    Not yet wired (future):
+      dim 8  stereo_width, dim 9  overdrive_drive,
+      dim 10 pitch_dev_cents, dim 11 dynamic_center
     """
     if mix is None or not trace:
         return mix
+    if mix_dims is None:
+        mix_dims = ['gain_db']
 
     n = len(mix)
-    gain_db = _interp_dim_envelope(trace, n, sr, 0)
-    gain_lin = (10.0 ** (gain_db / 20.0)).astype(np.float32)
 
-    if mix.ndim == 1:
-        return (mix * gain_lin).astype(np.float32)
-    return (mix * gain_lin[:, None]).astype(np.float32)
+    # dim 0: gain_db — amplitude envelope (existing behavior)
+    if 'gain_db' in mix_dims:
+        gain_db = _interp_dim_envelope(trace, n, sr, 0)
+        gain_lin = (10.0 ** (gain_db / 20.0)).astype(np.float32)
+        mix = (mix * gain_lin).astype(np.float32)
+
+    # dim 1: brightness — time-varying high-shelf EQ
+    if 'brightness' in mix_dims:
+        bright_env = _interp_dim_envelope(trace, n, sr, 1)
+        mix = _apply_seg_shelf(mix, sr, bright_env)
+
+    # dims 6+7: filter_cutoff + filter_resonance — time-varying lowpass
+    # State dim 6 is normalized 0–1; denormalize to Hz and clamp to safe range
+    if 'filter_cutoff' in mix_dims:
+        cutoff_env_norm = _interp_dim_envelope(trace, n, sr, 6)
+        cutoff_env = np.clip(cutoff_env_norm * 20000.0, 4000.0, 18000.0).astype(np.float32)
+        res_env    = _interp_dim_envelope(trace, n, sr, 7)
+        mix = _apply_seg_filter(mix, sr, cutoff_env, res_env)
+
+    # dim 5: reverb_wet — time-varying reverb send
+    if 'reverb_wet' in mix_dims:
+        wet_env = _interp_dim_envelope(trace, n, sr, 5)
+        dry = mix.copy()
+        try:
+            wet_full = apply_fx(mix, sr, [{'type': 'reverb', 'room': 0.7, 'wet': 1.0}])
+            if len(wet_full) > n:
+                wet_full = wet_full[:n]
+            elif len(wet_full) < n:
+                wet_full = np.pad(wet_full, (0, n - len(wet_full)))
+            w = np.clip(wet_env, 0.0, 1.0).astype(np.float32)
+            mix = (dry * (1.0 - w) + wet_full * w).astype(np.float32)
+        except Exception:
+            pass  # reverb failed; leave mix unchanged
+
+    return mix
 
 
 def _resolve_tempo_factor(f) -> float:
@@ -772,11 +823,7 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if fx_list:
             clip = apply_fx(clip, sr, fx_list)
 
-        # --- articulations ---
-        if articulations:
-            art = _find_articulation(event['t'], articulations)
-            if art:
-                clip = _apply_articulation(clip, art['type'], sr)
+        # --- articulations (applied post-mix in the mix-level pass below) ---
 
         # --- pitch (score-level: static or glissando — NOT golem pitch_dev) ---
         semitones = resolve_event_pitch(event['t'], float(event.get('pitch', 0.0)), note_rels)
@@ -827,7 +874,8 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     # should play clean with dynamics envelope (the traditional path).
     _has_golems = bool((score or {}).get('golems'))
     if _state_trace and _has_golems:
-        mix = _apply_state_to_mix(mix, sr, _state_trace)
+        mix_dims = (score or {}).get('mix_dims', ['gain_db'])
+        mix = _apply_state_to_mix(mix, sr, _state_trace, mix_dims)
 
     # --- note relationships on the full mix (glissando pitch-slide, arpeggio roll) ---
     if note_rels:
@@ -836,6 +884,8 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     # --- articulations on the full mix (base track + events) ---
     _SILENCE_DUR_DEFAULT = 0.07  # seconds silenced after a staccato point mark
     for art in articulations:
+        if art.get('muted'):
+            continue
         art_type = art.get('type', '')
         from_t = art.get('from')
         to_t   = art.get('to')
@@ -851,47 +901,84 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
         if i0 >= len(mix) or i0 >= i1:
             continue
 
+        # Optional per-band targeting: split segment, apply articulation to
+        # target band only, recombine. When freq fields are absent, seg IS
+        # the full segment and rest is None → identical to previous behavior.
+        freq_from = art.get('freq_from')
+        freq_to   = art.get('freq_to')
+        need_split = (freq_from is not None) or (freq_to is not None)
+
+        if need_split:
+            seg_full = mix[i0:i1].copy()
+            seg, rest = _band_split(seg_full, sr, freq_from, freq_to)
+        else:
+            seg = mix[i0:i1]  # direct view — in-place writes go to mix
+            rest = None
+
         if art_type == 'staccato':
             # Punchy: keep 20 ms at full attack, then sharp 5 ms cut, then silence.
-            keep  = min(int(0.02 * sr), i1 - i0)
-            cut_n = min(int(0.005 * sr), i1 - i0 - keep)
+            n = len(seg)
+            keep  = min(int(0.02 * sr), n)
+            cut_n = min(int(0.005 * sr), n - keep)
             if cut_n > 1:
-                mix[i0 + keep:i0 + keep + cut_n] *= np.linspace(1.0, 0.0, cut_n, dtype=np.float32)
-            mix[i0 + keep + cut_n:i1] = 0.0
+                seg[keep:keep + cut_n] *= np.linspace(1.0, 0.0, cut_n, dtype=np.float32)
+            seg[keep + cut_n:] = 0.0
 
         elif art_type == 'accent':
-            atk = min(int(0.05 * sr), i1 - i0)
+            atk = min(int(0.05 * sr), len(seg))
             if atk > 1:
-                mix[i0:i0 + atk] *= np.linspace(2.0, 1.0, atk, dtype=np.float32)
+                seg[:atk] *= np.linspace(2.0, 1.0, atk, dtype=np.float32)
 
         elif art_type == 'legato':
             # Smooth 50 ms fade-in at start; long 500 ms fade-out at end.
-            fi = min(int(0.05 * sr), (i1 - i0) // 2)
-            fo = min(int(0.50 * sr), (i1 - i0) // 2)
+            n = len(seg)
+            fi = min(int(0.05 * sr), n // 2)
+            fo = min(int(0.50 * sr), n // 2)
             if fi > 1:
-                mix[i0:i0 + fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+                seg[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
             if fo > 1:
-                mix[i1 - fo:i1] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+                seg[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
 
         elif art_type == 'fermata':
-            # Grab hold_s of audio ending at i1. Extend the mix buffer and loop
-            # it 6 times with a slow fade, creating a dramatic, extended hold.
+            # Grab hold_s of audio ending at end of seg. Extend and loop with
+            # slow fade, creating a dramatic, extended hold.
             hold_s = float(art.get('hold_s', 2.0))
-            hold_n = min(int(hold_s * sr), i1)
-            src_s  = max(0, i1 - hold_n)
-            hold_n = i1 - src_s
+            hold_n = min(int(hold_s * sr), len(seg))
+            src_s  = max(0, len(seg) - hold_n)
+            hold_n = len(seg) - src_s
             if hold_n > int(0.05 * sr):
-                tail = mix[src_s:i1].copy()
+                tail = seg[src_s:].copy()
                 fi   = max(1, hold_n // 8)
                 tail[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
                 n_reps = 6
-                needed = i1 + n_reps * hold_n
-                if needed > len(mix):
-                    mix = np.pad(mix, (0, needed - len(mix)))
-                for rep in range(n_reps):
-                    gain = 1.0 - rep / (n_reps * 1.5)  # slow fade — stays loud longer
-                    s    = i1 + rep * hold_n
-                    mix[s:s + hold_n] += tail * gain
+                if need_split:
+                    # Extend seg with tail repetitions
+                    ext = np.zeros(n_reps * hold_n, dtype=np.float32)
+                    for rep in range(n_reps):
+                        g = 1.0 - rep / (n_reps * 1.5)
+                        s = rep * hold_n
+                        ext[s:s + hold_n] += tail * g
+                    seg = np.concatenate([seg, ext])
+                else:
+                    needed = i1 + n_reps * hold_n
+                    if needed > len(mix):
+                        mix = np.pad(mix, (0, needed - len(mix)))
+                    for rep in range(n_reps):
+                        g = 1.0 - rep / (n_reps * 1.5)
+                        s = i1 + rep * hold_n
+                        mix[s:s + hold_n] += tail * g
+
+        # Recombine if band-split was used
+        if rest is not None:
+            if len(seg) > len(rest):
+                rest = np.pad(rest, (0, len(seg) - len(rest)))
+            elif len(rest) > len(seg):
+                seg = np.pad(seg, (0, len(rest) - len(seg)))
+            combined = (rest + seg).astype(np.float32)
+            out_end = i0 + len(combined)
+            if out_end > len(mix):
+                mix = np.pad(mix, (0, out_end - len(mix)))
+            mix[i0:out_end] = combined
 
     # --- auto_mix: scale down overlapping events ---
     am = (score or {}).get('auto_mix')

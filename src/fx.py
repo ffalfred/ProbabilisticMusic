@@ -89,39 +89,83 @@ def _wet_dry_mix(dry: np.ndarray, wet_processed: np.ndarray, wet_amount: float,
     return (dry + wet * wet_amount).astype(np.float32)
 
 
+# ── Per-FX frequency targeting ───────────────────────────────────────────────
+
+def _band_split(clip, sr, freq_from, freq_to):
+    """Split clip into (target_band, rest) using Linkwitz-Riley crossover.
+    Returns (target, rest) where target + rest ≈ clip."""
+    from scipy.signal import butter, sosfilt
+    nyq = sr / 2.0
+    order = 4  # LR4
+
+    if freq_from and freq_to:
+        lo = max(20, min(float(freq_from), nyq - 1))
+        hi = max(lo + 1, min(float(freq_to), nyq - 1))
+        sos_bp = butter(order, [lo, hi], btype='band',     fs=sr, output='sos')
+        sos_bs = butter(order, [lo, hi], btype='bandstop',  fs=sr, output='sos')
+        target = sosfilt(sos_bp, clip).astype(np.float32)
+        rest   = sosfilt(sos_bs, clip).astype(np.float32)
+    elif freq_from:
+        lo = max(20, min(float(freq_from), nyq - 1))
+        sos_hp = butter(order, lo, btype='high', fs=sr, output='sos')
+        sos_lp = butter(order, lo, btype='low',  fs=sr, output='sos')
+        target = sosfilt(sos_hp, clip).astype(np.float32)
+        rest   = sosfilt(sos_lp, clip).astype(np.float32)
+    elif freq_to:
+        hi = max(20, min(float(freq_to), nyq - 1))
+        sos_lp = butter(order, hi, btype='low',  fs=sr, output='sos')
+        sos_hp = butter(order, hi, btype='high', fs=sr, output='sos')
+        target = sosfilt(sos_lp, clip).astype(np.float32)
+        rest   = sosfilt(sos_hp, clip).astype(np.float32)
+    else:
+        return clip, None
+
+    return target, rest
+
+
 # ── Per-event FX dispatch ────────────────────────────────────────────────────
 
+def _apply_single_fx(clip, sr, fx):
+    """Dispatch a single FX dict to the appropriate handler."""
+    t = fx.get('type', '')
+    if   t == 'delay':               return _delay(clip, sr, fx)
+    elif t == 'reverb':              return _reverb(clip, sr, fx)
+    elif t == 'overdrive':           return _overdrive(clip, sr, fx)
+    elif t == 'flanger':             return _flanger(clip, sr, fx)
+    elif t == 'pitch':               return _pitch(clip, sr, fx)
+    elif t == 'compress':            return _compress(clip, sr, fx)
+    elif t == 'eq':                  return _eq(clip, sr, fx)
+    elif t == 'filter':              return _filter(clip, sr, fx)
+    elif t == 'chorus':              return _chorus(clip, sr, fx)
+    elif t == 'tremolo':             return _tremolo(clip, sr, fx)
+    elif t == 'spectral_inversion':  return _spectral_inversion(clip, sr, fx)
+    elif t == 'overtones':           return _overtones(clip, sr, fx)
+    elif t.startswith('morpho_'):
+        from plugins import apply_plugin
+        return apply_plugin(clip, sr, fx)
+    return clip
+
+
 def apply_fx(clip: np.ndarray, sr: int, fx_list: list) -> np.ndarray:
-    """Apply a list of FX dicts to a clip sequentially."""
+    """Apply a list of FX dicts to a clip sequentially.
+    Each FX may optionally carry freq_from / freq_to (Hz) to restrict it
+    to a frequency band; the rest of the spectrum passes through untouched."""
     for fx in fx_list:
-        t = fx.get('type', '')
-        if t == 'delay':
-            clip = _delay(clip, sr, fx)
-        elif t == 'reverb':
-            clip = _reverb(clip, sr, fx)
-        elif t == 'overdrive':
-            clip = _overdrive(clip, sr, fx)
-        elif t == 'flanger':
-            clip = _flanger(clip, sr, fx)
-        elif t == 'pitch':
-            clip = _pitch(clip, sr, fx)
-        elif t == 'compress':
-            clip = _compress(clip, sr, fx)
-        elif t == 'eq':
-            clip = _eq(clip, sr, fx)
-        elif t == 'filter':
-            clip = _filter(clip, sr, fx)
-        elif t == 'chorus':
-            clip = _chorus(clip, sr, fx)
-        elif t == 'tremolo':
-            clip = _tremolo(clip, sr, fx)
-        elif t == 'spectral_inversion':
-            clip = _spectral_inversion(clip, sr, fx)
-        elif t == 'overtones':
-            clip = _overtones(clip, sr, fx)
-        elif t.startswith('morpho_'):
-            from plugins import apply_plugin
-            clip = apply_plugin(clip, sr, fx)
+        freq_from = fx.get('freq_from')
+        freq_to   = fx.get('freq_to')
+
+        if freq_from is not None or freq_to is not None:
+            target, rest = _band_split(clip, sr, freq_from, freq_to)
+            target = _apply_single_fx(target, sr, fx)
+            # Recombine — target may be longer than rest (reverb/delay tail)
+            if len(target) > len(rest):
+                rest = np.pad(rest, (0, len(target) - len(rest)))
+            elif len(rest) > len(target):
+                target = np.pad(target, (0, len(rest) - len(target)))
+            clip = (rest + target).astype(np.float32)
+        else:
+            clip = _apply_single_fx(clip, sr, fx)
+
     return clip
 
 

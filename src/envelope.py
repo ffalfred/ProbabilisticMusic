@@ -119,15 +119,16 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
             env[cursor:t] = current_level
 
         if ev[1] == 'set':
-            # Point marking — smooth transition to new level
+            # Point marking — the target level should be REACHED at this
+            # moment, not start ramping here.  Ramp backwards into the gap
+            # between the previous event and this one.
             new_level = ev[2]
             gap_sec = (t - cursor) / sr if cursor < t else 0.5
-            trans = min(_transition_samples(gap_sec, sr), max(1, (n_samples - t) // 2))
-            if trans > 1 and t + trans <= n_samples:
-                env[t:t + trans] = np.linspace(current_level, new_level, trans, dtype=np.float32)
-                cursor = t + trans
-            else:
-                cursor = t
+            trans = min(_transition_samples(gap_sec, sr), max(1, t - cursor))
+            ramp_start = max(cursor, t - trans)
+            if trans > 1 and ramp_start < t:
+                env[ramp_start:t] = np.linspace(current_level, new_level, t - ramp_start, dtype=np.float32)
+            cursor = t
             current_level = new_level
 
         elif ev[1] == 'ramp':

@@ -86,6 +86,18 @@
     <button id="interp-export-wav-btn-top" title="Render and save interpreted mix as WAV (uses 'name' field above)">&#8595; WAV</button>
     <span id="interp-save-status" class="interp-status"></span>
   </div>
+  <div id="interp-topbar-mixdims" style="display:flex;align-items:center;gap:6px;padding:2px 8px;flex-wrap:wrap;">
+    <label style="font-size:10px;color:#555;flex:none;">mix dims</label>
+    <label style="font-size:10px;color:#8b8;cursor:pointer;" title="Amplitude envelope"><input type="checkbox" class="mix-dim-cb" data-dim="gain_db" checked> gain</label>
+    <label style="font-size:10px;color:#8ab;cursor:pointer;" title="Time-varying high-shelf EQ"><input type="checkbox" class="mix-dim-cb" data-dim="brightness"> brightness</label>
+    <label style="font-size:10px;color:#aa8;cursor:pointer;" title="Time-varying lowpass sweep"><input type="checkbox" class="mix-dim-cb" data-dim="filter_cutoff"> filter</label>
+    <label style="font-size:10px;color:#a8a;cursor:pointer;" title="Time-varying reverb send"><input type="checkbox" class="mix-dim-cb" data-dim="reverb_wet"> reverb</label>
+    <span style="font-size:10px;color:#444;">|</span>
+    <label style="font-size:10px;color:#555;" title="How strongly brightness/filter/reverb track the score dynamics (0=free, 1=strict)">pull</label>
+    <input id="interp-timbral-pull" type="number" value="0.25" min="0" max="1" step="0.05"
+           style="width:45px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
+           title="Timbral pull: 0=golem ignores score, 0.5=moderate tracking, 1=strict">
+  </div>
 </div><!-- /interp-topbar -->
 
 <!-- SHARED PLAYBACK BAR — always visible, top-right style -->

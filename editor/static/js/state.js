@@ -107,6 +107,7 @@ const interpState = {
   scoreDuration: 0,     // cached duration for timeline drawing
   scoreDynamics: [],    // dynamics from the loaded score YAML (for trace overlay)
   golems: [],           // [{from, to, character, type, state, dimension_config}]
+  mix_dims: ['gain_db'],// which golem dimensions to apply to the mix
   v2config: {
     engine: 'v2',
     seed: null,

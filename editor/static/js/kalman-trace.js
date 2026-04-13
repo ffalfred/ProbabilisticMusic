@@ -151,8 +151,18 @@ function drawKalmanTrace(data) {
   }
 
   // Per-dim: bold mean line (music-driven structure) + faint sample dots (stochasticity)
-  // Auto-scale each dim to its OBSERVED range so tiny variations are visible.
+  // Only draw dimensions that are actually wired (mix_dims + per-event dims).
+  const _activeDims = new Set([
+    ...(interpState.mix_dims || ['gain_db']),
+    'timing_offset_ms', 'attack_shape', 'release_shape',  // always per-event
+  ]);
+  const _activeDimIndices = [];
   for (let d = 0; d < D; d++) {
+    if (_activeDims.has(DIM_NAMES[d])) _activeDimIndices.push(d);
+  }
+
+  // Auto-scale each dim to its OBSERVED range so tiny variations are visible.
+  for (const d of _activeDimIndices) {
     const col      = DIM_COLORS[d % DIM_COLORS.length];
     const [r, g, b] = _hexToRgb(col);
 
@@ -197,22 +207,22 @@ function drawKalmanTrace(data) {
     }
   }
 
-  // Compact legend (top-right, 2 cols)
+  // Compact legend (top-right, 2 cols) — only active dims
   const legCols = 2;
   const legW    = 92;
   const legRowH = 11;
   const legX    = W - padR - legW * legCols;
   const legY    = padT + 2;
   ctx.font = '8px Courier New';
-  for (let d = 0; d < D; d++) {
+  _activeDimIndices.forEach((d, li) => {
     const col = DIM_COLORS[d % DIM_COLORS.length];
-    const cx  = legX + (d % legCols) * legW;
-    const cy  = legY + Math.floor(d / legCols) * legRowH;
+    const cx  = legX + (li % legCols) * legW;
+    const cy  = legY + Math.floor(li / legCols) * legRowH;
     ctx.fillStyle = col;
     ctx.fillRect(cx, cy, 7, 7);
     ctx.fillStyle = 'rgba(200,200,200,0.65)';
     ctx.fillText(DIM_LABELS[d], cx + 10, cy + 7);
-  }
+  });
 
   // Playback cursor (yellow dashed) — active during audio playback
   let cursorT = -1;
@@ -250,9 +260,9 @@ function drawKalmanTrace(data) {
     }
     const step = trace[bestIdx];
 
-    // Tooltip
+    // Tooltip — only active dims
     const TT_W = 160;
-    const TT_H = 10 + D * 10 + 8;
+    const TT_H = 10 + _activeDimIndices.length * 10 + 8;
     let ttX = _hoverX + 8;
     if (ttX + TT_W > W - 4) ttX = _hoverX - TT_W - 8;
     let ttY = padT + 4;
@@ -264,18 +274,18 @@ function drawKalmanTrace(data) {
     ctx.font = '9px Courier New';
     ctx.fillStyle = '#ccc';
     ctx.fillText(`t = ${step.t.toFixed(2)}s`, ttX + 5, ttY + 10);
-    for (let d = 0; d < D; d++) {
+    _activeDimIndices.forEach((d, li) => {
       const col = DIM_COLORS[d % DIM_COLORS.length];
       const v = step.sample ? step.sample[d] : (step.mu ? step.mu[d] : 0);
       ctx.fillStyle = col;
-      ctx.fillRect(ttX + 5, ttY + 15 + d * 10, 5, 5);
+      ctx.fillRect(ttX + 5, ttY + 15 + li * 10, 5, 5);
       ctx.fillStyle = '#aaa';
       const label = DIM_LABELS[d];
       const valStr = Math.abs(v) >= 100 ? v.toFixed(0)
                    : Math.abs(v) >= 10  ? v.toFixed(1)
                                         : v.toFixed(2);
-      ctx.fillText(`${label.padEnd(12).slice(0,12)} ${valStr}`, ttX + 14, ttY + 20 + d * 10);
-    }
+      ctx.fillText(`${label.padEnd(12).slice(0,12)} ${valStr}`, ttX + 14, ttY + 20 + li * 10);
+    });
   }
 }
 

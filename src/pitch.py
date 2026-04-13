@@ -2,8 +2,11 @@ import numpy as np
 
 
 def apply_noterel_to_mix(mix: np.ndarray, sr: int, note_rels: list) -> np.ndarray:
-    """Apply glissando pitch-slides and arpeggio roll effects to the full mix."""
+    """Apply glissando pitch-slides and arpeggio roll effects to the full mix.
+    Each note_rel may carry optional freq_from / freq_to (Hz) to restrict
+    the effect to a frequency band; the rest of the spectrum passes through."""
     import librosa
+    from src.fx import _band_split
     chunk_n = max(1, int(0.02 * sr))   # 20 ms chunks for glissando
     fi_n    = max(1, int(0.015 * sr))  # 15 ms fade-in for arpeggio segments
     result  = mix.copy()
@@ -16,36 +19,55 @@ def apply_noterel_to_mix(mix: np.ndarray, sr: int, note_rels: list) -> np.ndarra
         if i1 <= i0:
             continue
 
+        # Optional frequency targeting
+        freq_from = nr.get('freq_from')
+        freq_to   = nr.get('freq_to')
+        need_split = (freq_from is not None) or (freq_to is not None)
+
+        if need_split:
+            seg_full = result[i0:i1].copy()
+            seg, band_rest = _band_split(seg_full, sr, freq_from, freq_to)
+        else:
+            seg = result[i0:i1]  # direct view for in-place writes
+            band_rest = None
+
         if nr.get('type') == 'glissando':
             from_p = float(nr.get('from_pitch', 0.0))
             to_p   = float(nr.get('to_pitch',   2.0))
             if abs(to_p - from_p) < 0.05:
                 continue
-            total = i1 - i0
+            total = len(seg)
+            seg_out = seg.copy()
             for ci in range(0, total, chunk_n):
-                s = i0 + ci
-                e = min(s + chunk_n, i1)
+                s = ci
+                e = min(s + chunk_n, total)
                 frac      = ci / max(total - 1, 1)
                 semitones = from_p + frac * (to_p - from_p)
                 if abs(semitones) < 0.05:
                     continue
-                chunk = mix[s:e].astype(np.float32)
+                chunk = seg[s:e].astype(np.float32)
                 pad   = max(0, 2048 - len(chunk))
                 if pad:
                     chunk = np.pad(chunk, (0, pad))
-                shifted     = librosa.effects.pitch_shift(chunk, sr=sr, n_steps=semitones)
-                result[s:e] = shifted[:e - s]
+                shifted      = librosa.effects.pitch_shift(chunk, sr=sr, n_steps=semitones)
+                seg_out[s:e] = shifted[:e - s]
+            seg = seg_out
 
         elif nr.get('type') == 'arpeggiate':
-            total   = i1 - i0
+            total   = len(seg)
             n_steps = min(8, max(1, total // max(1, int(0.05 * sr))))
             seg_n   = total // n_steps
-            for s in range(n_steps):
-                s0  = i0 + s * seg_n
-                s1  = min(s0 + seg_n, i1)
+            for s_idx in range(n_steps):
+                s0  = s_idx * seg_n
+                s1  = min(s0 + seg_n, total)
                 fi  = min(fi_n, s1 - s0)
                 if fi > 1:
-                    result[s0:s0 + fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+                    seg[s0:s0 + fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+
+        # Recombine if band-split was used
+        if band_rest is not None:
+            n = min(len(band_rest), len(seg), i1 - i0)
+            result[i0:i0 + n] = (band_rest[:n] + seg[:n]).astype(np.float32)
 
     return result
 

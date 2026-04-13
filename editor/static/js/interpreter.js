@@ -133,7 +133,7 @@ async function renderScoreAndPlay() {
     const body = {
       path:       audioPath,
       score_path: interpState.scorePath,
-      interp:     { golems: [], v2config: {} },
+      interp:     { golems: [], v2config: {}, mix_dims: interpState.mix_dims },
     };
     const res  = await fetch('/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const data = await res.json();
@@ -249,6 +249,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const loadScoreBtn = document.getElementById('interp-load-score-btn');
   if (loadScoreBtn) loadScoreBtn.addEventListener('click', _loadInterpScore);
 
+  // Mix dimension toggles
+  document.querySelectorAll('.mix-dim-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const dims = [];
+      document.querySelectorAll('.mix-dim-cb').forEach(el => {
+        if (el.checked) dims.push(el.dataset.dim);
+      });
+      interpState.mix_dims = dims;
+    });
+  });
+
+  // Timbral pull slider
+  const tpInput = document.getElementById('interp-timbral-pull');
+  if (tpInput) tpInput.addEventListener('change', () => {
+    if (!interpState.v2config.v2) interpState.v2config.v2 = {};
+    interpState.v2config.v2.timbral_pull = parseFloat(tpInput.value) || 0.25;
+  });
+
   // Export interpreter audio → output/ dir on disk
   const exportWavBtn = document.getElementById('interp-export-wav-btn-top');
   const saveStatus = document.getElementById('interp-save-status');
@@ -291,6 +309,15 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <div style="font-size:9px;color:#555;margin-top:2px;">Full duration: ${durStr}s. Leave as-is for whole audio.</div>
         </div>
+        <div>
+          <label style="font-size:11px;color:#888;">Audio quality:</label>
+          <select id="exp-format" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
+            <option value="wav24" selected>24-bit WAV (studio standard)</option>
+            <option value="wav32f">32-bit float WAV (lossless)</option>
+            <option value="flac">FLAC (lossless, smaller file)</option>
+            <option value="wav16">16-bit WAV (CD quality)</option>
+          </select>
+        </div>
       </div>`;
     // showPopup renders the HTML into the DOM, then returns a promise.
     // We need to wire the Browse button BEFORE awaiting, so use a microtask.
@@ -302,9 +329,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const pathInput = document.getElementById('exp-path');
       if (browseBtn && pathInput) {
         browseBtn.addEventListener('click', () => {
+          const selFmt = document.getElementById('exp-format')?.value || 'wav24';
+          const fmtExt = selFmt === 'flac' ? '.flac' : '.wav';
           openSaveBrowser((fullPath) => {
             pathInput.value = fullPath;
-          }, nameVal + '.wav', ['.wav']);
+          }, nameVal + fmtExt, ['.wav', '.flac']);
         });
       }
     });
@@ -312,10 +341,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const ok = await popupPromise;
     if (!ok) return;
 
-    const expMode = document.getElementById('exp-mode')?.value || 'interp';
-    const expFrom = parseFloat(document.getElementById('exp-from')?.value) || 0;
-    const expTo   = parseFloat(document.getElementById('exp-to')?.value)   || 0;
-    const expPath = document.getElementById('exp-path')?.value.trim() || '';
+    const expMode   = document.getElementById('exp-mode')?.value || 'interp';
+    const expFrom   = parseFloat(document.getElementById('exp-from')?.value) || 0;
+    const expTo     = parseFloat(document.getElementById('exp-to')?.value)   || 0;
+    const expPath   = document.getElementById('exp-path')?.value.trim() || '';
+    const expFormat = document.getElementById('exp-format')?.value || 'wav24';
 
     exportWavBtn.disabled = true;
     setSaveStatus('rendering WAV…');
@@ -326,9 +356,10 @@ document.addEventListener('DOMContentLoaded', () => {
         out_name: nameVal,
         out_path: expPath,   // full path chosen by user (empty = default output/ dir)
         export_mode: expMode,
+        audio_format: expFormat,
         time_from: expFrom,
         time_to: expTo > expFrom ? expTo : 0,
-        interp: { golems: interpState.golems, v2config: interpState.v2config },
+        interp: { golems: interpState.golems, v2config: interpState.v2config, mix_dims: interpState.mix_dims },
       };
       const res  = await fetch('/export_interp_wav', {
         method:'POST', headers:{'Content-Type':'application/json'},
