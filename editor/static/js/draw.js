@@ -421,7 +421,8 @@ function draw() {
   if (panel) {
     panel.querySelectorAll("canvas[data-tidx]").forEach(c => {
       const idx = parseInt(c.dataset.tidx);
-      drawMiniWaveform(c, state.tracks[idx]?.waveform);
+      const tk  = state.tracks[idx];
+      if (tk) drawMiniWaveform(c, tk.waveform, tk.automation, tk.from, tk.to);
     });
   }
 }
@@ -824,6 +825,20 @@ function drawFrameOverlay() {
 
 // ─── High-res PNG download of score/metadata with symbols ────────────────────
 // ─── Full-image export draw (no viewport scroll — entire image + annotations) ─
+// Label collision resolver — pushes overlapping labels down
+function _resolveOverlaps(labels, pad) {
+  labels.sort((a, b) => a.x - b.x);
+  for (let i = 1; i < labels.length; i++) {
+    for (let j = i - 1; j >= 0 && j >= i - 8; j--) {
+      if (labels[i].x < labels[j].x + labels[j].w + pad &&
+          labels[i].y < labels[j].y + labels[j].h + pad &&
+          labels[i].y + labels[i].h > labels[j].y - pad) {
+        labels[i].y = labels[j].y + labels[j].h + pad;
+      }
+    }
+  }
+}
+
 function _drawFullExport(canvasEl, view) {
   const ctx = canvasEl.getContext('2d');
   const W = canvasEl.width, H = canvasEl.height;
@@ -831,110 +846,138 @@ function _drawFullExport(canvasEl, view) {
   ctx.fillRect(0, 0, W, H);
   if (!state.duration || !view) return;
 
-  // Draw the full source image scaled to fill the canvas
   if (view.img && view.img.complete && view.img.naturalWidth > 0) {
     ctx.drawImage(view.img, 0, 0, W, H);
   }
 
-  // Linear time→x mapping across full canvas width (no scroll/centering)
   const dur = view.end - view.start;
   const tx = t => dur > 0 ? ((t - view.start) / dur) * W : 0;
 
-  // Sample regions
+  // Scale factor: text and spacing scale with canvas width
+  const S = Math.max(1, W / 1800);
+  const font  = (px, bold) => (bold ? 'bold ' : '') + Math.round(px * S) + "px 'Courier New', monospace";
+  const lw    = v => Math.max(1, Math.round(v * S));
+  const pad   = Math.round(4 * S);
+
+  // Collect labels per zone, then resolve overlaps before drawing
+  const topLabels = [];    // y: 0 → H*0.25
+  const midLabels = [];    // y: H*0.35 → H*0.65
+  const botLabels = [];    // y: H*0.75 → H
+
+  // ── Sample regions ──
   for (const [name, s] of Object.entries(_sdd().samples)) {
     const x1 = tx(s.from), x2 = tx(s.to);
     ctx.fillStyle = hexAlpha(s.color, 0.18); ctx.fillRect(x1, 0, x2 - x1, H);
-    ctx.strokeStyle = hexAlpha(s.color, 0.7); ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeStyle = hexAlpha(s.color, 0.7); ctx.lineWidth = lw(1.5); ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
-    ctx.fillStyle = hexAlpha(s.color, 0.85); ctx.font = "11px 'Courier New', monospace";
-    ctx.fillText("[" + name + "]", x1 + 4, 16);
+    const fs = Math.round(11 * S);
+    topLabels.push({ x: x1 + pad, y: fs + pad, text: '[' + name + ']', w: name.length * fs * 0.65, h: fs, color: hexAlpha(s.color, 0.85), font: font(11) });
   }
-  // Dynamic ranges
+
+  // ── Dynamic ranges ──
   for (const d of _sdd().dynamics) {
     if (d.from !== undefined) {
       const x1 = tx(d.from), x2 = tx(d.to);
-      const col = _dmark(d) === "crescendo" ? "#337755" : "#775533";
+      const col = _dmark(d) === 'crescendo' ? '#337755' : '#775533';
       ctx.fillStyle = hexAlpha(col, 0.15); ctx.fillRect(x1, 0, x2 - x1, H);
-      ctx.strokeStyle = hexAlpha(col, 0.6); ctx.lineWidth = 1; ctx.setLineDash([4,3]);
-      ctx.beginPath(); ctx.moveTo(x1, H/2); ctx.lineTo(x2, H/2); ctx.stroke();
-      ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "10px 'Courier New', monospace";
-      ctx.fillText(_dmark(d), x1 + 3, H/2 - 4);
+      ctx.strokeStyle = hexAlpha(col, 0.6); ctx.lineWidth = lw(1); ctx.setLineDash([Math.round(4*S), Math.round(3*S)]);
+      ctx.beginPath(); ctx.moveTo(x1, H/2); ctx.lineTo(x2, H/2); ctx.stroke(); ctx.setLineDash([]);
+      const fs = Math.round(10 * S);
+      midLabels.push({ x: x1 + pad, y: H/2 - pad, text: _dmark(d), w: _dmark(d).length * fs * 0.65, h: fs, color: hexAlpha(col, 0.9), font: font(10) });
     }
   }
-  // Dynamic points
+
+  // ── Dynamic points ──
   for (const d of _sdd().dynamics) {
     if (d.t !== undefined) {
       const x = tx(d.t);
-      const col = DYNAMIC_COLORS[_dmark(d)] || "#aaa";
-      ctx.fillStyle = col; ctx.font = "bold 13px 'Courier New', monospace";
-      ctx.fillText(_dmark(d), x - 6, H - 8);
+      const col = DYNAMIC_COLORS[_dmark(d)] || '#aaa';
+      const fs = Math.round(13 * S);
+      botLabels.push({ x: x - Math.round(6*S), y: H - Math.round(8*S), text: _dmark(d), w: _dmark(d).length * fs * 0.65, h: fs, color: col, font: font(13, true) });
     }
   }
-  // Tempo ranges
+
+  // ── Tempo ranges ──
   for (const tp of _sdd().tempo) {
     const x1 = tx(tp.from), x2 = tx(tp.to);
-    const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
+    const col = tp.mark === 'accelerando' ? '#aa7722' : '#227799';
     ctx.fillStyle = hexAlpha(col, 0.13); ctx.fillRect(x1, 0, x2 - x1, H);
-    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1; ctx.setLineDash([6,4]);
-    ctx.beginPath(); ctx.moveTo(x1, 24); ctx.lineTo(x2, 24); ctx.stroke();
-    ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "10px 'Courier New', monospace";
-    ctx.fillText(tp.mark, x1 + 3, 36);
+    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = lw(1); ctx.setLineDash([Math.round(6*S), Math.round(4*S)]);
+    ctx.beginPath(); ctx.moveTo(x1, Math.round(24*S)); ctx.lineTo(x2, Math.round(24*S)); ctx.stroke(); ctx.setLineDash([]);
+    const fs = Math.round(10 * S);
+    topLabels.push({ x: x1 + pad, y: Math.round(36*S), text: tp.mark, w: tp.mark.length * fs * 0.65, h: fs, color: hexAlpha(col, 0.9), font: font(10) });
   }
-  // FX zones
+
+  // ── FX zones ──
   for (const fz of _sdd().fxRanges) {
     const x1 = tx(fz.from), x2 = tx(fz.to);
-    ctx.fillStyle = "rgba(136,68,204,0.12)"; ctx.fillRect(x1, 0, x2 - x1, H);
-    ctx.strokeStyle = "rgba(136,68,204,0.5)"; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+    ctx.fillStyle = 'rgba(136,68,204,0.12)'; ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = 'rgba(136,68,204,0.5)'; ctx.lineWidth = lw(1); ctx.setLineDash([Math.round(3*S), Math.round(3*S)]);
     ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(136,68,204,0.8)"; ctx.font = "9px 'Courier New', monospace";
-    ctx.fillText("FX:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 6);
+    ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke(); ctx.setLineDash([]);
+    const label = 'FX:' + fz.fx.map(f => f.type).join('+');
+    const fs = Math.round(9 * S);
+    botLabels.push({ x: x1 + pad, y: H - Math.round(6*S), text: label, w: label.length * fs * 0.6, h: fs, color: 'rgba(136,68,204,0.8)', font: font(9) });
   }
-  // Phrases / slurs
+
+  // ── Phrases / slurs ──
   for (const ph of _sdd().phrases || []) {
     const x1 = tx(ph.from), x2 = tx(ph.to);
-    ctx.strokeStyle = "rgba(138,106,191,0.6)"; ctx.lineWidth = 2; ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.moveTo(x1, 20);
-    ctx.quadraticCurveTo((x1+x2)/2, 6, x2, 20);
-    ctx.stroke();
+    ctx.strokeStyle = 'rgba(138,106,191,0.6)'; ctx.lineWidth = lw(2); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x1, Math.round(20*S)); ctx.quadraticCurveTo((x1+x2)/2, Math.round(6*S), x2, Math.round(20*S)); ctx.stroke();
     if (ph.label) {
-      ctx.fillStyle = "rgba(138,106,191,0.8)"; ctx.font = "9px 'Courier New', monospace";
-      ctx.fillText(ph.label, (x1+x2)/2 - 10, 18);
+      const fs = Math.round(9 * S);
+      topLabels.push({ x: (x1+x2)/2 - Math.round(10*S), y: Math.round(18*S), text: ph.label, w: ph.label.length * fs * 0.6, h: fs, color: 'rgba(138,106,191,0.8)', font: font(9) });
     }
   }
-  // Events
+
+  // ── Events ──
   for (const ev of _sdd().events) {
     const x = tx(ev.t);
-    const col = (_sdd().samples[ev.sample] || {}).color || "#aaa";
-    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1; ctx.setLineDash([]);
+    const col = (_sdd().samples[ev.sample] || {}).color || '#aaa';
+    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = lw(1); ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "9px 'Courier New', monospace";
-    ctx.fillText(ev.sample, x + 2, H - 20);
+    const fs = Math.round(9 * S);
+    botLabels.push({ x: x + pad/2, y: H - Math.round(20*S), text: ev.sample, w: ev.sample.length * fs * 0.6, h: fs, color: hexAlpha(col, 0.9), font: font(9) });
   }
-  // Articulations
-  const ART_COLORS = { staccato: "#ffaa44", legato: "#44ffaa", fermata: "#ff88cc", accent: "#ff6644" };
+
+  // ── Articulations ──
+  const ART_COLORS = { staccato: '#ffaa44', legato: '#44ffaa', fermata: '#ff88cc', accent: '#ff6644' };
   for (const ar of _sdd().articulations || []) {
-    const col = ART_COLORS[ar.type] || "#aaa";
+    const col = ART_COLORS[ar.type] || '#aaa';
     if (ar.t !== undefined) {
       const x = tx(ar.t);
-      ctx.fillStyle = col; ctx.font = "bold 11px 'Courier New', monospace";
-      ctx.fillText(ar.type[0].toUpperCase(), x - 3, 30);
+      const fs = Math.round(11 * S);
+      topLabels.push({ x: x - Math.round(3*S), y: Math.round(30*S), text: ar.type[0].toUpperCase(), w: fs * 0.7, h: fs, color: col, font: font(11, true) });
     } else if (ar.from !== undefined) {
       const x1 = tx(ar.from), x2 = tx(ar.to);
       ctx.fillStyle = hexAlpha(col, 0.1); ctx.fillRect(x1, 0, x2 - x1, H);
     }
   }
-  // Note relationships
+
+  // ── Note relationships ──
   for (const nr of _sdd().noteRel || []) {
-    const x1 = tx(nr.from);
-    const x2 = nr.to ? tx(nr.to) : x1;
+    const x1 = tx(nr.from), x2 = nr.to ? tx(nr.to) : x1;
     const col = nr.type === 'glissando' ? '#44aadd' : '#44ddaa';
-    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash([2,2]);
-    ctx.beginPath(); ctx.moveTo(x1, H - 16); ctx.lineTo(x2, H - 16); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.strokeStyle = col; ctx.lineWidth = lw(2); ctx.setLineDash([Math.round(2*S), Math.round(2*S)]);
+    ctx.beginPath(); ctx.moveTo(x1, H - Math.round(16*S)); ctx.lineTo(x2, H - Math.round(16*S)); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // ── Resolve overlaps and draw all labels ──
+  _resolveOverlaps(topLabels, pad);
+  _resolveOverlaps(midLabels, pad);
+  _resolveOverlaps(botLabels, pad);
+
+  for (const labels of [topLabels, midLabels, botLabels]) {
+    for (const lb of labels) {
+      // Background pill for readability
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(lb.x - 2, lb.y - lb.h, lb.w + 4, lb.h + 4);
+      ctx.fillStyle = lb.color;
+      ctx.font = lb.font;
+      ctx.fillText(lb.text, lb.x, lb.y);
+    }
   }
 }
 

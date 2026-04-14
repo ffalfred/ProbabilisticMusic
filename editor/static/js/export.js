@@ -172,7 +172,8 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
       state.tracks.push({ name: stem.name, path: stem.path,
                           gain_db: 0, muted: false,
                           from: from_t || 0, to: to_t || state.duration,
-                          waveform: wd.waveform || [] });
+                          waveform: wd.waveform || [],
+                          source: 'stem' });
     }
     currentSourcePath = null;
     renderTracksPanel();
@@ -246,8 +247,9 @@ async function _doExportYaml(outputPath) {
       path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
       ...(tk.from != null ? { from: tk.from } : {}),
       ...(tk.to   != null ? { to:   tk.to   } : {}),
-      ...(tk.fx?.length        ? { fx:   tk.fx   } : {}),
+      ...(tk.fx?.length         ? { fx:   tk.fx   } : {}),
       ...(tk.automation?.length ? { automation: tk.automation } : {}),
+      ...(tk.fx_regions?.length ? { fx_regions: tk.fx_regions } : {}),
     })) } : {}),
     ...(scoreView.path ? {
       score_image: scoreView.path,

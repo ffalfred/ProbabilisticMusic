@@ -291,13 +291,15 @@ _concerto_ffmpeg    = None  # active ffmpeg subprocess (pass 1: video only)
 _concerto_out       = None  # final output path
 _concerto_video_tmp = None  # temp video-only file (pass 1 output)
 _concerto_preset    = None  # preset dict for pass 2 audio mux
+_concerto_time_from = 0     # time range start (seconds)
+_concerto_time_to   = 0     # time range end (0 = full)
 _concerto_next      = 0     # next expected frame index
 _concerto_buf       = {}    # out-of-order frame buffer {index: raw_bytes}
 
 # Two quality presets (from Toke's ffmpeg research)
 # 4 presets optimised for BrightSign gallery playback
 _CONCERTO_PRESETS = {
-    # A1: Top Quality HEVC 10-bit + near-lossless AAC 320k (MP4)
+    # A1: Top Quality HEVC 10-bit + near-lossless AAC 320k (MP4) — SLOW
     'a1': {
         'ext': '.mp4',
         'args': [
@@ -308,12 +310,34 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # A2: Top Quality HEVC 10-bit + lossless WAV (TS)
+    # A2: Top Quality HEVC 10-bit + lossless WAV (TS) — SLOW
     'a2': {
         'ext': '.ts',
         'args': [
             '-c:v', 'libx265', '-preset', 'veryslow', '-crf', '14',
             '-x265-params', 'profile=main10:ref=6:bframes=8:rc-lookahead=60',
+            '-pix_fmt', 'yuv420p10le',
+            '-c:a', 'pcm_s16le',
+            '-f', 'mpegts',
+        ],
+    },
+    # B1: High Quality 4K HEVC 10-bit + AAC 320k (MP4) — 5-10× faster than A1
+    'b1': {
+        'ext': '.mp4',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'medium', '-crf', '16',
+            '-x265-params', 'profile=main10:ref=4:bframes=4',
+            '-pix_fmt', 'yuv420p10le',
+            '-c:a', 'aac', '-b:a', '320k',
+            '-movflags', '+faststart',
+        ],
+    },
+    # B2: High Quality 4K HEVC 10-bit + lossless WAV (TS) — 5-10× faster than A2
+    'b2': {
+        'ext': '.ts',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'medium', '-crf', '16',
+            '-x265-params', 'profile=main10:ref=4:bframes=4',
             '-pix_fmt', 'yuv420p10le',
             '-c:a', 'pcm_s16le',
             '-f', 'mpegts',
@@ -346,7 +370,7 @@ _CONCERTO_PRESETS = {
 @app.route("/concerto_start", methods=["POST"])
 def concerto_start():
     global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
-    global _concerto_next, _concerto_buf
+    global _concerto_next, _concerto_buf, _concerto_time_from, _concerto_time_to
     _concerto_next = 0
     _concerto_buf  = {}
     data    = request.get_json()
@@ -355,6 +379,8 @@ def concerto_start():
     fps     = int(data.get('fps',    60))
     quality = data.get('quality', 'top')
     out_path = (data.get('out_path') or '').strip()
+    _concerto_time_from = float(data.get('time_from', 0) or 0)
+    _concerto_time_to   = float(data.get('time_to', 0) or 0)
 
     if not out_path:
         return jsonify({"error": "No save path provided"}), 400
@@ -375,15 +401,17 @@ def concerto_start():
     _concerto_video_tmp = _concerto_out + '.video_tmp.mkv'
     _concerto_preset    = preset
 
-    # Strip audio args from preset — video-only for pass 1
+    # Strip audio args AND container-specific flags — video-only pass 1 to MKV
     filtered = []
     skip_next = False
     for a in preset['args']:
         if skip_next:
             skip_next = False
             continue
-        if a in ('-c:a', '-b:a'):
+        if a in ('-c:a', '-b:a', '-f'):
             skip_next = True
+            continue
+        if a in ('-movflags', '+faststart'):
             continue
         filtered.append(a)
 
@@ -399,7 +427,7 @@ def concerto_start():
     try:
         _concerto_ffmpeg = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                              stdout=subprocess.DEVNULL,
-                                             stderr=subprocess.DEVNULL)
+                                             stderr=subprocess.PIPE)
         return jsonify({"ok": True})
     except Exception as e:
         _concerto_ffmpeg = None
@@ -461,9 +489,12 @@ def concerto_finish():
     if not _concerto_ffmpeg:
         return jsonify({"error": "No active concerto render"}), 400
     try:
-        # Pass 1 complete: close pipe, wait for video-only encode to finish
+        # Pass 1 complete: close pipe and wait for video-only encode to finish
         _concerto_ffmpeg.stdin.close()
+        pass1_stderr = _concerto_ffmpeg.stderr.read() if _concerto_ffmpeg.stderr else b''
         _concerto_ffmpeg.wait(timeout=300)
+        if pass1_stderr:
+            print("[concerto pass1 stderr]", pass1_stderr.decode('utf-8', errors='replace')[:500])
         _concerto_ffmpeg = None
 
         if not os.path.exists(_concerto_video_tmp):
@@ -490,9 +521,18 @@ def concerto_finish():
             fi = args.index('-f')
             fmt_args = ['-f', args[fi + 1]]
 
+        # Trim audio to match the time range if specified
+        audio_trim = []
+        if _concerto_time_from > 0 or _concerto_time_to > 0:
+            if _concerto_time_from > 0:
+                audio_trim = ['-ss', str(_concerto_time_from)]
+            if _concerto_time_to > _concerto_time_from:
+                audio_trim += ['-t', str(_concerto_time_to - _concerto_time_from)]
+
         mux_cmd = [
             'ffmpeg', '-y',
             '-i', _concerto_video_tmp,   # video
+            *audio_trim,                 # trim audio input
             '-i', PREVIEW_TMP,           # audio
             '-c:v', 'copy',              # no re-encode — just mux
             *audio_args,

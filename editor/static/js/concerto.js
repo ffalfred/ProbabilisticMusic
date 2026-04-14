@@ -99,44 +99,39 @@ function _compositeConcerto(target, W, H) {
 
   const src = _getSourceCanvases();
 
-  const vizW  = Math.floor(W * _CONCERTO_VIZ_RATIO);
-  const leftW = W - vizW;
-  const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO);
-  const metaH     = Math.floor(H * _LEFT_META_RATIO);
-  const timelineH = H - scoreH - metaH;
+  // ~3mm gap between panels (12px at 4K, scales proportionally)
+  const gap = Math.round(W * 0.003);
 
-  // Clear — DAW dark background
-  ctx.fillStyle = '#0a0a0a';
+  const vizW  = Math.floor(W * _CONCERTO_VIZ_RATIO) - gap;
+  const leftW = W - vizW - gap * 2;  // gap on both sides of the vertical split
+  const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO) - gap;
+  const metaH     = Math.floor(H * _LEFT_META_RATIO) - gap;
+  const timelineH = H - scoreH - metaH - gap * 3;
+
+  // Clear — dark grey background (visible as the gap between panels)
+  ctx.fillStyle = '#222';
   ctx.fillRect(0, 0, W, H);
 
   // Score image — top-left
   if (src.score && src.score.width > 0 && src.score.height > 0) {
-    ctx.drawImage(src.score, 0, 0, leftW, scoreH);
+    ctx.drawImage(src.score, gap, gap, leftW, scoreH);
   }
 
   // Metadata image — middle-left
   if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
-    ctx.drawImage(src.meta, 0, scoreH, leftW, metaH);
+    ctx.drawImage(src.meta, gap, gap * 2 + scoreH, leftW, metaH);
   }
 
   // Dimension timeline — bottom-left
   if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-    ctx.drawImage(src.timeline, 0, scoreH + metaH, leftW, timelineH);
+    ctx.drawImage(src.timeline, gap, gap * 3 + scoreH + metaH, leftW, timelineH);
   }
 
-  // Visualization — right column (full height)
+  // Visualization — right column (full height, inset by gap)
   if (src.viz && src.viz.width > 0 && src.viz.height > 0) {
-    ctx.drawImage(src.viz, leftW, 0, vizW, H);
+    ctx.drawImage(src.viz, gap + leftW + gap, gap, vizW, H - gap * 2);
   }
-
-  // Panel borders — DAW chrome color
-  ctx.strokeStyle = '#1a1a1a';
-  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(leftW, 0);      ctx.lineTo(leftW, H);                       // vertical: left | viz
-  ctx.moveTo(0, scoreH);     ctx.lineTo(leftW, scoreH);                  // horizontal: score | meta
-  ctx.moveTo(0, scoreH + metaH); ctx.lineTo(leftW, scoreH + metaH);     // horizontal: meta | timeline
-  ctx.stroke();
 }
 
 // ─── High-res canvas rendering for concerto ──────────────────────────────────
@@ -204,8 +199,10 @@ async function startConcertoDownload() {
       <div>
         <label style="font-size:11px;color:#888;">Quality:</label>
         <select id="concerto-quality" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
-          <option value="a1" selected>A1: Top Quality 4K — HEVC 10-bit CRF 14 + AAC 320k (.mp4)</option>
-          <option value="a2">A2: Top Quality 4K — HEVC 10-bit CRF 14 + lossless WAV (.ts)</option>
+          <option value="b1" selected>B1: High Quality 4K — HEVC 10-bit CRF 16 + AAC 320k (.mp4)</option>
+          <option value="b2">B2: High Quality 4K — HEVC 10-bit CRF 16 + lossless WAV (.ts)</option>
+          <option value="a1">A1: Maximum Quality 4K — HEVC 10-bit CRF 14, very slow (.mp4)</option>
+          <option value="a2">A2: Maximum Quality 4K — HEVC 10-bit CRF 14, very slow (.ts)</option>
           <option value="t1">T1: Test 1080p — HEVC 8-bit CRF 22 + AAC 256k (.mp4)</option>
           <option value="t2">T2: Test 1080p — HEVC 8-bit CRF 22 + lossless WAV (.ts)</option>
         </select>
@@ -218,8 +215,16 @@ async function startConcertoDownload() {
           <button id="concerto-browse-btn" style="padding:4px 8px;font-size:11px;">Browse</button>
         </div>
       </div>
-      <div style="font-size:9px;color:#555;">
-        Top: 4K 60fps (3840×2160) ~${Math.ceil(dur * 60)} frames · Test: 1080p 30fps ~${Math.ceil(dur * 30)} frames · duration: ${dur.toFixed(1)}s
+      <div>
+        <label style="font-size:11px;color:#888;">Time range (seconds):</label>
+        <div style="display:flex;gap:6px;margin-top:3px;">
+          <input id="concerto-from" type="number" value="0" min="0" step="0.1" placeholder="from"
+                 style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+          <span style="color:#555;align-self:center;">\u2192</span>
+          <input id="concerto-to" type="number" value="${dur.toFixed(1)}" min="0" step="0.1" placeholder="to"
+                 style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+        </div>
+        <div style="font-size:9px;color:#555;margin-top:2px;">Full duration: ${dur.toFixed(1)}s. Leave as-is for whole piece.</div>
       </div>
     </div>`;
 
@@ -234,7 +239,7 @@ async function startConcertoDownload() {
         const name = (interpState.scorePath || 'concerto').split('/').pop()
                       .replace(/\.ya?ml$/, '') || 'concerto';
         const selQ = document.getElementById('concerto-quality')?.value || 'a1';
-        const ext  = (selQ === 'a2' || selQ === 't2') ? '.ts' : '.mp4';
+        const ext  = (selQ === 'a2' || selQ === 'b2' || selQ === 't2') ? '.ts' : '.mp4';
         openSaveBrowser((fullPath) => { pathInput.value = fullPath; },
                         name + '_concerto' + ext, ['.mp4', '.ts']);
       });
@@ -247,6 +252,10 @@ async function startConcertoDownload() {
   const quality = document.getElementById('concerto-quality')?.value || 'top';
   const outPath = document.getElementById('concerto-path')?.value.trim();
   if (!outPath) { alert('Please choose a save location.'); return; }
+
+  // Time range
+  const rangeFrom = parseFloat(document.getElementById('concerto-from')?.value) || 0;
+  const rangeTo   = parseFloat(document.getElementById('concerto-to')?.value) || 0;
 
   const statusEl = document.getElementById('concerto-status');
   const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
@@ -264,7 +273,10 @@ async function startConcertoDownload() {
   const H   = isTest ? 1080 : 2160;
   const FPS = isTest ? 30 : 60;
   // Use real (audio) duration for frame count — the WAV is in real time
-  const audioDur    = state.durationReal || state.duration || 0;
+  const fullDur     = state.durationReal || state.duration || 0;
+  const startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
+  const endTime     = rangeTo > startTime ? Math.min(rangeTo, fullDur) : fullDur;
+  const audioDur    = endTime - startTime;
   const totalFrames = Math.ceil(audioDur * FPS);
   const frameDur    = 1.0 / FPS;
   const BATCH_SIZE  = 10;  // frames per HTTP request
@@ -279,8 +291,9 @@ async function startConcertoDownload() {
     const startRes = await fetch('/concerto_start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ width: W, height: H, fps: FPS, duration: state.duration,
-                             quality, out_path: outPath })
+      body: JSON.stringify({ width: W, height: H, fps: FPS, duration: audioDur,
+                             quality, out_path: outPath,
+                             time_from: startTime, time_to: endTime })
     });
     const startData = await startRes.json();
     if (startData.error) { setStatus('error: ' + startData.error); _concertoDownloading = false; return; }
@@ -299,14 +312,18 @@ async function startConcertoDownload() {
     for (let f = 0; f < totalFrames; f++) {
       if (!_concertoDownloading) { setStatus('cancelled'); break; }
 
-      const realT  = f * frameDur;
+      const realT  = startTime + f * frameDur;
       // Convert real (audio) time to score time so cursor position matches the audio
       const scoreT = (typeof realToScore === 'function') ? realToScore(realT) : realT;
       state.currentTime = scoreT;
       _concertoMaxT = scoreT;
+      if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = realT;
 
       // Redraw all source canvases at this time
       if (typeof draw === 'function') draw();
+      // Force metadata canvas draw even if panel isn't "visible" in the composer
+      if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined' && typeof score2Ctx !== 'undefined' && typeof score2View !== 'undefined')
+        drawScoreOverlay(score2Canvas, score2Ctx, score2View);
       if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
         drawKalmanTrace(_lastTraceData);
       if (typeof updateVizPanel === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
@@ -379,6 +396,7 @@ async function startConcertoDownload() {
     setStatus('download failed: ' + e);
   } finally {
     _concertoMaxT = Infinity;  // restore full view
+    if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = -1;
     _restoreSourceCanvases();
     // Redraw at normal size to restore the editor view
     if (typeof draw === 'function') draw();

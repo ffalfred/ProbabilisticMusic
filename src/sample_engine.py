@@ -74,6 +74,47 @@ def build_bank(score: dict) -> tuple[dict, int, np.ndarray]:
         for tk, audio, offset_s in track_data:
             if tk.get('muted', False):
                 continue
+            # Per-track FX regions (FX applied to time ranges within the track)
+            for fr in tk.get('fx_regions', []):
+                t_from_tk = float(tk.get('from', 0))
+                ri0 = int((float(fr['from']) - t_from_tk) * sr)
+                ri1 = min(int((float(fr['to']) - t_from_tk) * sr), len(audio))
+                if ri0 >= len(audio) or ri0 >= ri1:
+                    continue
+                segment = audio[ri0:ri1].copy()
+                processed = apply_fx(segment, sr, fr['fx'])
+                core_len = ri1 - ri0
+
+                if fr.get('fade'):
+                    seg_dur_s = core_len / sr
+                    default_s = max(0.01, min(1.0, seg_dur_s / 10.0))
+                    fi_s = float(fr.get('fade_in_s',  default_s))
+                    fo_s = float(fr.get('fade_out_s', default_s))
+                    fi_n = min(int(fi_s * sr), core_len // 2)
+                    fo_n = min(int(fo_s * sr), core_len // 2)
+                    dry_padded = np.zeros_like(processed)
+                    dry_padded[:core_len] = segment
+                    delta = processed - dry_padded
+                    env = np.ones(len(delta), dtype=np.float32)
+                    if fi_n > 0:
+                        env[:fi_n] = np.linspace(0.0, 1.0, fi_n, dtype=np.float32)
+                    if fo_n > 0:
+                        fo_end = min(len(delta), core_len + fo_n)
+                        env[core_len:fo_end] = np.linspace(1.0, 0.0, fo_end - core_len, dtype=np.float32)
+                        env[fo_end:] = 0.0
+                    else:
+                        env[core_len:] = 0.0
+                    delta *= env
+                    out_end = ri0 + len(delta)
+                    if out_end > len(audio):
+                        audio = np.pad(audio, (0, out_end - len(audio)))
+                    audio[ri0:out_end] += delta
+                else:
+                    audio[ri0:ri1] = 0.0
+                    out_end = ri0 + len(processed)
+                    if out_end > len(audio):
+                        audio = np.pad(audio, (0, out_end - len(audio)))
+                    audio[ri0:out_end] += processed
             # Volume automation envelope (multiplies on top of gain_db)
             auto = tk.get('automation', [])
             if auto:
