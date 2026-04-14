@@ -96,21 +96,32 @@ async function fetchAndDrawTrace() {
 }
 
 // ─── Main canvas renderer: 12D Dimension Timeline ────────────────────────────
+let _traceFixedSize = false;   // when true, skip auto-resize (concerto mode)
+let _concertoMaxT  = Infinity; // progressive reveal: only draw trace up to this time
+
 function drawKalmanTrace(data) {
   const wrap   = document.getElementById('kalman-trace-wrap');
   const canvas = document.getElementById('kalman-trace-canvas');
   if (!wrap || !canvas || !data || !data.trace || !data.trace.length) return;
 
-  const W = wrap.clientWidth;
-  const H = wrap.clientHeight;
-  canvas.width  = W;
-  canvas.height = H;
+  if (!_traceFixedSize) {
+    const W = wrap.clientWidth;
+    const H = wrap.clientHeight;
+    canvas.width  = W;
+    canvas.height = H;
+  }
+  const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
 
-  const trace = data.trace;
+  // Progressive reveal: in concerto mode, only show trace up to _concertoMaxT
+  const trace = (_concertoMaxT < Infinity)
+    ? data.trace.filter(s => s.t <= _concertoMaxT)
+    : data.trace;
+  if (!trace.length) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); return; }
   const D        = DIM_RANGES.length;
-  const totalDur = data.total_dur || (trace[trace.length-1].t - trace[0].t) || 1;
-  const t0       = trace[0].t;
+  // totalDur uses the FULL trace so the x-axis scale stays constant (no jumpy rescaling)
+  const totalDur = data.total_dur || (data.trace[data.trace.length-1].t - data.trace[0].t) || 1;
+  const t0       = data.trace[0].t;
 
   // Layout — left pad larger for y-axis labels
   const padL = 22, padR = 8, padT = 6, padB = 18;
@@ -292,14 +303,8 @@ function drawKalmanTrace(data) {
 // ─── PNG download ─────────────────────────────────────────────────────────────
 function _downloadTimelinePNG() {
   const canvas = document.getElementById('kalman-trace-canvas');
-  if (!canvas) return;
-  const scoreName = (interpState.scorePath || 'interp').split('/').pop()
-                    .replace(/\.ya?ml$/, '') || 'interp';
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const a = document.createElement('a');
-  a.href = canvas.toDataURL('image/png');
-  a.download = `timeline_${scoreName}_${ts}.png`;
-  a.click();
+  if (!canvas || !_lastTraceData) return;
+  _exportPNGWithPopup(canvas, () => drawKalmanTrace(_lastTraceData), 'timeline', 0.3);
 }
 
 // ─── DOMContentLoaded wiring ──────────────────────────────────────────────────

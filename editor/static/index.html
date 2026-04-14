@@ -98,7 +98,19 @@
            style="width:45px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
            title="Timbral pull: 0=golem ignores score, 0.5=moderate tracking, 1=strict">
   </div>
+  <div id="interp-topbar-concerto" style="display:flex;align-items:center;gap:6px;padding:2px 8px;">
+    <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; Concerto View</button>
+    <button id="concerto-download-btn" title="Render 4K 60fps video">&#8595; Concerto Download</button>
+    <button id="concerto-cancel-btn" style="display:none;color:#c66;border-color:#633;" title="Cancel render">&#10005; Cancel</button>
+    <span id="concerto-status" style="font-size:10px;color:#888;"></span>
+  </div>
 </div><!-- /interp-topbar -->
+
+<!-- CONCERTO OVERLAY — fullscreen presentation mode -->
+<div id="concerto-overlay" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:200;background:#000;">
+  <canvas id="concerto-canvas" style="width:100%;height:100%;display:block;"></canvas>
+  <div id="concerto-exit-hint" style="position:absolute;top:8px;right:12px;font-size:11px;color:rgba(255,255,255,0.3);pointer-events:none;">ESC to exit</div>
+</div>
 
 <!-- SHARED PLAYBACK BAR — always visible, top-right style -->
 <div id="topbar-playback">
@@ -253,6 +265,7 @@
         <input id="score-start-input" type="number" step="0.1" value="0" title="Audio time at left edge">s
         <label title="Audio time at right edge of score image">end:</label>
         <input id="score-end-input" type="number" step="0.1" value="0" title="Audio time at right edge">s
+        <button id="dl-score-btn" title="Download score image with symbols as high-res PNG" style="font-size:10px;padding:1px 5px;color:#7ab;">&#8681; PNG</button>
         <button id="toggle-score2-btn" style="margin-left:auto;" title="Show/hide metadata image panel">Metadata</button>
       </div>
     </div>
@@ -266,6 +279,7 @@
         <label>end:</label>
         <input id="score2-end-input" type="number" step="0.1" value="0" title="Audio time at right edge">s
         <button id="reset-score2-btn" title="Reset zoom &amp; pan">&#8635; Reset</button>
+        <button id="dl-meta-btn" title="Download metadata image with symbols as high-res PNG" style="font-size:10px;padding:1px 5px;color:#7ab;">&#8681; PNG</button>
       </div><!-- /score2-load-row -->
     </div><!-- /score2-container -->
 
@@ -897,5 +911,6 @@
 <script src="js/kalman-trace.js"></script>
 <script src="js/viz-panel.js"></script>
 <script src="js/interpreter.js"></script>
+<script src="js/concerto.js"></script>
 </body>
 </html>

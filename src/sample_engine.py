@@ -5,6 +5,20 @@ import soundfile as sf
 import numpy as np
 from src.fx import apply_fx
 
+
+def _build_auto_envelope(n_samples: int, sr: int, automation: list,
+                         t_from: float = 0.0) -> np.ndarray:
+    """Linear-interpolate automation points into a per-sample gain envelope.
+    Times in automation are absolute (score time); t_from offsets them to
+    the track's local timeline."""
+    if not automation:
+        return np.ones(n_samples, dtype=np.float32)
+    times = np.array([float(a['t']) - t_from for a in automation]) * sr
+    dbs   = np.array([float(a['db']) for a in automation], dtype=np.float32)
+    x     = np.arange(n_samples, dtype=np.float32)
+    db_env = np.interp(x, times, dbs, left=dbs[0], right=dbs[-1])
+    return (10.0 ** (db_env / 20.0)).astype(np.float32)
+
 def _extract_audio(video_path: str) -> str:
     tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
     tmp.close()
@@ -60,6 +74,12 @@ def build_bank(score: dict) -> tuple[dict, int, np.ndarray]:
         for tk, audio, offset_s in track_data:
             if tk.get('muted', False):
                 continue
+            # Volume automation envelope (multiplies on top of gain_db)
+            auto = tk.get('automation', [])
+            if auto:
+                env = _build_auto_envelope(len(audio), sr, auto,
+                                           t_from=float(tk.get('from', 0)))
+                audio = audio * env
             gain = 10 ** (tk.get('gain_db', 0.0) / 20.0)
             combined[offset_s:offset_s + len(audio)] += audio * gain
         base = combined

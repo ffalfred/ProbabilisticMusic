@@ -38,6 +38,19 @@
     navigate(null);   // always start at home
   }
 
+  // Expose for opening files with a callback (e.g. add track).
+  window.openFileBrowser = function(callback, filterExts) {
+    _saveMode     = false;
+    _saveCallback = callback;  // reuse save callback slot for the file-chosen callback
+    _targetInput  = null;
+    _filter       = filterExts || AUDIO_EXTS;
+    _autoClick    = null;
+
+    document.getElementById('fb-save-row').style.display = 'none';
+    document.getElementById('fb-modal').style.display = 'flex';
+    navigate(null);
+  };
+
   // Expose for export.js and interpreter.js to call for save dialogs.
   // Optional filterExts overrides the default YAML filter (e.g. ['.wav'] for audio export).
   window.openSaveBrowser = function(callback, defaultName, filterExts) {
@@ -122,12 +135,16 @@
   }
 
   function select(path) {
+    const hadInput = !!_targetInput;
+    const cb       = _saveCallback;
+    const ac       = _autoClick;
     if (_targetInput) {
       _targetInput.value = path;
       _targetInput.dispatchEvent(new Event('change', { bubbles: true }));
     }
     close();
-    if (_autoClick) _autoClick.click();
+    if (!hadInput && cb) cb(path);   // openFileBrowser callback
+    else if (ac) ac.click();
   }
 
   document.addEventListener('DOMContentLoaded', () => {

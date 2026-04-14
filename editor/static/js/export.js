@@ -246,7 +246,8 @@ async function _doExportYaml(outputPath) {
       path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
       ...(tk.from != null ? { from: tk.from } : {}),
       ...(tk.to   != null ? { to:   tk.to   } : {}),
-      ...(tk.fx?.length   ? { fx:   tk.fx   } : {}),
+      ...(tk.fx?.length        ? { fx:   tk.fx   } : {}),
+      ...(tk.automation?.length ? { automation: tk.automation } : {}),
     })) } : {}),
     ...(scoreView.path ? {
       score_image: scoreView.path,

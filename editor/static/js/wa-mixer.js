@@ -59,7 +59,20 @@ async function _waStart(offset) {
     const src  = ctx.createBufferSource();
     const gain = ctx.createGain();
     src.buffer = buf;
-    gain.gain.value = 10 ** ((tk.gain_db || 0) / 20);
+    const masterGain = 10 ** ((tk.gain_db || 0) / 20);
+    const auto = tk.automation || [];
+    if (auto.length) {
+      // Schedule automation via Web Audio API
+      gain.gain.setValueAtTime(masterGain * 10 ** ((auto[0].db || 0) / 20), ctx.currentTime);
+      for (const pt of auto) {
+        const when = ctx.currentTime + (pt.t - offset);
+        if (when <= ctx.currentTime) continue;
+        const val = masterGain * 10 ** ((pt.db || 0) / 20);
+        gain.gain.linearRampToValueAtTime(val, when);
+      }
+    } else {
+      gain.gain.value = masterGain;
+    }
     src.connect(gain); gain.connect(ctx.destination);
 
     if (offset <= tFrom) {

@@ -286,6 +286,270 @@ def preview():
         return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
 
 
+# ─── Concerto Download (4K video rendering) ─────────────────────────────────
+_concerto_ffmpeg    = None  # active ffmpeg subprocess (pass 1: video only)
+_concerto_out       = None  # final output path
+_concerto_video_tmp = None  # temp video-only file (pass 1 output)
+_concerto_preset    = None  # preset dict for pass 2 audio mux
+_concerto_next      = 0     # next expected frame index
+_concerto_buf       = {}    # out-of-order frame buffer {index: raw_bytes}
+
+# Two quality presets (from Toke's ffmpeg research)
+# 4 presets optimised for BrightSign gallery playback
+_CONCERTO_PRESETS = {
+    # A1: Top Quality HEVC 10-bit + near-lossless AAC 320k (MP4)
+    'a1': {
+        'ext': '.mp4',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'veryslow', '-crf', '14',
+            '-x265-params', 'profile=main10:ref=6:bframes=8:rc-lookahead=60',
+            '-pix_fmt', 'yuv420p10le',
+            '-c:a', 'aac', '-b:a', '320k',
+            '-movflags', '+faststart',
+        ],
+    },
+    # A2: Top Quality HEVC 10-bit + lossless WAV (TS)
+    'a2': {
+        'ext': '.ts',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'veryslow', '-crf', '14',
+            '-x265-params', 'profile=main10:ref=6:bframes=8:rc-lookahead=60',
+            '-pix_fmt', 'yuv420p10le',
+            '-c:a', 'pcm_s16le',
+            '-f', 'mpegts',
+        ],
+    },
+    # T1: Test HEVC 8-bit + AAC 256k (MP4)
+    't1': {
+        'ext': '.mp4',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'fast', '-crf', '22',
+            '-x265-params', 'profile=main',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '256k',
+            '-movflags', '+faststart',
+        ],
+    },
+    # T2: Test HEVC 8-bit + lossless WAV (TS)
+    't2': {
+        'ext': '.ts',
+        'args': [
+            '-c:v', 'libx265', '-preset', 'fast', '-crf', '22',
+            '-x265-params', 'profile=main',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'pcm_s16le',
+            '-f', 'mpegts',
+        ],
+    },
+}
+
+@app.route("/concerto_start", methods=["POST"])
+def concerto_start():
+    global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
+    global _concerto_next, _concerto_buf
+    _concerto_next = 0
+    _concerto_buf  = {}
+    data    = request.get_json()
+    W       = int(data.get('width',  3840))
+    H       = int(data.get('height', 2160))
+    fps     = int(data.get('fps',    60))
+    quality = data.get('quality', 'top')
+    out_path = (data.get('out_path') or '').strip()
+
+    if not out_path:
+        return jsonify({"error": "No save path provided"}), 400
+
+    preset = _CONCERTO_PRESETS.get(quality, _CONCERTO_PRESETS['a1'])
+    ext = preset['ext']
+
+    # Ensure directory exists and fix extension to match preset
+    out_path = os.path.abspath(out_path)
+    base, _ = os.path.splitext(out_path)
+    out_path = base + ext
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    _concerto_out = out_path
+
+    # Two-pass approach for perfect sync:
+    # Pass 1: pipe raw RGBA frames → video-only temp file (no audio)
+    # Pass 2: mux audio in after all frames are written (concerto_finish)
+    _concerto_video_tmp = _concerto_out + '.video_tmp.mkv'
+    _concerto_preset    = preset
+
+    # Strip audio args from preset — video-only for pass 1
+    filtered = []
+    skip_next = False
+    for a in preset['args']:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ('-c:a', '-b:a'):
+            skip_next = True
+            continue
+        filtered.append(a)
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-f', 'rawvideo', '-pix_fmt', 'rgba',
+        '-s', f'{W}x{H}', '-r', str(fps),
+        '-i', 'pipe:0',
+        '-an',                          # no audio in pass 1
+        *filtered,
+        _concerto_video_tmp,
+    ]
+    try:
+        _concerto_ffmpeg = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                             stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL)
+        return jsonify({"ok": True})
+    except Exception as e:
+        _concerto_ffmpeg = None
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/concerto_frame", methods=["POST"])
+def concerto_frame():
+    global _concerto_ffmpeg, _concerto_next, _concerto_buf
+    if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
+        return jsonify({"error": "No active concerto render"}), 400
+    frame_blob = request.files.get('frame')
+    if not frame_blob:
+        return jsonify({"error": "No frame data"}), 400
+    try:
+        idx = int(request.form.get('index', _concerto_next))
+        raw = frame_blob.read()
+
+        _concerto_buf[idx] = raw
+        while _concerto_next in _concerto_buf:
+            _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+            _concerto_next += 1
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/concerto_frames", methods=["POST"])
+def concerto_frames():
+    """Batch frame upload — multiple raw RGBA frames packed in one request."""
+    global _concerto_ffmpeg, _concerto_next, _concerto_buf
+    if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
+        return jsonify({"error": "No active concerto render"}), 400
+    batch_blob = request.files.get('frames')
+    if not batch_blob:
+        return jsonify({"error": "No frame data"}), 400
+    try:
+        start_idx = int(request.form.get('start_index', _concerto_next))
+        count     = int(request.form.get('count', 1))
+        raw_all   = batch_blob.read()
+        frame_size = len(raw_all) // count if count > 0 else len(raw_all)
+
+        for i in range(count):
+            idx = start_idx + i
+            frame_raw = raw_all[i * frame_size : (i + 1) * frame_size]
+            _concerto_buf[idx] = frame_raw
+
+        # Flush in order
+        while _concerto_next in _concerto_buf:
+            _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+            _concerto_next += 1
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/concerto_finish", methods=["POST"])
+def concerto_finish():
+    global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
+    if not _concerto_ffmpeg:
+        return jsonify({"error": "No active concerto render"}), 400
+    try:
+        # Pass 1 complete: close pipe, wait for video-only encode to finish
+        _concerto_ffmpeg.stdin.close()
+        _concerto_ffmpeg.wait(timeout=300)
+        _concerto_ffmpeg = None
+
+        if not os.path.exists(_concerto_video_tmp):
+            return jsonify({"error": "Pass 1 failed — video temp file not found"}), 500
+
+        # Pass 2: mux video + audio into final output (perfect sync — both
+        # streams start at t=0, no pipe latency)
+        # Extract audio args from preset
+        audio_args = []
+        args = _concerto_preset['args']
+        i = 0
+        while i < len(args):
+            if args[i] in ('-c:a', '-b:a'):
+                audio_args.extend([args[i], args[i + 1]])
+                i += 2
+            else:
+                i += 1
+        if not audio_args:
+            audio_args = ['-c:a', 'copy']
+
+        # Also carry -f mpegts if the preset uses TS container
+        fmt_args = []
+        if '-f' in args:
+            fi = args.index('-f')
+            fmt_args = ['-f', args[fi + 1]]
+
+        mux_cmd = [
+            'ffmpeg', '-y',
+            '-i', _concerto_video_tmp,   # video
+            '-i', PREVIEW_TMP,           # audio
+            '-c:v', 'copy',              # no re-encode — just mux
+            *audio_args,
+            *(['-movflags', '+faststart'] if '-movflags' in args else []),
+            *fmt_args,
+            '-shortest',
+            _concerto_out,
+        ]
+        subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
+
+        # Clean up temp
+        if os.path.exists(_concerto_video_tmp):
+            os.remove(_concerto_video_tmp)
+
+        path = _concerto_out
+        _concerto_out = None
+        _concerto_video_tmp = None
+        _concerto_preset = None
+
+        if os.path.exists(path):
+            return jsonify({"path": path})
+        return jsonify({"error": "Mux finished but output file not found"}), 500
+    except Exception as e:
+        _concerto_ffmpeg = None
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/downloads_path")
+def downloads_path():
+    home = os.path.expanduser("~")
+    dl = os.path.join(home, "Downloads")
+    if os.path.isdir(dl):
+        return jsonify({"path": dl})
+    return jsonify({"path": home})
+
+
+@app.route("/save_png", methods=["POST"])
+def save_png():
+    """Save a base64 PNG to a user-chosen path on disk."""
+    data = request.get_json()
+    path = (data.get('path') or '').strip()
+    b64  = data.get('data', '')
+    if not path or not b64:
+        return jsonify({"error": "Path and data required"}), 400
+    try:
+        path = os.path.abspath(path)
+        if not path.lower().endswith('.png'):
+            path += '.png'
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        raw = base64.b64decode(b64)
+        with open(path, 'wb') as f:
+            f.write(raw)
+        return jsonify({"path": path})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/preview_audio")
 def preview_audio():
     if not os.path.exists(PREVIEW_TMP):

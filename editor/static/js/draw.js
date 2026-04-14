@@ -821,3 +821,241 @@ function drawFrameOverlay() {
   frameCtx.beginPath(); frameCtx.moveTo(cx, 0); frameCtx.lineTo(cx, H); frameCtx.stroke();
   frameCtx.setLineDash([]);
 }
+
+// ─── High-res PNG download of score/metadata with symbols ────────────────────
+// ─── Full-image export draw (no viewport scroll — entire image + annotations) ─
+function _drawFullExport(canvasEl, view) {
+  const ctx = canvasEl.getContext('2d');
+  const W = canvasEl.width, H = canvasEl.height;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+  if (!state.duration || !view) return;
+
+  // Draw the full source image scaled to fill the canvas
+  if (view.img && view.img.complete && view.img.naturalWidth > 0) {
+    ctx.drawImage(view.img, 0, 0, W, H);
+  }
+
+  // Linear time→x mapping across full canvas width (no scroll/centering)
+  const dur = view.end - view.start;
+  const tx = t => dur > 0 ? ((t - view.start) / dur) * W : 0;
+
+  // Sample regions
+  for (const [name, s] of Object.entries(_sdd().samples)) {
+    const x1 = tx(s.from), x2 = tx(s.to);
+    ctx.fillStyle = hexAlpha(s.color, 0.18); ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = hexAlpha(s.color, 0.7); ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.fillStyle = hexAlpha(s.color, 0.85); ctx.font = "11px 'Courier New', monospace";
+    ctx.fillText("[" + name + "]", x1 + 4, 16);
+  }
+  // Dynamic ranges
+  for (const d of _sdd().dynamics) {
+    if (d.from !== undefined) {
+      const x1 = tx(d.from), x2 = tx(d.to);
+      const col = _dmark(d) === "crescendo" ? "#337755" : "#775533";
+      ctx.fillStyle = hexAlpha(col, 0.15); ctx.fillRect(x1, 0, x2 - x1, H);
+      ctx.strokeStyle = hexAlpha(col, 0.6); ctx.lineWidth = 1; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.moveTo(x1, H/2); ctx.lineTo(x2, H/2); ctx.stroke();
+      ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "10px 'Courier New', monospace";
+      ctx.fillText(_dmark(d), x1 + 3, H/2 - 4);
+    }
+  }
+  // Dynamic points
+  for (const d of _sdd().dynamics) {
+    if (d.t !== undefined) {
+      const x = tx(d.t);
+      const col = DYNAMIC_COLORS[_dmark(d)] || "#aaa";
+      ctx.fillStyle = col; ctx.font = "bold 13px 'Courier New', monospace";
+      ctx.fillText(_dmark(d), x - 6, H - 8);
+    }
+  }
+  // Tempo ranges
+  for (const tp of _sdd().tempo) {
+    const x1 = tx(tp.from), x2 = tx(tp.to);
+    const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
+    ctx.fillStyle = hexAlpha(col, 0.13); ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1; ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(x1, 24); ctx.lineTo(x2, 24); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "10px 'Courier New', monospace";
+    ctx.fillText(tp.mark, x1 + 3, 36);
+  }
+  // FX zones
+  for (const fz of _sdd().fxRanges) {
+    const x1 = tx(fz.from), x2 = tx(fz.to);
+    ctx.fillStyle = "rgba(136,68,204,0.12)"; ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = "rgba(136,68,204,0.5)"; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(136,68,204,0.8)"; ctx.font = "9px 'Courier New', monospace";
+    ctx.fillText("FX:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 6);
+  }
+  // Phrases / slurs
+  for (const ph of _sdd().phrases || []) {
+    const x1 = tx(ph.from), x2 = tx(ph.to);
+    ctx.strokeStyle = "rgba(138,106,191,0.6)"; ctx.lineWidth = 2; ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(x1, 20);
+    ctx.quadraticCurveTo((x1+x2)/2, 6, x2, 20);
+    ctx.stroke();
+    if (ph.label) {
+      ctx.fillStyle = "rgba(138,106,191,0.8)"; ctx.font = "9px 'Courier New', monospace";
+      ctx.fillText(ph.label, (x1+x2)/2 - 10, 18);
+    }
+  }
+  // Events
+  for (const ev of _sdd().events) {
+    const x = tx(ev.t);
+    const col = (_sdd().samples[ev.sample] || {}).color || "#aaa";
+    ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "9px 'Courier New', monospace";
+    ctx.fillText(ev.sample, x + 2, H - 20);
+  }
+  // Articulations
+  const ART_COLORS = { staccato: "#ffaa44", legato: "#44ffaa", fermata: "#ff88cc", accent: "#ff6644" };
+  for (const ar of _sdd().articulations || []) {
+    const col = ART_COLORS[ar.type] || "#aaa";
+    if (ar.t !== undefined) {
+      const x = tx(ar.t);
+      ctx.fillStyle = col; ctx.font = "bold 11px 'Courier New', monospace";
+      ctx.fillText(ar.type[0].toUpperCase(), x - 3, 30);
+    } else if (ar.from !== undefined) {
+      const x1 = tx(ar.from), x2 = tx(ar.to);
+      ctx.fillStyle = hexAlpha(col, 0.1); ctx.fillRect(x1, 0, x2 - x1, H);
+    }
+  }
+  // Note relationships
+  for (const nr of _sdd().noteRel || []) {
+    const x1 = tx(nr.from);
+    const x2 = nr.to ? tx(nr.to) : x1;
+    const col = nr.type === 'glissando' ? '#44aadd' : '#44ddaa';
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash([2,2]);
+    ctx.beginPath(); ctx.moveTo(x1, H - 16); ctx.lineTo(x2, H - 16); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+// ─── Shared PNG export popup — resolution + save location ────────────────────
+let _cachedDownloadsPath = null;
+async function _getDownloadsPath() {
+  if (_cachedDownloadsPath) return _cachedDownloadsPath;
+  try {
+    const r = await fetch('/downloads_path');
+    const d = await r.json();
+    _cachedDownloadsPath = d.path || '';
+  } catch(e) { _cachedDownloadsPath = ''; }
+  return _cachedDownloadsPath;
+}
+
+const _PNG_RESOLUTIONS = [
+  { label: '1080p (1920×—)', w: 1920 },
+  { label: '2K (2560×—)',    w: 2560 },
+  { label: '4K (3840×—)',    w: 3840 },
+  { label: '8K (7680×—)',    w: 7680 },
+  { label: '16K (15360×—)',  w: 15360 },
+];
+
+async function _exportPNGWithPopup(canvasEl, drawFn, label, aspectRatio) {
+  if (!canvasEl) return;
+  const defaultName = `${label}_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
+  const dlPath = await _getDownloadsPath();
+  const defaultPath = dlPath ? dlPath + '/' + defaultName : '';
+  const resOpts = _PNG_RESOLUTIONS.map((r, i) =>
+    `<option value="${r.w}"${r.w === 3840 ? ' selected' : ''}>${r.label}</option>`).join('');
+
+  const html = `
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div>
+        <label style="font-size:11px;color:#888;">Resolution:</label>
+        <select id="p-png-res" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
+          ${resOpts}
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">Save to:</label>
+        <div style="display:flex;gap:4px;margin-top:3px;">
+          <input id="p-png-path" type="text" value="${defaultPath}" placeholder="click Browse to change"
+                 style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;cursor:pointer;" />
+          <button id="p-png-browse" style="padding:4px 8px;font-size:11px;">Browse</button>
+        </div>
+      </div>
+    </div>`;
+
+  const popupPromise = showPopup('Export PNG — ' + label, html);
+
+  requestAnimationFrame(() => {
+    const browseBtn = document.getElementById('p-png-browse');
+    const pathInput = document.getElementById('p-png-path');
+    if (browseBtn && pathInput) {
+      browseBtn.addEventListener('click', () => {
+        openSaveBrowser((fullPath) => { pathInput.value = fullPath; },
+                        defaultName, ['.png']);
+      });
+    }
+  });
+
+  const ok = await popupPromise;
+  if (!ok) return;
+
+  const hiW = parseInt(document.getElementById('p-png-res').value) || 3840;
+  const hiH = Math.round(hiW * aspectRatio);
+  const savePath = (document.getElementById('p-png-path').value || '').trim();
+
+  // Render at chosen resolution
+  const savedW = canvasEl.width, savedH = canvasEl.height;
+  // If canvas uses fixed-size flag (timeline/viz), set it
+  if (typeof _traceFixedSize !== 'undefined') _traceFixedSize = true;
+  if (typeof _vizFixedSize   !== 'undefined') _vizFixedSize   = true;
+  canvasEl.width  = hiW;
+  canvasEl.height = hiH;
+  drawFn();
+
+  if (savePath) {
+    // Save to server path via POST
+    const dataUrl = canvasEl.toDataURL('image/png');
+    const base64  = dataUrl.split(',')[1];
+    try {
+      const res = await fetch('/save_png', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: savePath, data: base64 })
+      });
+      const result = await res.json();
+      if (result.error) alert('Save failed: ' + result.error);
+    } catch(e) { alert('Save failed: ' + e); }
+  } else {
+    // Browser download
+    const a = document.createElement('a');
+    a.href = canvasEl.toDataURL('image/png');
+    a.download = defaultName;
+    a.click();
+  }
+
+  // Restore
+  if (typeof _traceFixedSize !== 'undefined') _traceFixedSize = false;
+  if (typeof _vizFixedSize   !== 'undefined') _vizFixedSize   = false;
+  canvasEl.width  = savedW;
+  canvasEl.height = savedH;
+  drawFn();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const dlScoreBtn = document.getElementById('dl-score-btn');
+  if (dlScoreBtn) dlScoreBtn.addEventListener('click', () => {
+    const img = scoreView.img;
+    const ar = (img && img.naturalHeight > 0) ? img.naturalHeight / img.naturalWidth : 0.4;
+    // Use a temp canvas so we don't disturb the editor view
+    const tmpCvs = document.createElement('canvas');
+    _exportPNGWithPopup(tmpCvs, () => _drawFullExport(tmpCvs, scoreView), 'score', ar);
+  });
+  const dlMetaBtn = document.getElementById('dl-meta-btn');
+  if (dlMetaBtn) dlMetaBtn.addEventListener('click', () => {
+    const img = score2View.img;
+    const ar = (img && img.naturalHeight > 0) ? img.naturalHeight / img.naturalWidth : 0.4;
+    const tmpCvs = document.createElement('canvas');
+    _exportPNGWithPopup(tmpCvs, () => _drawFullExport(tmpCvs, score2View), 'metadata', ar);
+  });
+});

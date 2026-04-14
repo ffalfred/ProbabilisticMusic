@@ -4,6 +4,7 @@
 
 let _activeViz   = 1;
 let _vizCurrentT = -1;  // score-time cursor, == audio time (-1 = show full trace)
+let _vizFixedSize = false;  // when true, skip auto-resize (concerto mode)
 
 function updateVizPanel(data) {
   const playing = (typeof isMixPlaying === 'function') && isMixPlaying();
@@ -24,13 +25,16 @@ function updateVizPanel(data) {
 
   const canvas = document.getElementById('viz-panel-canvas');
   if (!canvas) return;
-  const r  = canvas.getBoundingClientRect();
-  const W  = Math.round(r.width  || canvas.clientWidth  || 220);
-  const H  = Math.round(r.height || canvas.clientHeight || 400);
-  // If the panel isn't laid out yet, defer one frame and retry
-  if (H < 10) { requestAnimationFrame(() => updateVizPanel(data)); return; }
-  canvas.width  = W;
-  canvas.height = H;
+  if (!_vizFixedSize) {
+    const r  = canvas.getBoundingClientRect();
+    const rW = Math.round(r.width  || canvas.clientWidth  || 220);
+    const rH = Math.round(r.height || canvas.clientHeight || 400);
+    if (rH < 10) { requestAnimationFrame(() => updateVizPanel(data)); return; }
+    canvas.width  = rW;
+    canvas.height = rH;
+  }
+  const W = canvas.width, H = canvas.height;
+  if (H < 10) return;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#080808';
   ctx.fillRect(0, 0, W, H);
@@ -43,6 +47,12 @@ function updateVizPanel(data) {
     return;
   }
   if (statusEl) statusEl.textContent = '';
+
+  // Progressive reveal: in concerto mode, only pass accumulated history to viz
+  const vizData = (typeof _concertoMaxT !== 'undefined' && _concertoMaxT < Infinity && data.trace)
+    ? { ...data, trace: data.trace.filter(s => s.t <= _concertoMaxT) }
+    : data;
+  if (!vizData.trace.length) return;
 
   const showDims = (_activeViz === 4 || _activeViz === 5 || _activeViz === 10);
   if (dimRow) dimRow.style.display = showDims ? 'flex' : 'none';
@@ -61,7 +71,7 @@ function updateVizPanel(data) {
   const fn = drawFns[_activeViz];
   if (!fn) return;
   try {
-    fn(ctx, W, H, data);
+    fn(ctx, W, H, vizData);
   } catch(e) {
     console.error('viz-panel draw error (viz ' + _activeViz + '):', e);
     ctx.fillStyle = '#c87070';
