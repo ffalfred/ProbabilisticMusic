@@ -154,10 +154,8 @@ function _concertoTick() {
     if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined' && typeof score2Ctx !== 'undefined' && typeof score2View !== 'undefined')
       drawScoreOverlay(score2Canvas, score2Ctx, score2View);
   }
-  if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+  if (typeof drawKalmanTrace === 'function' && _lastTraceData)
     drawKalmanTrace(_lastTraceData);
-  if (typeof updateVizPanel === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
-    updateVizPanel(_lastTraceData);
 
   _compositeConcerto(document.getElementById('concerto-canvas'));
   _concertoRaf = requestAnimationFrame(_concertoTick);
@@ -199,55 +197,65 @@ function _compositeConcerto(target, W, H, mode) {
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, W, H);
 
-    // Metadata centered in middle area at ~50% width
+    // Metadata centered in middle area at 70% width
     if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
-      // Use the source image's native width if available (pixel-perfect), otherwise 70%
-      const metaSrcW = (src.meta && src.meta.width > 0) ? src.meta.width : Math.floor(W * 0.7);
-      const metaW = Math.min(metaSrcW, W - gap * 2);
+      const metaW = Math.floor(W * 0.7);
       const metaH = Math.min(midH - gap * 2, Math.round(metaW * (src.meta.height / src.meta.width)));
       const mx = Math.floor((W - metaW) / 2);
       const my = stripH + gap * 2 + Math.floor((midH - metaH) / 2);
       ctx.drawImage(src.meta, mx, my, metaW, metaH);
     }
 
-    // Draw viz panels into sub-regions using an offscreen canvas
-    const vizData = (typeof _lastTraceData !== 'undefined') ? _lastTraceData : null;
-    if (vizData && vizData.trace && vizData.trace.length) {
-      const filteredData = (typeof _concertoMaxT !== 'undefined' && _concertoMaxT < Infinity)
-        ? { ...vizData, trace: vizData.trace.filter(function(s) { return s.t <= _concertoMaxT; }) }
-        : vizData;
+    // Draw 4 different viz types + timeline
+    // Viz panels are square (stripH × stripH), centered with black space between
+    var sqSz = stripH;  // square side = strip height
+    var botY = stripH + gap * 2 + midH + gap;
 
-      // Helper: draw a viz function into a region of the target canvas
-      function _drawVizInRegion(fn, rx, ry, rw, rh) {
-        if (!fn || rw <= 0 || rh <= 0) return;
-        var tmpCvs = document.createElement('canvas');
-        tmpCvs.width = rw; tmpCvs.height = rh;
-        var tmpCtx = tmpCvs.getContext('2d');
-        tmpCtx.fillStyle = '#0a0a0a';
-        tmpCtx.fillRect(0, 0, rw, rh);
-        try { fn(tmpCtx, rw, rh, filteredData); } catch(e) {}
-        ctx.drawImage(tmpCvs, rx, ry, rw, rh);
-      }
+    // Top strip: 2 square viz panels centered
+    var topTotalW = sqSz * 2 + gap;
+    var topX0 = Math.floor((W - topTotalW) / 2);
 
-      var halfW = Math.floor((W - gap * 3) / 2);
+    // Bottom strip: 2 square viz panels + timeline in the middle
+    var tlW = W - sqSz * 2 - gap * 4;  // timeline fills remaining width
+    var botX0 = gap;
 
-      // Top strip: 2 panels
-      // Top left: Marginal Gaussians (viz 1)
-      _drawVizInRegion(_drawMarginalGaussians, gap, gap, halfW, stripH);
-      // Top right: Phase Portrait (viz 4)
-      _drawVizInRegion(_drawPhasePortrait, gap * 2 + halfW, gap, halfW, stripH);
+    if (src.viz && _lastTraceData && _lastTraceData.trace && _lastTraceData.trace.length) {
+      src.viz.width  = sqSz;
+      src.viz.height = sqSz;
+      var vizCtx = src.viz.getContext('2d');
+      var filtered = (_concertoMaxT < Infinity)
+        ? _lastTraceData.trace.filter(function(s) { return s.t <= _concertoMaxT; })
+        : _lastTraceData.trace;
+      var fData = filtered.length ? { ..._lastTraceData, trace: filtered } : _lastTraceData;
 
-      // Bottom strip: 3 panels
-      var thirdW = Math.floor((W - gap * 4) / 3);
-      var botY   = stripH + gap * 2 + midH + gap;
-      // Bottom left: Innovation Energy (viz 9)
-      _drawVizInRegion(_drawInnovationEnergy, gap, botY, thirdW, stripH);
-      // Bottom center: Dimension Timeline
+      // Top left: Marginal Gaussians
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
+      try { _drawMarginalGaussians(vizCtx, sqSz, sqSz, fData); } catch(e) {}
+      ctx.drawImage(src.viz, topX0, gap, sqSz, sqSz);
+
+      // Top right: Phase Portrait
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
+      try { _drawPhasePortrait(vizCtx, sqSz, sqSz, fData); } catch(e) {}
+      ctx.drawImage(src.viz, topX0 + sqSz + gap, gap, sqSz, sqSz);
+
+      // Bottom left: Innovation Energy
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
+      try { _drawInnovationEnergy(vizCtx, sqSz, sqSz, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botX0, botY, sqSz, sqSz);
+
+      // Bottom center: Timeline (wide, not square)
       if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-        ctx.drawImage(src.timeline, gap * 2 + thirdW, botY, thirdW, stripH);
+        ctx.drawImage(src.timeline, botX0 + sqSz + gap, botY, tlW, stripH);
       }
-      // Bottom right: State Trajectory (viz 5)
-      _drawVizInRegion(_drawStateTrajectory, gap * 3 + thirdW * 2, botY, thirdW, stripH);
+
+      // Bottom right: State Trajectory
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
+      try { _drawStateTrajectory(vizCtx, sqSz, sqSz, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botX0 + sqSz + gap * 2 + tlW, botY, sqSz, sqSz);
+    } else {
+      if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
+        ctx.drawImage(src.timeline, gap, botY, W - gap * 2, stripH);
+      }
     }
   } else {
     // Combined layout — all panels with gaps
@@ -497,8 +505,8 @@ async function startConcertoDownload() {
       if (typeof updateVizPanel === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
         updateVizPanel(_lastTraceData);
 
-      // Composite into offscreen canvas
-      _compositeConcerto(offscreen, W, H);
+      // Composite into offscreen canvas — main video is always score view
+      _compositeConcerto(offscreen, W, H, 'score');
 
       // Extract raw RGBA
       const imageData = offCtx.getImageData(0, 0, W, H);
@@ -600,20 +608,8 @@ async function startConcertoDownload() {
           if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined')
             drawScoreOverlay(score2Canvas, score2Ctx, score2View);
 
-          // Composite: metadata centered at 50% width on black background
-          const metaCtx = offscreen.getContext('2d');
-          metaCtx.fillStyle = '#000';
-          metaCtx.fillRect(0, 0, W, H);
-          const src = _getSourceCanvases();
-          if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
-            // Use the source image's native width if available (pixel-perfect), otherwise 70%
-      const metaSrcW = (src.meta && src.meta.width > 0) ? src.meta.width : Math.floor(W * 0.7);
-      const metaW = Math.min(metaSrcW, W - gap * 2);
-            const metaH = Math.round(metaW * (src.meta.height / src.meta.width));
-            const mx = Math.floor((W - metaW) / 2);
-            const my = Math.floor((H - metaH) / 2);
-            metaCtx.drawImage(src.meta, mx, my, metaW, metaH);
-          }
+          // Use the same compositing as the live view
+          _compositeConcerto(offscreen, W, H, 'meta');
 
           const imageData = offCtx.getImageData(0, 0, W, H);
           batchBuf.push(new Uint8Array(imageData.data.buffer));

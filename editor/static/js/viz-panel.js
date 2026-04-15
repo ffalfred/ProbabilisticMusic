@@ -2,9 +2,9 @@
 // Renders from _lastTraceData (no extra fetch). Triggered by fetchAndDrawTrace().
 // Depends on: kalman-trace.js (DIM_COLORS, DIM_RANGES, _hexToRgb, _lastTraceData)
 
-let _activeViz   = 1;
-let _vizCurrentT = -1;  // score-time cursor, == audio time (-1 = show full trace)
-let _vizFixedSize = false;  // when true, skip auto-resize (concerto mode)
+var _activeViz   = 1;
+var _vizCurrentT = -1;  // score-time cursor, == audio time (-1 = show full trace)
+var _vizFixedSize = false;  // when true, skip auto-resize (concerto mode)
 
 function updateVizPanel(data) {
   const playing = (typeof isMixPlaying === 'function') && isMixPlaying();

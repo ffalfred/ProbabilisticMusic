@@ -18,7 +18,7 @@ const CHAR_BG    = {
   discrete:    'rgba(40,40,40,0.22)',
 };
 
-let _lastTraceData  = null;
+var _lastTraceData  = null;
 let _lastLayout     = null;   // { padL, padT, plotW, plotH, W, H, t0, totalDur }
 let _hoverX         = -1;     // mouse x in canvas px, -1 = no hover
 
@@ -96,8 +96,8 @@ async function fetchAndDrawTrace() {
 }
 
 // ─── Main canvas renderer: 12D Dimension Timeline ────────────────────────────
-let _traceFixedSize = false;   // when true, skip auto-resize (concerto mode)
-let _concertoMaxT  = Infinity; // progressive reveal: only draw trace up to this time
+var _traceFixedSize = false;   // when true, skip auto-resize (concerto mode)
+var _concertoMaxT  = Infinity; // progressive reveal: only draw trace up to this time
 
 function drawKalmanTrace(data) {
   const wrap   = document.getElementById('kalman-trace-wrap');

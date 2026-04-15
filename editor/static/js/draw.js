@@ -129,7 +129,6 @@ function xToT(x) {
 
 // ─── Draw ─────────────────────────────────────────────────────────────────────
 function draw() {
-  if (typeof _concertoActive !== 'undefined' && _concertoActive) return;
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
 
