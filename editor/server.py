@@ -293,6 +293,7 @@ _concerto_video_tmp = None  # temp video-only file (pass 1 output)
 _concerto_preset    = None  # preset dict for pass 2 audio mux
 _concerto_time_from = 0     # time range start (seconds)
 _concerto_time_to   = 0     # time range end (0 = full)
+_concerto_no_audio  = False # if True, skip audio mux in pass 2
 _concerto_next      = 0     # next expected frame index
 _concerto_buf       = {}    # out-of-order frame buffer {index: raw_bytes}
 
@@ -381,6 +382,7 @@ def concerto_start():
     out_path = (data.get('out_path') or '').strip()
     _concerto_time_from = float(data.get('time_from', 0) or 0)
     _concerto_time_to   = float(data.get('time_to', 0) or 0)
+    _concerto_no_audio  = bool(data.get('no_audio', False))
 
     if not out_path:
         return jsonify({"error": "No save path provided"}), 400
@@ -500,48 +502,49 @@ def concerto_finish():
         if not os.path.exists(_concerto_video_tmp):
             return jsonify({"error": "Pass 1 failed — video temp file not found"}), 500
 
-        # Pass 2: mux video + audio into final output (perfect sync — both
-        # streams start at t=0, no pipe latency)
-        # Extract audio args from preset
-        audio_args = []
-        args = _concerto_preset['args']
-        i = 0
-        while i < len(args):
-            if args[i] in ('-c:a', '-b:a'):
-                audio_args.extend([args[i], args[i + 1]])
-                i += 2
-            else:
-                i += 1
-        if not audio_args:
-            audio_args = ['-c:a', 'copy']
+        if _concerto_no_audio:
+            # No audio — just rename the video-only file
+            import shutil
+            shutil.move(_concerto_video_tmp, _concerto_out)
+        else:
+            # Pass 2: mux video + audio into final output
+            audio_args = []
+            args = _concerto_preset['args']
+            i = 0
+            while i < len(args):
+                if args[i] in ('-c:a', '-b:a'):
+                    audio_args.extend([args[i], args[i + 1]])
+                    i += 2
+                else:
+                    i += 1
+            if not audio_args:
+                audio_args = ['-c:a', 'copy']
 
-        # Also carry -f mpegts if the preset uses TS container
-        fmt_args = []
-        if '-f' in args:
-            fi = args.index('-f')
-            fmt_args = ['-f', args[fi + 1]]
+            fmt_args = []
+            if '-f' in args:
+                fi = args.index('-f')
+                fmt_args = ['-f', args[fi + 1]]
 
-        # Trim audio to match the time range if specified
-        audio_trim = []
-        if _concerto_time_from > 0 or _concerto_time_to > 0:
-            if _concerto_time_from > 0:
-                audio_trim = ['-ss', str(_concerto_time_from)]
-            if _concerto_time_to > _concerto_time_from:
-                audio_trim += ['-t', str(_concerto_time_to - _concerto_time_from)]
+            audio_trim = []
+            if _concerto_time_from > 0 or _concerto_time_to > 0:
+                if _concerto_time_from > 0:
+                    audio_trim = ['-ss', str(_concerto_time_from)]
+                if _concerto_time_to > _concerto_time_from:
+                    audio_trim += ['-t', str(_concerto_time_to - _concerto_time_from)]
 
-        mux_cmd = [
-            'ffmpeg', '-y',
-            '-i', _concerto_video_tmp,   # video
-            *audio_trim,                 # trim audio input
-            '-i', PREVIEW_TMP,           # audio
-            '-c:v', 'copy',              # no re-encode — just mux
-            *audio_args,
-            *(['-movflags', '+faststart'] if '-movflags' in args else []),
-            *fmt_args,
-            '-shortest',
-            _concerto_out,
-        ]
-        subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
+            mux_cmd = [
+                'ffmpeg', '-y',
+                '-i', _concerto_video_tmp,
+                *audio_trim,
+                '-i', PREVIEW_TMP,
+                '-c:v', 'copy',
+                *audio_args,
+                *(['-movflags', '+faststart'] if '-movflags' in args else []),
+                *fmt_args,
+                '-shortest',
+                _concerto_out,
+            ]
+            subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
 
         # Clean up temp
         if os.path.exists(_concerto_video_tmp):

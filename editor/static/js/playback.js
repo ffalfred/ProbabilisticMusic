@@ -237,6 +237,11 @@ async function renderAndPlay() {
 }
 
 function playTick() {
+  // During concerto mode, _concertoTick handles all drawing — skip here to avoid flickering
+  if (typeof _concertoActive !== 'undefined' && _concertoActive) {
+    requestAnimationFrame(playTick);
+    return;
+  }
   if (_waPlaying) {
     state.currentTime = _waCurrentTime();
     document.getElementById("cur-time").textContent = state.currentTime.toFixed(3);

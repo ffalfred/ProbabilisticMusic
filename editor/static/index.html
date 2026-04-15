@@ -99,7 +99,12 @@
            title="Timbral pull: 0=golem ignores score, 0.5=moderate tracking, 1=strict">
   </div>
   <div id="interp-topbar-concerto" style="display:flex;align-items:center;gap:6px;padding:2px 8px;">
-    <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; Concerto View</button>
+    <select id="concerto-view-mode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:2px 4px;">
+      <option value="combined">Combined</option>
+      <option value="score">Score only</option>
+      <option value="meta">Metadata only</option>
+    </select>
+    <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; View</button>
     <button id="concerto-download-btn" title="Render 4K 60fps video">&#8595; Concerto Download</button>
     <button id="concerto-cancel-btn" style="display:none;color:#c66;border-color:#633;" title="Cancel render">&#10005; Cancel</button>
     <span id="concerto-status" style="font-size:10px;color:#888;"></span>
@@ -240,15 +245,17 @@
         <div id="golem-timeline-label">drag to create</div>
       </div>
     </div>
-    <div id="tracks-wrap" style="display:none;flex-shrink:0;position:relative;z-index:1;">
-      <div id="tracks-header" onclick="toggleTracksPanel()"
-           style="display:flex;align-items:center;gap:6px;padding:3px 10px;
-                  background:#1a1a1a;border-bottom:1px solid #222;cursor:pointer;
-                  font-size:10px;color:#555;text-transform:uppercase;letter-spacing:1px;
-                  user-select:none;flex-shrink:0;">
-        <span id="tracks-chevron">&#9660;</span>
-        <span id="tracks-title">Tracks</span>
-      </div>
+    <div id="tracks-header" onclick="toggleTracksPanel()"
+         style="display:flex;align-items:center;gap:6px;padding:3px 10px;
+                background:#1a1a1a;border-bottom:1px solid #222;cursor:pointer;
+                font-size:10px;color:#555;text-transform:uppercase;letter-spacing:1px;
+                user-select:none;flex-shrink:0;">
+      <span id="tracks-chevron">&#9660;</span>
+      <span id="tracks-title">Tracks</span>
+      <button onclick="event.stopPropagation(); _addUserTrack();"
+              style="margin-left:auto;font-size:9px;padding:1px 6px;background:#1a1a1a;color:#7ab;border:1px solid #333;border-radius:2px;cursor:pointer;">+ Track</button>
+    </div>
+    <div id="tracks-wrap" style="display:none;">
       <div id="tracks-panel" style="margin-top:2px;"></div>
     </div>
     <div id="frame-container">

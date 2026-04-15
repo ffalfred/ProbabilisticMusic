@@ -245,7 +245,7 @@ function renderTracksPanel() {
   var panel = document.getElementById("tracks-panel");
   if (!panel) return;
   var wrap = document.getElementById("tracks-wrap");
-  if (wrap) wrap.style.display = "";
+  if (wrap) wrap.style.display = state.tracks.length > 1 ? "" : "none";
   document.getElementById("tracks-title").textContent = "Tracks (" + state.tracks.length + ")";
 
   var nTracks = state.tracks.length;
