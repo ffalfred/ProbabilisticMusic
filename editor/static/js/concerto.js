@@ -12,7 +12,7 @@ function _drawCleanFrameOverlay() {
   if (typeof frameCanvas === 'undefined' || typeof frameCtx === 'undefined') return;
   var W = frameCanvas.width, H = frameCanvas.height;
   frameCtx.clearRect(0, 0, W, H);
-  if (typeof viewMode !== 'undefined' && viewMode === 'score' && typeof scoreView !== 'undefined') {
+  if (typeof scoreView !== 'undefined') {
     frameCtx.fillStyle = '#111';
     frameCtx.fillRect(0, 0, W, H);
     var img = scoreView.img;
@@ -171,6 +171,20 @@ const _LEFT_SCORE_RATIO      = 0.42;  // of total height
 const _LEFT_META_RATIO       = 0.35;
 const _LEFT_TIMELINE_RATIO   = 0.23;
 
+// Index of the first trace sample with .t > maxT, or trace.length if all
+// samples have .t <= maxT. Used to slice the trace prefix without scanning
+// the whole array each frame — replaces an O(n) filter with O(log n) and
+// turns an O(n²) total cost (across all frames) into O(n log n).
+function _upperBoundTrace(trace, maxT) {
+  var lo = 0, hi = trace.length;
+  while (lo < hi) {
+    var mid = (lo + hi) >>> 1;
+    if (trace[mid].t <= maxT) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function _compositeConcerto(target, W, H, mode) {
   if (!target) return;
   const ctx = target.getContext('2d');
@@ -184,10 +198,30 @@ function _compositeConcerto(target, W, H, mode) {
   ctx.fillRect(0, 0, W, H);
 
   if (mode === 'score') {
-    // Score canvas fills the entire frame
-    if (src.score && src.score.width > 0 && src.score.height > 0) {
+    // Draw score image + cursor directly (no reliance on frameCanvas)
+    var sv = (typeof scoreView !== 'undefined') ? scoreView : null;
+    if (sv && sv.img && sv.img.complete && sv.img.naturalWidth > 0) {
+      var s   = (H / sv.img.naturalHeight) * sv.scale;
+      var dur = sv.end - sv.start;
+      var dw  = sv.img.naturalWidth * s;
+      var curDisp = dur > 0 ? ((state.currentTime - sv.start) / dur) * dw : 0;
+      var sl  = curDisp - W / 2;
+      var srcX = sl / s, srcW = W / s;
+      var clSrcX = Math.max(0, srcX);
+      var clSrcW = Math.min(srcW, sv.img.naturalWidth - clSrcX);
+      var dstX = (clSrcX - srcX) * s, dstW = clSrcW * s;
+      if (clSrcW > 0 && dstW > 0) {
+        ctx.drawImage(sv.img, clSrcX, 0, clSrcW, sv.img.naturalHeight, dstX, 0, dstW, H);
+      }
+    } else if (src.score && src.score.width > 0 && src.score.height > 0) {
       ctx.drawImage(src.score, 0, 0, W, H);
     }
+    // Cursor
+    var cDur = sv ? (sv.end - sv.start) : (state.duration || 1);
+    var cx = cDur > 0 ? ((state.currentTime - (sv ? sv.start : 0)) / cDur) * W : 0;
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(cx + W/2, 0); ctx.lineTo(cx + W/2, H); ctx.stroke();
   } else if (mode === 'meta') {
     // Dashboard layout: metadata centered, viz panels top + bottom
     const gap    = Math.round(W * 0.003);
@@ -223,10 +257,14 @@ function _compositeConcerto(target, W, H, mode) {
       src.viz.width  = sqSz;
       src.viz.height = sqSz;
       var vizCtx = src.viz.getContext('2d');
-      var filtered = (_concertoMaxT < Infinity)
-        ? _lastTraceData.trace.filter(function(s) { return s.t <= _concertoMaxT; })
-        : _lastTraceData.trace;
-      var fData = filtered.length ? { ..._lastTraceData, trace: filtered } : _lastTraceData;
+      // Binary-search the upper-bound index (trace is sorted by .t). Slicing
+      // is still required because the viz functions iterate the trace array,
+      // but the slice is O(k) on the kept prefix instead of O(n) per frame.
+      var trace = _lastTraceData.trace;
+      var hi    = (_concertoMaxT < Infinity) ? _upperBoundTrace(trace, _concertoMaxT) : trace.length;
+      var fData = (hi === trace.length)
+        ? _lastTraceData
+        : (hi === 0 ? _lastTraceData : { ..._lastTraceData, trace: trace.slice(0, hi) });
 
       // Top left: Marginal Gaussians
       vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
@@ -334,6 +372,131 @@ function _restoreSourceCanvases() {
 
 // ─── Concerto Download (4K 60fps video) ──────────────────────────────────────
 let _concertoDownloading = false;
+
+// ─── Segment-based render loop ───────────────────────────────────────────────
+// Long downloads (~8 min at 4K/60) used to fail with NetworkError because a
+// single ffmpeg subprocess + a single long-lived browser→server stream
+// accumulated memory pressure and pipe back-pressure that compounded over
+// time. The fix: render in ~30 s segments, each with its own short-lived
+// ffmpeg subprocess on the server. After all segments, the server stitches
+// them losslessly with `ffmpeg -c copy`.
+//
+// `drawFrame(realT, scoreT)` is called per-frame to update the source
+// canvases before compositing. `mode` is passed through to _compositeConcerto.
+async function _runConcertoSegments(opts) {
+  const { W, H, FPS, totalFrames, startTime, frameDur,
+          offscreen, drawFrame, mode, isTest, statusLabel } = opts;
+
+  const SEG_DURATION = 30;                               // seconds per segment
+  const SEG_FRAMES   = SEG_DURATION * FPS;               // frames per segment
+  const numSegments  = Math.max(1, Math.ceil(totalFrames / SEG_FRAMES));
+  const MAX_INFLIGHT = 2;                                // concurrent uploads
+  const BATCH_SIZE   = 10;                               // frames per HTTP request
+  const JPEG_QUALITY = 0.95;                             // visually transparent
+  const renderStart  = performance.now();
+  let totalRendered  = 0;
+
+  for (let seg = 0; seg < numSegments; seg++) {
+    if (!_concertoDownloading) return;
+
+    // Spawn next segment's ffmpeg (segment 0 was started by the caller).
+    if (seg > 0) {
+      const r = await fetch('/concerto_start', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ segment_index: seg })
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(`segment ${seg} start: ${d.error}`);
+    }
+
+    const segStartFrame = seg * SEG_FRAMES;
+    const segEndFrame   = Math.min(segStartFrame + SEG_FRAMES, totalFrames);
+    const segCount      = segEndFrame - segStartFrame;
+
+    let inflight      = [];
+    let batchBuf      = [];
+    let batchStartIdx = 0;   // per-segment frame index (each segment's ffmpeg sees 0..N-1)
+
+    for (let sf = 0; sf < segCount; sf++) {
+      if (!_concertoDownloading) return;
+      const f      = segStartFrame + sf;
+      const realT  = startTime + f * frameDur;
+      const scoreT = (typeof realToScore === 'function') ? realToScore(realT) : realT;
+      state.currentTime = scoreT;
+      _concertoMaxT = scoreT;
+      if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = realT;
+
+      drawFrame(realT, scoreT);
+      _compositeConcerto(offscreen, W, H, mode);
+
+      // JPEG-encode the frame off the main thread (browser uses an internal
+      // worker for toBlob). At 4K q=0.95, a frame is ~1-3 MB instead of
+      // 33 MB raw RGBA — 10-30× less data. Quality loss is irrelevant since
+      // the final HEVC encode dominates output quality.
+      const blobJpeg = await new Promise(r => offscreen.toBlob(r, 'image/jpeg', JPEG_QUALITY));
+      if (!blobJpeg) throw new Error('toBlob returned null');
+      batchBuf.push(blobJpeg);
+
+      if (batchBuf.length >= BATCH_SIZE || sf === segCount - 1) {
+        // Concatenate the per-frame JPEG Blobs into one body, plus a
+        // parallel `lengths` form field so the server can split (JPEGs
+        // are variable-size, unlike raw RGBA).
+        const lengths = batchBuf.map(b => b.size).join(',');
+        const blob = new Blob(batchBuf, { type: 'application/octet-stream' });
+        const fd = new FormData();
+        fd.append('frames', blob, 'batch.mjpeg');
+        fd.append('start_index', String(batchStartIdx));
+        fd.append('count', String(batchBuf.length));
+        fd.append('lengths', lengths);
+
+        const upload = fetch('/concerto_frames', { method: 'POST', body: fd })
+          .then(() => { inflight = inflight.filter(p => p !== upload); });
+        inflight.push(upload);
+
+        batchStartIdx = sf + 1;
+        batchBuf = [];
+
+        // Await OLDEST inflight when full — caps in-flight memory and
+        // prevents the renderer from racing ahead of the encoder.
+        if (inflight.length >= MAX_INFLIGHT) await inflight[0];
+      }
+
+      totalRendered = f + 1;
+      if (sf % 10 === 0 || sf === segCount - 1) {
+        const elapsed = (performance.now() - renderStart) / 1000;
+        const fps     = totalRendered / Math.max(elapsed, 0.001);
+        const remain  = (totalFrames - totalRendered) / Math.max(fps, 1);
+        const pct     = Math.round(totalRendered / totalFrames * 100);
+        const eta     = remain < 60
+          ? `${Math.round(remain)}s`
+          : `${Math.floor(remain / 60)}m ${Math.round(remain % 60)}s`;
+        const res     = isTest ? '1080p' : '4K';
+        setConcertoStatus(`${statusLabel} ${res}: seg ${seg + 1}/${numSegments} ${pct}% (${Math.round(fps)} fps) — ETA ${eta}`);
+      }
+
+      if (sf % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+
+    // Drain remaining uploads for this segment, then close its ffmpeg.
+    if (inflight.length) await Promise.all(inflight);
+    inflight = null;  // help GC release any retained references
+
+    const r = await fetch('/concerto_finish_segment', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(`segment ${seg} finish: ${d.error}`);
+  }
+}
+
+// Status setter used by _runConcertoSegments — must reach the same status
+// element startConcertoDownload uses. We re-resolve every call because the
+// element may not exist when _runConcertoSegments is first defined.
+function setConcertoStatus(msg) {
+  const el = document.getElementById('concerto-status');
+  if (el) el.textContent = msg;
+}
 
 async function startConcertoDownload() {
   if (_concertoDownloading) return;
@@ -451,21 +614,23 @@ async function startConcertoDownload() {
   const audioDur    = endTime - startTime;
   const totalFrames = Math.ceil(audioDur * FPS);
   const frameDur    = 1.0 / FPS;
-  const BATCH_SIZE  = 10;  // frames per HTTP request
-
   const offscreen = document.createElement('canvas');
   offscreen.width  = W;
   offscreen.height = H;
-  const offCtx = offscreen.getContext('2d');
+  // We pull pixels via canvas.toBlob (JPEG), not getImageData, so a
+  // GPU-backed canvas is fine here — drawImage compositing benefits from
+  // hardware acceleration and toBlob's internal readback is well optimised.
+  // _compositeConcerto opens its own context against `offscreen` per frame.
 
   try {
-    // 1. Start the ffmpeg pipeline on the server
+    // 1. Start the ffmpeg pipeline for segment 0 (also sets up encode state)
     const startRes = await fetch('/concerto_start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ width: W, height: H, fps: FPS, duration: audioDur,
                              quality, out_path: outPath,
-                             time_from: startTime, time_to: endTime })
+                             time_from: startTime, time_to: endTime,
+                             segment_index: 0 })
     });
     const startData = await startRes.json();
     if (startData.error) { setStatus('error: ' + startData.error); _concertoDownloading = false; return; }
@@ -473,91 +638,28 @@ async function startConcertoDownload() {
     // 2. Upsize source canvases to target resolution for sharp rendering
     _upsizeSourceCanvases(W, H);
 
-    // 3. Render frame by frame — raw RGBA, batched uploads
-    const renderStart = performance.now();
-    const MAX_INFLIGHT = 3;
-    let inflight = [];
-    const frameSize = W * H * 4;  // bytes per raw RGBA frame
-    let batchBuf = [];  // accumulated raw frame buffers
-    let batchStartIdx = 0;
-
-    for (let f = 0; f < totalFrames; f++) {
-      if (!_concertoDownloading) { setStatus('cancelled'); break; }
-
-      const realT  = startTime + f * frameDur;
-      // Convert real (audio) time to score time so cursor position matches the audio
-      const scoreT = (typeof realToScore === 'function') ? realToScore(realT) : realT;
-      state.currentTime = scoreT;
-      _concertoMaxT = scoreT;
-      if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = realT;
-
-      // Redraw all source canvases at this time
-      if (_concertoCleanMode) {
-        _drawCleanFrameOverlay();
-        _drawCleanScoreOverlay();
-      } else {
-        if (typeof draw === 'function') draw();
-        if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined' && typeof score2Ctx !== 'undefined' && typeof score2View !== 'undefined')
-          drawScoreOverlay(score2Canvas, score2Ctx, score2View);
-      }
-      if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
-        drawKalmanTrace(_lastTraceData);
-      if (typeof updateVizPanel === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
-        updateVizPanel(_lastTraceData);
-
-      // Composite into offscreen canvas — main video is always score view
-      _compositeConcerto(offscreen, W, H, 'score');
-
-      // Extract raw RGBA
-      const imageData = offCtx.getImageData(0, 0, W, H);
-      batchBuf.push(new Uint8Array(imageData.data.buffer));
-
-      // Flush batch when full or last frame
-      if (batchBuf.length >= BATCH_SIZE || f === totalFrames - 1) {
-        const combined = new Uint8Array(batchBuf.length * frameSize);
-        for (let b = 0; b < batchBuf.length; b++) {
-          combined.set(batchBuf[b], b * frameSize);
+    // 3. Render in segments — each segment has its own short-lived ffmpeg
+    await _runConcertoSegments({
+      W, H, FPS, totalFrames, startTime, frameDur,
+      offscreen, mode: 'score', isTest,
+      statusLabel: 'rendering',
+      drawFrame: () => {
+        if (_concertoCleanMode) {
+          _drawCleanFrameOverlay();
+          _drawCleanScoreOverlay();
+        } else {
+          if (typeof draw === 'function') draw();
+          if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined' && typeof score2Ctx !== 'undefined' && typeof score2View !== 'undefined')
+            drawScoreOverlay(score2Canvas, score2Ctx, score2View);
         }
-        const blob = new Blob([combined], { type: 'application/octet-stream' });
-        const formData = new FormData();
-        formData.append('frames', blob, 'batch.raw');
-        formData.append('start_index', String(batchStartIdx));
-        formData.append('count', String(batchBuf.length));
+        if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+          drawKalmanTrace(_lastTraceData);
+        if (typeof updateVizPanel === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+          updateVizPanel(_lastTraceData);
+      },
+    });
 
-        const upload = fetch('/concerto_frames', { method: 'POST', body: formData })
-          .then(() => { inflight = inflight.filter(p => p !== upload); });
-        inflight.push(upload);
-
-        batchStartIdx = f + 1;
-        batchBuf = [];
-
-        // Throttle
-        if (inflight.length >= MAX_INFLIGHT) {
-          await Promise.race(inflight);
-        }
-      }
-
-      // Progress + time estimate
-      if (f % 10 === 0 || f === totalFrames - 1) {
-        const elapsed = (performance.now() - renderStart) / 1000;
-        const fps     = (f + 1) / elapsed;
-        const remain  = (totalFrames - f - 1) / fps;
-        const pct     = Math.round((f + 1) / totalFrames * 100);
-        const eta     = remain < 60
-          ? `${Math.round(remain)}s`
-          : `${Math.floor(remain / 60)}m ${Math.round(remain % 60)}s`;
-        const res     = isTest ? '1080p' : '4K';
-        setStatus(`rendering ${res}: ${pct}% (${Math.round(fps)} fps) — ETA ${eta}`);
-      }
-
-      // Yield to browser every 5 frames
-      if (f % 5 === 0) await new Promise(r => setTimeout(r, 0));
-    }
-
-    // Wait for remaining uploads
-    if (inflight.length) await Promise.all(inflight);
-
-    // 3. Finish — server closes ffmpeg, muxes audio, returns path
+    // 4. Finish — server concatenates segments + muxes audio, returns path
     setStatus('encoding video…');
     const finishRes = await fetch('/concerto_finish', {
       method: 'POST',
@@ -579,69 +681,28 @@ async function startConcertoDownload() {
         body: JSON.stringify({ width: W, height: H, fps: FPS, duration: audioDur,
                                quality, out_path: metaPath,
                                time_from: startTime, time_to: endTime,
-                               no_audio: true })
+                               no_audio: true,
+                               segment_index: 0 })
       });
       const metaStartData = await metaStartRes.json();
       if (metaStartData.error) { setStatus('meta error: ' + metaStartData.error); }
       else {
-        const metaRenderStart = performance.now();
-        inflight = [];
-        batchBuf = [];
-        batchStartIdx = 0;
+        await _runConcertoSegments({
+          W, H, FPS, totalFrames, startTime, frameDur,
+          offscreen, mode: 'meta', isTest,
+          statusLabel: 'meta video',
+          drawFrame: () => {
+            if (_concertoCleanMode) {
+              _drawCleanFrameOverlay();
+              _drawCleanScoreOverlay();
+            } else {
+              if (typeof draw === 'function') draw();
+            }
+            if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined')
+              drawScoreOverlay(score2Canvas, score2Ctx, score2View);
+          },
+        });
 
-        for (let f = 0; f < totalFrames; f++) {
-          if (!_concertoDownloading) break;
-
-          const realT  = startTime + f * frameDur;
-          const scoreT = (typeof realToScore === 'function') ? realToScore(realT) : realT;
-          state.currentTime = scoreT;
-          _concertoMaxT = scoreT;
-          if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = realT;
-
-          // Redraw metadata canvas
-          if (_concertoCleanMode) {
-            _drawCleanFrameOverlay();
-            _drawCleanScoreOverlay();
-          } else {
-            if (typeof draw === 'function') draw();
-          }
-          if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined')
-            drawScoreOverlay(score2Canvas, score2Ctx, score2View);
-
-          // Use the same compositing as the live view
-          _compositeConcerto(offscreen, W, H, 'meta');
-
-          const imageData = offCtx.getImageData(0, 0, W, H);
-          batchBuf.push(new Uint8Array(imageData.data.buffer));
-
-          if (batchBuf.length >= BATCH_SIZE || f === totalFrames - 1) {
-            const combined = new Uint8Array(batchBuf.length * frameSize);
-            for (let b = 0; b < batchBuf.length; b++) combined.set(batchBuf[b], b * frameSize);
-            const blob = new Blob([combined], { type: 'application/octet-stream' });
-            const formData = new FormData();
-            formData.append('frames', blob, 'batch.raw');
-            formData.append('start_index', String(batchStartIdx));
-            formData.append('count', String(batchBuf.length));
-            const upload = fetch('/concerto_frames', { method: 'POST', body: formData })
-              .then(() => { inflight = inflight.filter(p => p !== upload); });
-            inflight.push(upload);
-            batchStartIdx = f + 1;
-            batchBuf = [];
-            if (inflight.length >= MAX_INFLIGHT) await Promise.race(inflight);
-          }
-
-          if (f % 10 === 0 || f === totalFrames - 1) {
-            const elapsed = (performance.now() - metaRenderStart) / 1000;
-            const mfps = (f + 1) / elapsed;
-            const remain = (totalFrames - f - 1) / mfps;
-            const pct = Math.round((f + 1) / totalFrames * 100);
-            const eta = remain < 60 ? Math.round(remain) + 's' : Math.floor(remain/60) + 'm ' + Math.round(remain%60) + 's';
-            setStatus('meta video: ' + pct + '% (' + Math.round(mfps) + ' fps) — ETA ' + eta);
-          }
-          if (f % 5 === 0) await new Promise(r => setTimeout(r, 0));
-        }
-
-        if (inflight.length) await Promise.all(inflight);
         setStatus('encoding meta video…');
         const metaFinishRes = await fetch('/concerto_finish', {
           method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})

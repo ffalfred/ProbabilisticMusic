@@ -4,6 +4,7 @@ import base64
 import tempfile
 import subprocess
 import json
+import threading
 import time as _time
 
 import numpy as np
@@ -287,15 +288,27 @@ def preview():
 
 
 # ─── Concerto Download (4K video rendering) ─────────────────────────────────
-_concerto_ffmpeg    = None  # active ffmpeg subprocess (pass 1: video only)
+# Segment-based encoding: long videos are split into N short segments, each
+# encoded by its own short-lived ffmpeg subprocess. After all segments finish,
+# they're concatenated losslessly with `ffmpeg -c copy` and audio is muxed in.
+# This bounds browser memory + ffmpeg pipe back-pressure per segment, which
+# otherwise compounds and fails long (~8 min) downloads with NetworkError.
+_concerto_ffmpeg    = None  # active ffmpeg subprocess for the CURRENT segment
 _concerto_out       = None  # final output path
-_concerto_video_tmp = None  # temp video-only file (pass 1 output)
+_concerto_video_tmp = None  # temp video-only file (concat output, pre-mux)
 _concerto_preset    = None  # preset dict for pass 2 audio mux
 _concerto_time_from = 0     # time range start (seconds)
 _concerto_time_to   = 0     # time range end (0 = full)
 _concerto_no_audio  = False # if True, skip audio mux in pass 2
-_concerto_next      = 0     # next expected frame index
+_concerto_next      = 0     # next expected frame index WITHIN CURRENT SEGMENT
 _concerto_buf       = {}    # out-of-order frame buffer {index: raw_bytes}
+_concerto_segments  = []    # list of per-segment .mkv paths (for concat)
+_concerto_w         = 0     # render width  (remembered across segment starts)
+_concerto_h         = 0     # render height
+_concerto_fps       = 60    # render fps
+# Lock around _concerto_buf / _concerto_next / stdin writes — Flask is now
+# threaded=True so multiple /concerto_frames requests can land in parallel.
+_concerto_lock      = threading.Lock()
 
 # Two quality presets (from Toke's ffmpeg research)
 # 4 presets optimised for BrightSign gallery playback
@@ -368,71 +381,188 @@ _CONCERTO_PRESETS = {
     },
 }
 
+def _kill_concerto_ffmpeg():
+    """Kill any active ffmpeg subprocess and clear the global. Caller must hold _concerto_lock."""
+    global _concerto_ffmpeg
+    if _concerto_ffmpeg is None:
+        return
+    try:
+        try: _concerto_ffmpeg.stdin.close()
+        except Exception: pass
+        try: _concerto_ffmpeg.kill()
+        except Exception: pass
+        try: _concerto_ffmpeg.wait(timeout=5)
+        except Exception: pass
+    finally:
+        _concerto_ffmpeg = None
+
+
 @app.route("/concerto_start", methods=["POST"])
 def concerto_start():
+    """Start (or resume) a concerto encode.
+
+    `segment_index == 0` performs full initialisation: stores the output path,
+    preset, time range, etc., clears the segment list, AND kills any leftover
+    ffmpeg from a prior aborted run. Subsequent calls just spawn a fresh
+    ffmpeg subprocess for the next segment, reusing the saved state. Each
+    segment's frames are numbered from 0; the browser resets its `start_index`
+    per segment.
+    """
     global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
     global _concerto_next, _concerto_buf, _concerto_time_from, _concerto_time_to
-    _concerto_next = 0
-    _concerto_buf  = {}
-    data    = request.get_json()
-    W       = int(data.get('width',  3840))
-    H       = int(data.get('height', 2160))
-    fps     = int(data.get('fps',    60))
-    quality = data.get('quality', 'top')
-    out_path = (data.get('out_path') or '').strip()
-    _concerto_time_from = float(data.get('time_from', 0) or 0)
-    _concerto_time_to   = float(data.get('time_to', 0) or 0)
-    _concerto_no_audio  = bool(data.get('no_audio', False))
+    global _concerto_no_audio, _concerto_segments, _concerto_w, _concerto_h, _concerto_fps
 
-    if not out_path:
-        return jsonify({"error": "No save path provided"}), 400
+    data       = request.get_json()
+    seg_index  = int(data.get('segment_index', 0))
 
-    preset = _CONCERTO_PRESETS.get(quality, _CONCERTO_PRESETS['a1'])
-    ext = preset['ext']
+    # Take the lock for the whole start sequence so we cannot race with a
+    # late finish_segment.wait() from a previous run nulling out our fresh
+    # _concerto_ffmpeg, or with concurrent /concerto_frames writes touching
+    # _concerto_buf / _concerto_next while we're resetting them.
+    with _concerto_lock:
+        # Per-segment state always resets
+        _concerto_next = 0
+        _concerto_buf  = {}
 
-    # Ensure directory exists and fix extension to match preset
-    out_path = os.path.abspath(out_path)
-    base, _ = os.path.splitext(out_path)
-    out_path = base + ext
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    _concerto_out = out_path
+        if seg_index == 0:
+            # New encode: defensively kill any leftover ffmpeg from a prior
+            # aborted run (browser cancelled, error mid-render, page reloaded,
+            # etc.) so we never inherit a dangling subprocess.
+            _kill_concerto_ffmpeg()
 
-    # Two-pass approach for perfect sync:
-    # Pass 1: pipe raw RGBA frames → video-only temp file (no audio)
-    # Pass 2: mux audio in after all frames are written (concerto_finish)
-    _concerto_video_tmp = _concerto_out + '.video_tmp.mkv'
-    _concerto_preset    = preset
+            _concerto_w   = int(data.get('width',  3840))
+            _concerto_h   = int(data.get('height', 2160))
+            _concerto_fps = int(data.get('fps',    60))
+            quality       = data.get('quality', 'top')
+            out_path      = (data.get('out_path') or '').strip()
+            _concerto_time_from = float(data.get('time_from', 0) or 0)
+            _concerto_time_to   = float(data.get('time_to', 0) or 0)
+            _concerto_no_audio  = bool(data.get('no_audio', False))
 
-    # Strip audio args AND container-specific flags — video-only pass 1 to MKV
-    filtered = []
-    skip_next = False
-    for a in preset['args']:
-        if skip_next:
-            skip_next = False
-            continue
-        if a in ('-c:a', '-b:a', '-f'):
-            skip_next = True
-            continue
-        if a in ('-movflags', '+faststart'):
-            continue
-        filtered.append(a)
+            if not out_path:
+                return jsonify({"error": "No save path provided"}), 400
 
-    cmd = [
-        'ffmpeg', '-y',
-        '-f', 'rawvideo', '-pix_fmt', 'rgba',
-        '-s', f'{W}x{H}', '-r', str(fps),
-        '-i', 'pipe:0',
-        '-an',                          # no audio in pass 1
-        *filtered,
-        _concerto_video_tmp,
-    ]
-    try:
-        _concerto_ffmpeg = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                             stdout=subprocess.DEVNULL,
-                                             stderr=subprocess.PIPE)
-        return jsonify({"ok": True})
-    except Exception as e:
+            preset = _CONCERTO_PRESETS.get(quality, _CONCERTO_PRESETS['a1'])
+            ext    = preset['ext']
+
+            # Ensure directory exists and fix extension to match preset
+            out_path = os.path.abspath(out_path)
+            base, _  = os.path.splitext(out_path)
+            out_path = base + ext
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            _concerto_out       = out_path
+            _concerto_video_tmp = _concerto_out + '.video_tmp.mkv'
+            _concerto_preset    = preset
+            _concerto_segments  = []
+        else:
+            # Resuming with a new segment — require prior init
+            if not _concerto_preset or not _concerto_out:
+                return jsonify({"error": "segment_index > 0 without prior init"}), 400
+            # Previous segment must have been closed via /concerto_finish_segment
+            if _concerto_ffmpeg is not None:
+                return jsonify({"error": "previous segment still open — call /concerto_finish_segment first"}), 400
+
+        # Strip audio args AND container-specific flags — video-only segment to MKV
+        filtered = []
+        skip_next = False
+        for a in _concerto_preset['args']:
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ('-c:a', '-b:a', '-f'):
+                skip_next = True
+                continue
+            if a in ('-movflags', '+faststart'):
+                continue
+            filtered.append(a)
+
+        seg_path = _concerto_out + f'.seg_{seg_index:04d}.mkv'
+
+        # Input is a stream of concatenated JPEG frames (MJPEG) produced by the
+        # browser via canvas.toBlob('image/jpeg'). ffmpeg's image2pipe demuxer
+        # parses JPEG markers to find frame boundaries, so we don't need to
+        # specify -s (size is in the JPEG header). This replaces the previous
+        # raw RGBA pipe (~33 MB/frame at 4K) with ~1-3 MB/frame — 10-30× less
+        # data crossing browser → network → server → ffmpeg, with quality loss
+        # negligible at q=0.95 since the output is re-encoded to HEVC anyway.
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'image2pipe', '-c:v', 'mjpeg',
+            '-framerate', str(_concerto_fps),
+            '-i', 'pipe:0',
+            '-an',                          # no audio in segment encode
+            *filtered,
+            seg_path,
+        ]
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.PIPE)
+        except Exception as e:
+            _concerto_ffmpeg = None
+            return jsonify({"error": f"ffmpeg spawn failed: {e}"}), 500
+
+        # Catch immediate ffmpeg-startup failures (bad codec, missing binary,
+        # etc.) — Popen returns even if ffmpeg exits in the next millisecond.
+        # A tiny grace period is enough; we don't want to block the caller.
+        _time.sleep(0.05)
+        rc = proc.poll()
+        if rc is not None:
+            err = b''
+            try: err = proc.stderr.read()
+            except Exception: pass
+            _concerto_ffmpeg = None
+            tail = err.decode('utf-8', errors='replace')[-500:] if err else ''
+            return jsonify({"error": f"ffmpeg exited immediately (rc={rc}): {tail}"}), 500
+
+        _concerto_ffmpeg = proc
+        # Track segment for later concat (avoid duplicates if the browser retries)
+        if seg_path not in _concerto_segments:
+            _concerto_segments.append(seg_path)
+        return jsonify({"ok": True, "segment_index": seg_index})
+
+
+@app.route("/concerto_finish_segment", methods=["POST"])
+def concerto_finish_segment():
+    """Close the current segment's ffmpeg subprocess and wait for it to flush.
+
+    Keeps overall encode state (output path, preset, segments list) intact so
+    the next /concerto_start call can spawn the next segment.
+    """
+    global _concerto_ffmpeg
+    # Snapshot the proc under the lock and clear the global immediately so
+    # concurrent /concerto_frames see "no active render" and don't write to
+    # a closing pipe. The subsequent .wait() can then run outside the lock.
+    with _concerto_lock:
+        proc = _concerto_ffmpeg
+        if proc is None:
+            # Diagnostic detail: distinguish between "never started" and
+            # "already finished" so the browser can tell what's happening.
+            seg_count = len(_concerto_segments)
+            has_state = bool(_concerto_preset and _concerto_out)
+            return jsonify({
+                "error": "No active concerto segment",
+                "segments_done": seg_count,
+                "init_state_present": has_state,
+            }), 400
         _concerto_ffmpeg = None
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    # Outside the lock: ffmpeg flush can take seconds (HEVC encoder cleanup),
+    # we don't want to hold the lock that long.
+    try:
+        seg_stderr = proc.stderr.read() if proc.stderr else b''
+        proc.wait(timeout=300)
+        if seg_stderr:
+            tail = seg_stderr.decode('utf-8', errors='replace')[-300:]
+            print(f"[concerto seg {len(_concerto_segments) - 1} stderr]", tail)
+        return jsonify({"ok": True, "segments_done": len(_concerto_segments)})
+    except Exception as e:
+        try: proc.kill()
+        except Exception: pass
         return jsonify({"error": str(e)}), 500
 
 @app.route("/concerto_frame", methods=["POST"])
@@ -444,21 +574,30 @@ def concerto_frame():
     if not frame_blob:
         return jsonify({"error": "No frame data"}), 400
     try:
-        idx = int(request.form.get('index', _concerto_next))
-        raw = frame_blob.read()
-
-        _concerto_buf[idx] = raw
-        while _concerto_next in _concerto_buf:
-            _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
-            _concerto_next += 1
-
+        # Read body OUTSIDE the lock so concurrent uploads can fetch in parallel
+        idx_form = request.form.get('index')
+        raw      = frame_blob.read()
+        with _concerto_lock:
+            if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
+                return jsonify({"error": "No active concerto render"}), 400
+            idx = int(idx_form) if idx_form is not None else _concerto_next
+            _concerto_buf[idx] = raw
+            while _concerto_next in _concerto_buf:
+                _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+                _concerto_next += 1
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/concerto_frames", methods=["POST"])
 def concerto_frames():
-    """Batch frame upload — multiple raw RGBA frames packed in one request."""
+    """Batch frame upload — multiple JPEG frames packed in one request.
+
+    The request body is the concatenation of `count` JPEG files. The form
+    field `lengths` is a comma-separated list of per-frame byte counts so we
+    can split the blob (JPEGs are variable-size). For backward compat with
+    fixed-size raw frames, if `lengths` is omitted we assume equal sizes.
+    """
     global _concerto_ffmpeg, _concerto_next, _concerto_buf
     if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
         return jsonify({"error": "No active concerto render"}), 400
@@ -466,44 +605,92 @@ def concerto_frames():
     if not batch_blob:
         return jsonify({"error": "No frame data"}), 400
     try:
-        start_idx = int(request.form.get('start_index', _concerto_next))
-        count     = int(request.form.get('count', 1))
-        raw_all   = batch_blob.read()
-        frame_size = len(raw_all) // count if count > 0 else len(raw_all)
+        # Read body OUTSIDE the lock so concurrent uploads can fetch in parallel
+        start_idx_form = request.form.get('start_index')
+        count          = int(request.form.get('count', 1))
+        lengths_form   = request.form.get('lengths', '')
+        raw_all        = batch_blob.read()
 
-        for i in range(count):
-            idx = start_idx + i
-            frame_raw = raw_all[i * frame_size : (i + 1) * frame_size]
-            _concerto_buf[idx] = frame_raw
+        if lengths_form:
+            lengths = [int(x) for x in lengths_form.split(',')]
+            if len(lengths) != count:
+                return jsonify({"error": f"lengths count mismatch: {len(lengths)} vs {count}"}), 400
+            if sum(lengths) != len(raw_all):
+                return jsonify({"error": f"lengths sum {sum(lengths)} != body {len(raw_all)}"}), 400
+        else:
+            # Backward compat: fixed-size frames
+            fsize   = len(raw_all) // count if count > 0 else len(raw_all)
+            lengths = [fsize] * count
 
-        # Flush in order
-        while _concerto_next in _concerto_buf:
-            _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
-            _concerto_next += 1
-
+        with _concerto_lock:
+            if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
+                return jsonify({"error": "No active concerto render"}), 400
+            start_idx = int(start_idx_form) if start_idx_form is not None else _concerto_next
+            offset = 0
+            for i, length in enumerate(lengths):
+                _concerto_buf[start_idx + i] = raw_all[offset : offset + length]
+                offset += length
+            # Flush in order
+            while _concerto_next in _concerto_buf:
+                _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+                _concerto_next += 1
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/concerto_finish", methods=["POST"])
 def concerto_finish():
+    """Concatenate all encoded segments, mux audio, return final path.
+
+    Expects /concerto_finish_segment to have been called for the last segment
+    so no ffmpeg subprocess is still open. With one segment we skip the concat
+    step entirely.
+    """
     global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
-    if not _concerto_ffmpeg:
-        return jsonify({"error": "No active concerto render"}), 400
+    global _concerto_segments
+    if _concerto_ffmpeg is not None:
+        return jsonify({"error": "A segment is still open — call /concerto_finish_segment first"}), 400
+    if not _concerto_segments:
+        return jsonify({"error": "No segments to finalise"}), 400
     try:
-        # Pass 1 complete: close pipe and wait for video-only encode to finish
-        _concerto_ffmpeg.stdin.close()
-        pass1_stderr = _concerto_ffmpeg.stderr.read() if _concerto_ffmpeg.stderr else b''
-        _concerto_ffmpeg.wait(timeout=300)
-        if pass1_stderr:
-            print("[concerto pass1 stderr]", pass1_stderr.decode('utf-8', errors='replace')[:500])
-        _concerto_ffmpeg = None
+        # Verify all segment files exist
+        missing = [s for s in _concerto_segments if not os.path.exists(s)]
+        if missing:
+            return jsonify({"error": f"Segment files missing: {missing[:3]}"}), 500
+
+        # Step 1: stitch segments → _concerto_video_tmp (lossless, -c copy)
+        if len(_concerto_segments) == 1:
+            # Single segment — just rename
+            import shutil
+            shutil.move(_concerto_segments[0], _concerto_video_tmp)
+        else:
+            concat_list = _concerto_video_tmp + '.concat.txt'
+            with open(concat_list, 'w') as f:
+                for seg in _concerto_segments:
+                    # ffmpeg concat demuxer: single-quote the path, escape any quotes
+                    escaped = seg.replace("'", "'\\''")
+                    f.write(f"file '{escaped}'\n")
+            concat_cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat', '-safe', '0',
+                '-i', concat_list,
+                '-c', 'copy',
+                _concerto_video_tmp,
+            ]
+            cp = subprocess.run(concat_cmd, capture_output=True, timeout=600)
+            try:
+                os.remove(concat_list)
+            except OSError:
+                pass
+            if cp.returncode != 0:
+                tail = cp.stderr.decode('utf-8', errors='replace')[-500:]
+                return jsonify({"error": f"Concat failed: {tail}"}), 500
 
         if not os.path.exists(_concerto_video_tmp):
-            return jsonify({"error": "Pass 1 failed — video temp file not found"}), 500
+            return jsonify({"error": "Concat produced no output file"}), 500
 
+        # Step 2: mux audio (or just rename if no_audio)
         if _concerto_no_audio:
-            # No audio — just rename the video-only file
             import shutil
             shutil.move(_concerto_video_tmp, _concerto_out)
         else:
@@ -546,14 +733,20 @@ def concerto_finish():
             ]
             subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
 
-        # Clean up temp
+        # Clean up temps: stitched video tmp + any leftover segment files
         if os.path.exists(_concerto_video_tmp):
-            os.remove(_concerto_video_tmp)
+            try: os.remove(_concerto_video_tmp)
+            except OSError: pass
+        for seg in _concerto_segments:
+            if os.path.exists(seg):
+                try: os.remove(seg)
+                except OSError: pass
 
         path = _concerto_out
-        _concerto_out = None
+        _concerto_out       = None
         _concerto_video_tmp = None
-        _concerto_preset = None
+        _concerto_preset    = None
+        _concerto_segments  = []
 
         if os.path.exists(path):
             return jsonify({"path": path})
@@ -1136,4 +1329,6 @@ def list_plugins():
 
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    # threaded=True so concurrent batch uploads during a concerto encode don't
+    # serialise behind each other while one ffmpeg write is briefly blocked.
+    app.run(port=5000, debug=True, threaded=True)
