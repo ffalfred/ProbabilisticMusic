@@ -4,6 +4,7 @@ import base64
 import tempfile
 import subprocess
 import json
+import queue
 import threading
 import time as _time
 
@@ -19,7 +20,7 @@ from src.sample_engine import build_bank
 from src.scheduler     import get_events
 from src.mixer         import mix_events, normalise, _stretch_mix_by_tempo
 from src.envelope      import build_dynamics_envelope, build_duck_envelope, build_phrase_envelope
-from src.renderer      import _apply_phrase_tempo, _remap_dynamics, _remap_phrases, _remap_events
+from src.renderer      import _apply_phrase_tempo, _remap_dynamics, _remap_phrases, _remap_events, _neutralise_score
 from src.fx            import apply_section_fx, apply_global_fx
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
@@ -247,6 +248,14 @@ def preview():
         else:
             events = get_events(score)
 
+        # Performance-neutral mode: strip all expressive timing from the
+        # score + events so the output follows the raw score grid. Must
+        # happen AFTER the interpreter runs (so the Kalman state_trace is
+        # preserved for visualisation) but BEFORE mix_events (so timing
+        # offsets don't get applied).
+        if bool(data.get("performance_neutral", False)):
+            score, events = _neutralise_score(score, events)
+
         # 1. Mix in score time
         mix = mix_events(events, bank, sr, score, base)
 
@@ -306,9 +315,33 @@ _concerto_segments  = []    # list of per-segment .mkv paths (for concat)
 _concerto_w         = 0     # render width  (remembered across segment starts)
 _concerto_h         = 0     # render height
 _concerto_fps       = 60    # render fps
-# Lock around _concerto_buf / _concerto_next / stdin writes — Flask is now
-# threaded=True so multiple /concerto_frames requests can land in parallel.
+# Wire format the browser sends us per frame. 'png' is lossless and safe for
+# any content but very large (~15 MB/frame at 4K for fine mesh, which causes
+# browser GC pressure and rising-ETA slowdown). 'webp' and 'jpeg' are much
+# smaller. Accepted values: 'png', 'webp', 'jpeg'. Default 'png' keeps the
+# previous behaviour for callers that don't specify.
+_concerto_wire_format = 'png'
+# Max threads ffmpeg may use when decoding incoming frames. PNG decode at 4K
+# is CPU-heavy; without a cap, ffmpeg will grab every core and starve the
+# browser's encode step. Default = max(2, cpu_count // 4) — on an 18-core
+# box that's 4, leaving plenty for Chrome. Browser can override per-render
+# via the `decode_threads` field on /concerto_start.
+_concerto_decode_threads = max(2, (os.cpu_count() or 4) // 4)
+# Lock around _concerto_buf / _concerto_next / queue ENQUEUES — handlers hold
+# it only briefly to coordinate ordering. The actual blocking write to
+# ffmpeg's stdin happens on a dedicated writer thread, so a stalled ffmpeg
+# (back-pressure) can no longer freeze request handlers or jam the server.
 _concerto_lock      = threading.Lock()
+# Writer-thread machinery: handlers enqueue raw frame bytes; the writer
+# thread blocks on ffmpeg.stdin.write() alone. A bounded queue gives the
+# handlers natural back-pressure (they wait briefly then return 503 if the
+# encoder is severely behind, and the browser retries).
+_CONCERTO_QUEUE_MAX = 64        # up to ~64 frames (~ 1s of 60fps) queued
+_CONCERTO_ENQUEUE_TIMEOUT = 20  # seconds a handler will wait to enqueue
+_CONCERTO_QUEUE_SENTINEL = None # pushed on segment finish to stop writer
+_concerto_queue         = None  # queue.Queue  (per-segment, reset on start)
+_concerto_writer_thread = None  # threading.Thread (joined on finish)
+_concerto_writer_err    = None  # first exception from writer, surfaced on finish
 
 # Two quality presets (from Toke's ffmpeg research)
 # 4 presets optimised for BrightSign gallery playback
@@ -379,22 +412,81 @@ _CONCERTO_PRESETS = {
             '-f', 'mpegts',
         ],
     },
+    # H1: Hardware HEVC 10-bit (Intel VAAPI / iHD) + AAC 320k (MP4)
+    #     ~10-30× faster than B1 on Meteor Lake and similar iGPUs.
+    #     QP 22 is visually comparable to x265 CRF 16 for screen content.
+    'h1': {
+        'ext':  '.mp4',
+        'hw':   'vaapi',
+        'args': [
+            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-profile:v', 'main10',
+            '-c:a', 'aac', '-b:a', '320k',
+            '-movflags', '+faststart',
+        ],
+    },
+    # H2: Hardware HEVC 10-bit (Intel VAAPI / iHD) + lossless WAV (TS)
+    'h2': {
+        'ext':  '.ts',
+        'hw':   'vaapi',
+        'args': [
+            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-profile:v', 'main10',
+            '-c:a', 'pcm_s16le',
+            '-f', 'mpegts',
+        ],
+    },
 }
 
+def _concerto_writer_loop(proc, q):
+    """Pull raw frame bytes from `q` and write them to `proc.stdin` in order.
+
+    Runs on a dedicated thread per segment. `q` items are either `bytes`
+    (frame data) or `_CONCERTO_QUEUE_SENTINEL` (flush + exit). Any write
+    error (BrokenPipeError when ffmpeg dies, for instance) stores itself
+    in the module-level `_concerto_writer_err` so /concerto_finish_segment
+    can surface it to the browser.
+    """
+    global _concerto_writer_err
+    try:
+        while True:
+            chunk = q.get()
+            if chunk is _CONCERTO_QUEUE_SENTINEL:
+                break
+            try:
+                proc.stdin.write(chunk)
+            except BrokenPipeError:
+                # ffmpeg died or was killed; drain remaining items and exit
+                # so /concerto_frames handlers stop blocking on full queue.
+                _concerto_writer_err = 'ffmpeg pipe broken (encoder died)'
+                while True:
+                    try:
+                        item = q.get_nowait()
+                        if item is _CONCERTO_QUEUE_SENTINEL:
+                            break
+                    except queue.Empty:
+                        break
+                return
+    except Exception as e:
+        _concerto_writer_err = f'writer thread: {e}'
+
+
 def _kill_concerto_ffmpeg():
-    """Kill any active ffmpeg subprocess and clear the global. Caller must hold _concerto_lock."""
+    """Kill any active ffmpeg subprocess and clear the global.
+
+    Caller must hold _concerto_lock.
+    """
     global _concerto_ffmpeg
     if _concerto_ffmpeg is None:
         return
-    try:
-        try: _concerto_ffmpeg.stdin.close()
-        except Exception: pass
-        try: _concerto_ffmpeg.kill()
-        except Exception: pass
-        try: _concerto_ffmpeg.wait(timeout=5)
-        except Exception: pass
-    finally:
-        _concerto_ffmpeg = None
+    proc = _concerto_ffmpeg
+    _concerto_ffmpeg = None
+    try: proc.stdin.close()
+    except Exception: pass
+    try: proc.kill()
+    except Exception: pass
+    try: proc.wait(timeout=5)
+    except Exception: pass
 
 
 @app.route("/concerto_start", methods=["POST"])
@@ -411,9 +503,21 @@ def concerto_start():
     global _concerto_ffmpeg, _concerto_out, _concerto_video_tmp, _concerto_preset
     global _concerto_next, _concerto_buf, _concerto_time_from, _concerto_time_to
     global _concerto_no_audio, _concerto_segments, _concerto_w, _concerto_h, _concerto_fps
+    global _concerto_wire_format, _concerto_decode_threads
 
     data       = request.get_json()
     seg_index  = int(data.get('segment_index', 0))
+
+    # Defensive unblock: if a previous run's ffmpeg is still alive AND a
+    # /concerto_frames thread is stuck on `stdin.write()` (because the OS
+    # pipe is full and ffmpeg is slow), that thread holds _concerto_lock
+    # and we'd hang here forever. SIGKILLing the process closes the pipe,
+    # which unblocks the stuck write with BrokenPipeError, releases the
+    # lock, and lets us proceed. Safe to do without the lock — kill is
+    # idempotent and we'll re-check / clean up properly inside.
+    if seg_index == 0 and _concerto_ffmpeg is not None:
+        try: _concerto_ffmpeg.kill()
+        except Exception: pass
 
     # Take the lock for the whole start sequence so we cannot race with a
     # late finish_segment.wait() from a previous run nulling out our fresh
@@ -438,6 +542,25 @@ def concerto_start():
             _concerto_time_from = float(data.get('time_from', 0) or 0)
             _concerto_time_to   = float(data.get('time_to', 0) or 0)
             _concerto_no_audio  = bool(data.get('no_audio', False))
+
+            # Wire format the browser will use to send frames. Only png
+            # (lossless) and jpeg (fast) are supported now.
+            wf = (data.get('wire_format') or 'raw').lower()
+            if wf not in ('raw', 'png', 'jpeg'):
+                return jsonify({"error": f"invalid wire_format: {wf}"}), 400
+            _concerto_wire_format = wf
+
+            # Optional ffmpeg decode-thread cap. Only meaningful for PNG at
+            # the moment (other formats are cheap to decode). Clamp to a
+            # sensible range; fall back to computed default.
+            dt = data.get('decode_threads')
+            if dt is not None:
+                try:
+                    dt = max(1, min(64, int(dt)))
+                except Exception:
+                    dt = None
+            if dt is not None:
+                _concerto_decode_threads = dt
 
             if not out_path:
                 return jsonify({"error": "No save path provided"}), 400
@@ -478,34 +601,73 @@ def concerto_start():
 
         seg_path = _concerto_out + f'.seg_{seg_index:04d}.mkv'
 
-        # Input is a stream of concatenated JPEG frames (MJPEG) produced by the
-        # browser via canvas.toBlob('image/jpeg'). ffmpeg's image2pipe demuxer
-        # parses JPEG markers to find frame boundaries, so we don't need to
-        # specify -s (size is in the JPEG header). This replaces the previous
-        # raw RGBA pipe (~33 MB/frame at 4K) with ~1-3 MB/frame — 10-30× less
-        # data crossing browser → network → server → ffmpeg, with quality loss
-        # negligible at q=0.95 since the output is re-encoded to HEVC anyway.
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'image2pipe', '-c:v', 'mjpeg',
-            '-framerate', str(_concerto_fps),
-            '-i', 'pipe:0',
-            '-an',                          # no audio in segment encode
-            *filtered,
-            seg_path,
-        ]
+        # Input is a stream of concatenated frames in whichever format the
+        # browser chose (png / webp / jpeg). The demuxer flags differ per
+        # format: PNG + JPEG go through `image2pipe` with `-c:v`, WebP uses
+        # its own `webp_pipe` demuxer (no -c:v required).
+        if _concerto_wire_format == 'raw':
+            # Raw RGBA: no browser-side compression. ffmpeg reads raw pixels.
+            input_flags = ['-f', 'rawvideo', '-pix_fmt', 'rgba',
+                           '-s', f'{_concerto_w}x{_concerto_h}',
+                           '-r', str(_concerto_fps)]
+        elif _concerto_wire_format == 'jpeg':
+            input_flags = ['-f', 'image2pipe', '-c:v', 'mjpeg',
+                           '-framerate', str(_concerto_fps)]
+        else:  # png
+            # -threads caps CPU usage for PNG decode so ffmpeg doesn't starve
+            # the browser's encode step. Only applied for PNG — JPEG decode
+            # is cheap enough not to matter.
+            input_flags = ['-threads', str(_concerto_decode_threads),
+                           '-f', 'image2pipe', '-c:v', 'png',
+                           '-framerate', str(_concerto_fps)]
+
+        hw_mode = _concerto_preset.get('hw')
+
+        if hw_mode == 'vaapi':
+            # Hardware HEVC via VA-API (Intel iGPU). Requires a hardware
+            # device init + format/upload filter before the encoder. The
+            # LIBVA_DRIVER_NAME=iHD env var is set on the Popen below so
+            # Meteor Lake picks the right driver.
+            cmd = [
+                'ffmpeg', '-y',
+                '-vaapi_device', '/dev/dri/renderD128',
+                *input_flags,
+                '-i', 'pipe:0',
+                '-vf', 'format=p010,hwupload',
+                '-an',
+                *filtered,
+                seg_path,
+            ]
+        else:
+            cmd = [
+                'ffmpeg', '-y',
+                *input_flags,
+                '-i', 'pipe:0',
+                '-an',                          # no audio in segment encode
+                *filtered,
+                seg_path,
+            ]
+        # For VA-API on Meteor Lake, force the iHD driver — the legacy i965
+        # one doesn't support HEVC 10-bit Main10. Inherit other env vars.
+        proc_env = None
+        if hw_mode == 'vaapi':
+            proc_env = os.environ.copy()
+            proc_env['LIBVA_DRIVER_NAME'] = 'iHD'
+
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                           stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.PIPE)
+                                          stderr=subprocess.PIPE,
+                                          env=proc_env)
         except Exception as e:
             _concerto_ffmpeg = None
             return jsonify({"error": f"ffmpeg spawn failed: {e}"}), 500
 
         # Catch immediate ffmpeg-startup failures (bad codec, missing binary,
         # etc.) — Popen returns even if ffmpeg exits in the next millisecond.
-        # A tiny grace period is enough; we don't want to block the caller.
-        _time.sleep(0.05)
+        # VA-API init takes longer (~100-200 ms) than software startup, so
+        # use a slightly larger grace period for hardware presets.
+        _time.sleep(0.25 if hw_mode == 'vaapi' else 0.05)
         rc = proc.poll()
         if rc is not None:
             err = b''
@@ -516,6 +678,7 @@ def concerto_start():
             return jsonify({"error": f"ffmpeg exited immediately (rc={rc}): {tail}"}), 500
 
         _concerto_ffmpeg = proc
+
         # Track segment for later concat (avoid duplicates if the browser retries)
         if seg_path not in _concerto_segments:
             _concerto_segments.append(seg_path)
@@ -526,18 +689,13 @@ def concerto_start():
 def concerto_finish_segment():
     """Close the current segment's ffmpeg subprocess and wait for it to flush.
 
-    Keeps overall encode state (output path, preset, segments list) intact so
-    the next /concerto_start call can spawn the next segment.
+    Keeps overall encode state (output path, preset, segments list) intact
+    so the next /concerto_start call can spawn the next segment.
     """
     global _concerto_ffmpeg
-    # Snapshot the proc under the lock and clear the global immediately so
-    # concurrent /concerto_frames see "no active render" and don't write to
-    # a closing pipe. The subsequent .wait() can then run outside the lock.
     with _concerto_lock:
         proc = _concerto_ffmpeg
         if proc is None:
-            # Diagnostic detail: distinguish between "never started" and
-            # "already finished" so the browser can tell what's happening.
             seg_count = len(_concerto_segments)
             has_state = bool(_concerto_preset and _concerto_out)
             return jsonify({
@@ -546,13 +704,9 @@ def concerto_finish_segment():
                 "init_state_present": has_state,
             }), 400
         _concerto_ffmpeg = None
-        try:
-            proc.stdin.close()
-        except Exception:
-            pass
+        try: proc.stdin.close()
+        except Exception: pass
 
-    # Outside the lock: ffmpeg flush can take seconds (HEVC encoder cleanup),
-    # we don't want to hold the lock that long.
     try:
         seg_stderr = proc.stderr.read() if proc.stderr else b''
         proc.wait(timeout=300)
@@ -565,16 +719,69 @@ def concerto_finish_segment():
         except Exception: pass
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/concerto_cancel", methods=["POST"])
+def concerto_cancel():
+    """Abort an in-progress concerto encode.
+
+    Called by the browser when the user clicks Cancel. Kills the current
+    ffmpeg subprocess + writer thread, clears per-encode state, and deletes
+    any already-produced segment files so they don't sit on disk.
+
+    Safe to call even when no encode is in progress (returns ok=true).
+    """
+    global _concerto_out, _concerto_video_tmp, _concerto_preset, _concerto_segments
+    with _concerto_lock:
+        _kill_concerto_ffmpeg()
+        # Clean up any segment .mkv files from this encode
+        segs = list(_concerto_segments) if _concerto_segments else []
+        for seg in segs:
+            if os.path.exists(seg):
+                try: os.remove(seg)
+                except OSError: pass
+        # Also clean the pre-mux tmp file if it exists
+        if _concerto_video_tmp and os.path.exists(_concerto_video_tmp):
+            try: os.remove(_concerto_video_tmp)
+            except OSError: pass
+        _concerto_out       = None
+        _concerto_video_tmp = None
+        _concerto_preset    = None
+        _concerto_segments  = []
+    return jsonify({"ok": True, "cancelled": True})
+
+
+def _enqueue_chunks_after_lock(chunks):
+    """Put each chunk onto the writer queue with a bounded wait.
+
+    Called OUTSIDE `_concerto_lock` so a slow encoder (back-pressure) can't
+    block other request handlers that just want to enqueue their own frames.
+    Returns (ok, error_message_or_None). If the queue is persistently full
+    we surface 503 so the browser can retry rather than the request
+    hanging indefinitely.
+    """
+    q = _concerto_queue
+    if q is None:
+        return False, "writer queue disappeared"
+    for chunk in chunks:
+        try:
+            q.put(chunk, timeout=_CONCERTO_ENQUEUE_TIMEOUT)
+        except queue.Full:
+            return False, f"encoder is severely behind (queue full for {_CONCERTO_ENQUEUE_TIMEOUT}s)"
+        if _concerto_writer_err:
+            return False, _concerto_writer_err
+    return True, None
+
+
 @app.route("/concerto_frame", methods=["POST"])
 def concerto_frame():
-    global _concerto_ffmpeg, _concerto_next, _concerto_buf
+    """Single-frame upload (legacy path; the browser uses /concerto_frames)."""
+    global _concerto_next, _concerto_buf
     if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
         return jsonify({"error": "No active concerto render"}), 400
     frame_blob = request.files.get('frame')
     if not frame_blob:
         return jsonify({"error": "No frame data"}), 400
     try:
-        # Read body OUTSIDE the lock so concurrent uploads can fetch in parallel
         idx_form = request.form.get('index')
         raw      = frame_blob.read()
         with _concerto_lock:
@@ -589,23 +796,21 @@ def concerto_frame():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/concerto_frames", methods=["POST"])
 def concerto_frames():
-    """Batch frame upload — multiple JPEG frames packed in one request.
+    """Batch frame upload — multiple frames packed in one request.
 
-    The request body is the concatenation of `count` JPEG files. The form
-    field `lengths` is a comma-separated list of per-frame byte counts so we
-    can split the blob (JPEGs are variable-size). For backward compat with
-    fixed-size raw frames, if `lengths` is omitted we assume equal sizes.
+    Direct stdin.write under the lock (reverted from writer-thread approach
+    which caused 1-fps regression due to queue timeout stalls).
     """
-    global _concerto_ffmpeg, _concerto_next, _concerto_buf
+    global _concerto_next, _concerto_buf
     if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
         return jsonify({"error": "No active concerto render"}), 400
     batch_blob = request.files.get('frames')
     if not batch_blob:
         return jsonify({"error": "No frame data"}), 400
     try:
-        # Read body OUTSIDE the lock so concurrent uploads can fetch in parallel
         start_idx_form = request.form.get('start_index')
         count          = int(request.form.get('count', 1))
         lengths_form   = request.form.get('lengths', '')
@@ -618,7 +823,6 @@ def concerto_frames():
             if sum(lengths) != len(raw_all):
                 return jsonify({"error": f"lengths sum {sum(lengths)} != body {len(raw_all)}"}), 400
         else:
-            # Backward compat: fixed-size frames
             fsize   = len(raw_all) // count if count > 0 else len(raw_all)
             lengths = [fsize] * count
 
@@ -630,7 +834,6 @@ def concerto_frames():
             for i, length in enumerate(lengths):
                 _concerto_buf[start_idx + i] = raw_all[offset : offset + length]
                 offset += length
-            # Flush in order
             while _concerto_next in _concerto_buf:
                 _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
                 _concerto_next += 1
@@ -793,6 +996,33 @@ def preview_audio():
     directory = os.path.dirname(PREVIEW_TMP)
     filename  = os.path.basename(PREVIEW_TMP)
     return send_from_directory(directory, filename, mimetype="audio/wav", conditional=True)
+
+
+@app.route("/save_preview_audio", methods=["POST"])
+def save_preview_audio():
+    """Copy PREVIEW_TMP (the last rendered audio) to a user-chosen path.
+
+    Used by the concerto popup's 'Audio' output checkbox. The audio has
+    already been rendered by /preview (with performance_neutral applied
+    if the user ticked that) so here we just copy the file.
+    """
+    data = request.get_json() or {}
+    out_path = (data.get('out_path') or '').strip()
+    if not out_path:
+        return jsonify({"error": "out_path required"}), 400
+    if not os.path.exists(PREVIEW_TMP):
+        return jsonify({"error": "No preview rendered yet — call /preview first"}), 404
+    try:
+        out_path = os.path.abspath(out_path)
+        # Force .wav extension
+        base, _ = os.path.splitext(out_path)
+        out_path = base + '.wav'
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        import shutil
+        shutil.copyfile(PREVIEW_TMP, out_path)
+        return jsonify({"path": out_path})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/export_interp_wav", methods=["POST"])

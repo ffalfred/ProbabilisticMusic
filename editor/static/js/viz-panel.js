@@ -98,7 +98,7 @@ function _drawMarginalGaussians(ctx, W, H, data) {
     const y1 = (d + 1) * rowH - 1;
     const mid = (y0 + y1) / 2;
     const [lo, hi] = DIM_RANGES[d];
-    const col  = DIM_COLORS[d];
+    const col  = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
     const mu  = last.mu[d];
     const sig = Math.max(last.sigma_diag[d], 1e-6);
@@ -202,7 +202,7 @@ function _drawKalmanGainHeatmap(ctx, W, H, data) {
     for (let col = 0; col < D; col++) {
       const v = Math.abs((lastK[row] || [])[col] || 0);
       const brightness = Math.min(1, v * 5);  // K values typically 0–0.3
-      const [r, g, b] = _hexToRgb(DIM_COLORS[row]);
+      const [r, g, b] = _hexToRgb(_dimColor(row));
       ctx.fillStyle = `rgba(${r},${g},${b},${brightness * 0.85 + 0.04})`;
       const cx = padL + col * cellW + 1;
       const cy = padT + row * cellH + 1;
@@ -241,7 +241,7 @@ function _drawInnovationTrace(ctx, W, H, data) {
 
   // Per-dim traces
   for (let d = 0; d < D; d++) {
-    const col = DIM_COLORS[d];
+    const col = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
     ctx.strokeStyle = `rgba(${r},${g},${b},0.65)`;
     ctx.lineWidth = 1;
@@ -299,7 +299,7 @@ function _drawPhasePortrait(ctx, W, H, data) {
   // Trail: x(t-1) vs x(t)
   for (let i = 1; i < N; i++) {
     const age  = i / N;  // 0=oldest, 1=newest
-    const [r, g, b] = _hexToRgb(DIM_COLORS[dx]);
+    const [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.1 + age * 0.75})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -309,7 +309,7 @@ function _drawPhasePortrait(ctx, W, H, data) {
   }
   // Current point (bright)
   if (N > 0) {
-    ctx.fillStyle = DIM_COLORS[dx];
+    ctx.fillStyle = _dimColor(dx);
     ctx.beginPath();
     ctx.arc(toX(trace[N - 1].sample[dx]), toY(trace[N - 1].sample[dy]), 3.5, 0, Math.PI * 2);
     ctx.fill();
@@ -359,7 +359,7 @@ function _drawStateTrajectory(ctx, W, H, data) {
     const cy   = toY(step.mu[dy]);
     const rx   = Math.max(2, (step.sigma_diag[dx] / (hix - lox)) * pxW);
     const ry   = Math.max(2, (step.sigma_diag[dy] / (hiy - loy)) * pxH);
-    const [r, g, b] = _hexToRgb(DIM_COLORS[dx]);
+    const [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.05 + age * 0.2})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -370,7 +370,7 @@ function _drawStateTrajectory(ctx, W, H, data) {
   // Mean trajectory trail
   for (let i = 1; i < N; i++) {
     const age  = i / N;
-    const [r, g, b] = _hexToRgb(DIM_COLORS[dx]);
+    const [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.15 + age * 0.75})`;
     ctx.lineWidth   = 1.5;
     ctx.beginPath();
@@ -386,11 +386,11 @@ function _drawStateTrajectory(ctx, W, H, data) {
     const cy   = toY(last.mu[dy]);
     const rx   = Math.max(3, (last.sigma_diag[dx] / (hix - lox)) * pxW);
     const ry   = Math.max(3, (last.sigma_diag[dy] / (hiy - loy)) * pxH);
-    const [r, g, b] = _hexToRgb(DIM_COLORS[dx]);
+    const [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},0.7)`;
     ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = DIM_COLORS[dx];
+    ctx.fillStyle = _dimColor(dx);
     ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
   }
 
@@ -496,7 +496,7 @@ function _drawLookaheadPhi(ctx, W, H, data) {
   for (let d = 0; d < D; d++) {
     const y0  = 12 + d * barH;
     const mid = y0 + barH / 2;
-    const col = DIM_COLORS[d];
+    const col = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
 
     // Sparkline of phi[d] over time
@@ -570,7 +570,7 @@ function _drawProcessNoise(ctx, W, H, data) {
 
   // Per-dim Q traces
   for (let d = 0; d < D; d++) {
-    const col = DIM_COLORS[d];
+    const col = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
     ctx.strokeStyle = `rgba(${r},${g},${b},0.7)`;
     ctx.lineWidth = 1.2;
@@ -623,7 +623,7 @@ function _drawInnovationEnergy(ctx, W, H, data) {
   ctx.lineTo(toX(trace[trace.length - 1].t), H - pad);
   ctx.lineTo(toX(trace[0].t), H - pad);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(180,120,60,0.15)';
+  ctx.fillStyle = _concertoGreyscaleMode ? 'rgba(255,255,255,0.12)' : 'rgba(180,120,60,0.15)';
   ctx.fill();
 
   // Line
@@ -633,7 +633,7 @@ function _drawInnovationEnergy(ctx, W, H, data) {
     const y = toY(step.volatility || 0);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = '#c8922a';
+  ctx.strokeStyle = _concertoGreyscaleMode ? '#ffffff' : '#c8922a';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
@@ -644,7 +644,7 @@ function _drawInnovationEnergy(ctx, W, H, data) {
     if (nuNorm > maxVol * 0.1) {
       const x = toX(step.t);
       const y = toY(step.volatility || 0);
-      ctx.strokeStyle = 'rgba(255,200,100,0.5)';
+      ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(200,200,200,0.5)' : 'rgba(255,200,100,0.5)';
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
     }
@@ -678,8 +678,8 @@ function _drawSampleScatter(ctx, W, H, data) {
   if (ay > pad && ay < H - pad) { ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(W, ay); ctx.stroke(); }
 
   const N = trace.length;
-  const [rx, gx, bx] = _hexToRgb(DIM_COLORS[dx]);
-  const [ry, gy, by] = _hexToRgb(DIM_COLORS[dy]);
+  const [rx, gx, bx] = _hexToRgb(_dimColor(dx));
+  const [ry, gy, by] = _hexToRgb(_dimColor(dy));
 
   const pxW = W - pad * 2, pxH = H - pad * 2;
   // 2σ and 1σ bands (evolving — draw all historical ellipses, fading)
@@ -708,7 +708,7 @@ function _drawSampleScatter(ctx, W, H, data) {
   // Current mean
   if (N > 0) {
     const last = trace[N - 1];
-    ctx.fillStyle = DIM_COLORS[dx];
+    ctx.fillStyle = _dimColor(dx);
     ctx.beginPath(); ctx.arc(toX(last.mu[dx]), toY(last.mu[dy]), 4, 0, Math.PI * 2); ctx.fill();
   }
 
@@ -843,7 +843,7 @@ function _drawCovarianceMatrix(ctx, W, H, data) {
       const isDiag = row === col;
       // Diagonal = row dim color; off-diagonal = blend
       const [r, g, b] = isDiag
-        ? _hexToRgb(DIM_COLORS[row])
+        ? _hexToRgb(_dimColor(row))
         : [80, 80, 100];
       ctx.fillStyle = `rgba(${r},${g},${b},${br * 0.9 + 0.04})`;
       const cx = padL + col * cellW + 1;
@@ -916,7 +916,7 @@ function _drawCorrelationWeb(ctx, W, H, data) {
   // Draw nodes
   for (let i = 0; i < D; i++) {
     const n   = nodes[i];
-    const col = DIM_COLORS[i];
+    const col = _dimColor(i);
     const [r, g, b] = _hexToRgb(col);
     // Self-correlation = sqrt(sigma)
     const selfSig = Math.sqrt(Math.abs((Sig[i] || [])[i] || 0));
@@ -963,7 +963,7 @@ function _drawDistributionShape(ctx, W, H, data) {
     const y0  = d * rowH;
     const y1  = (d + 1) * rowH - 1;
     const mid = (y0 + y1) / 2;
-    const col = DIM_COLORS[d];
+    const col = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
 
     // Draw mini density curve
@@ -1046,7 +1046,7 @@ function _drawStepHistogram(ctx, W, H, data) {
       bins[Math.max(0, Math.min(NBINS - 1, bi))]++;
     }
     const maxBin = Math.max(...bins);
-    const [r, g, b] = _hexToRgb(DIM_COLORS[d % DIM_COLORS.length]);
+    const [r, g, b] = _hexToRgb(_dimColor(d));
     const barW = (cellW - 8) / NBINS;
     ctx.fillStyle = `rgba(${r},${g},${b},0.7)`;
     for (let bi = 0; bi < NBINS; bi++) {
@@ -1088,7 +1088,7 @@ function _drawDriftTrajectory(ctx, W, H, data) {
     const base = trace[0].sample ? trace[0].sample[d] : 0;
     const vals = trace.map(s => (s.sample ? s.sample[d] : 0) - base);
     const absMax = Math.max(...vals.map(Math.abs)) || 1;
-    const [r, g, b] = _hexToRgb(DIM_COLORS[d % DIM_COLORS.length]);
+    const [r, g, b] = _hexToRgb(_dimColor(d));
     ctx.strokeStyle = `rgba(${r},${g},${b},0.8)`;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
@@ -1121,13 +1121,13 @@ function _drawFixedStateBars(ctx, W, H, data) {
     const y = padT + d * rowH;
     const barW = frac * (W - padL - padR);
     // Label
-    ctx.fillStyle = DIM_COLORS[d % DIM_COLORS.length];
+    ctx.fillStyle = _dimColor(d);
     ctx.fillText(DIM_LABELS[d], 4, y + rowH * 0.7);
     // Bar background
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(padL, y + 2, W - padL - padR, rowH - 4);
     // Bar fill
-    const [r, g, b] = _hexToRgb(DIM_COLORS[d % DIM_COLORS.length]);
+    const [r, g, b] = _hexToRgb(_dimColor(d));
     ctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
     ctx.fillRect(padL, y + 2, barW, rowH - 4);
     // Value text

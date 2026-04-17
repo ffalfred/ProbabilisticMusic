@@ -7,6 +7,22 @@
 // DIM_COLORS defined in golems.js; DIM_NAMES, DIM_RANGES_DEFAULT in state.js
 // Use DIM_RANGES_DEFAULT from state.js as the canonical trace ranges
 const DIM_RANGES = DIM_RANGES_DEFAULT;
+
+// Greyscale palette for concerto export — 12 shades from white to dark grey,
+// one per Kalman state dimension. Used instead of DIM_COLORS when
+// _concertoGreyscaleMode is true. Editor stays colorful; only the concerto
+// render (video export) uses this palette.
+var _concertoGreyscaleMode = false;
+const _GREY_PALETTE = [
+  '#ffffff', '#e8e8e8', '#d0d0d0', '#b8b8b8',
+  '#a0a0a0', '#888888', '#707070', '#585858',
+  '#404040', '#282828', '#181818', '#101010',
+];
+function _dimColor(d) {
+  return _concertoGreyscaleMode
+    ? _GREY_PALETTE[d % _GREY_PALETTE.length]
+    : DIM_COLORS[d % DIM_COLORS.length];
+}
 const CHAR_BG    = {
   dramatic:    'rgba(80,10,10,0.22)',
   lyrical:     'rgba(10,25,80,0.22)',
@@ -174,7 +190,7 @@ function drawKalmanTrace(data) {
 
   // Auto-scale each dim to its OBSERVED range so tiny variations are visible.
   for (const d of _activeDimIndices) {
-    const col      = DIM_COLORS[d % DIM_COLORS.length];
+    const col      = _dimColor(d);
     const [r, g, b] = _hexToRgb(col);
 
     // Find observed min/max across both mu and sample for this dim
@@ -226,7 +242,7 @@ function drawKalmanTrace(data) {
   const legY    = padT + 2;
   ctx.font = '8px Courier New';
   _activeDimIndices.forEach((d, li) => {
-    const col = DIM_COLORS[d % DIM_COLORS.length];
+    const col = _dimColor(d);
     const cx  = legX + (li % legCols) * legW;
     const cy  = legY + Math.floor(li / legCols) * legRowH;
     ctx.fillStyle = col;
@@ -244,7 +260,7 @@ function drawKalmanTrace(data) {
   if (cursorT >= 0 && cursorT <= totalDur) {
     const x = padL + ((cursorT - t0) / totalDur) * plotW;
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,240,100,0.75)';
+    ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(255,255,255,0.75)' : 'rgba(255,240,100,0.75)';
     ctx.lineWidth   = 1.5;
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
@@ -258,7 +274,7 @@ function drawKalmanTrace(data) {
 
     // Vertical line
     ctx.save();
-    ctx.strokeStyle = 'rgba(120,220,255,0.6)';
+    ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(200,200,200,0.6)' : 'rgba(120,220,255,0.6)';
     ctx.lineWidth   = 1;
     ctx.beginPath(); ctx.moveTo(_hoverX, padT); ctx.lineTo(_hoverX, padT + plotH); ctx.stroke();
     ctx.restore();
@@ -280,13 +296,13 @@ function drawKalmanTrace(data) {
     if (ttY + TT_H > padT + plotH) ttY = padT + plotH - TT_H - 4;
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(ttX, ttY, TT_W, TT_H);
-    ctx.strokeStyle = 'rgba(120,220,255,0.4)';
+    ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(200,200,200,0.4)' : 'rgba(120,220,255,0.4)';
     ctx.strokeRect(ttX, ttY, TT_W, TT_H);
     ctx.font = '9px Courier New';
     ctx.fillStyle = '#ccc';
     ctx.fillText(`t = ${step.t.toFixed(2)}s`, ttX + 5, ttY + 10);
     _activeDimIndices.forEach((d, li) => {
-      const col = DIM_COLORS[d % DIM_COLORS.length];
+      const col = _dimColor(d);
       const v = step.sample ? step.sample[d] : (step.mu ? step.mu[d] : 0);
       ctx.fillStyle = col;
       ctx.fillRect(ttX + 5, ttY + 15 + li * 10, 5, 5);

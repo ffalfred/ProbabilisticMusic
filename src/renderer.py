@@ -7,6 +7,44 @@ from src.mixer    import mix_events, normalise, _stretch_mix_by_tempo
 from src.fx       import apply_section_fx, apply_global_fx
 
 
+def _neutralise_score(score: dict, events: list):
+    """Return (score, events) with ALL expressive timing stripped.
+
+    Used by the "performance-neutral" render mode so the output follows
+    the raw score grid without accelerando/ritardando, articulation
+    length changes, arpeggio stagger, or per-event timing jitter.
+
+    What's stripped:
+      - score['tempo']             → [] (no global tempo ramps)
+      - phrase['tempo_factor']     → 1.0 (constant per phrase)
+      - score['articulations']     → [] (no staccato/legato/fermata)
+      - score['note_rel']          → [] (no arpeggio stagger, no glissando time-warp)
+    What's zeroed per event:
+      - event['timing_offset_ms']  → 0.0 (no Kalman timing jitter)
+      - event['attack_shape']      → 0.5 (neutral fade)
+      - event['release_shape']     → 0.5 (neutral fade)
+
+    Does NOT touch pitch, gain, dynamics envelopes, FX, or any Kalman
+    dimension other than timing.
+    """
+    # Shallow copy so we don't mutate the caller's score dict
+    score2 = dict(score)
+    score2['tempo']         = []
+    score2['articulations'] = []
+    score2['note_rel']      = []
+    if score.get('phrases'):
+        score2['phrases'] = [dict(p, tempo_factor=1.0) for p in score['phrases']]
+    # Events get timing-related fields neutralised
+    events2 = []
+    for ev in events:
+        e2 = dict(ev)
+        e2['timing_offset_ms'] = 0.0
+        e2['attack_shape']     = 0.5
+        e2['release_shape']    = 0.5
+        events2.append(e2)
+    return score2, events2
+
+
 def _apply_phrase_tempo(score: dict) -> dict:
     """Merge phrase tempo_factors into score['tempo'] so the single stretch pass handles both.
 
