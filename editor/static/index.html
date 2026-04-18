@@ -104,6 +104,14 @@
       <option value="score">Score only</option>
       <option value="meta">Metadata only</option>
     </select>
+    <span style="font-size:9px;color:#666;">in:</span>
+    <input id="concerto-lead-in-bar" type="number" value="0" min="0" step="0.5"
+           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
+           title="Lead-in: seconds of black before music starts">
+    <span style="font-size:9px;color:#666;">out:</span>
+    <input id="concerto-lead-out-bar" type="number" value="0" min="0" step="0.5"
+           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
+           title="Lead-out: seconds of black after music ends">
     <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; View</button>
     <button id="concerto-download-btn" title="Render 4K 60fps video">&#8595; Concerto Download</button>
     <button id="concerto-cancel-btn" style="display:none;color:#c66;border-color:#633;" title="Cancel render">&#10005; Cancel</button>

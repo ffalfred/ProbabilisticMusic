@@ -309,6 +309,8 @@ _concerto_preset    = None  # preset dict for pass 2 audio mux
 _concerto_time_from = 0     # time range start (seconds)
 _concerto_time_to   = 0     # time range end (0 = full)
 _concerto_no_audio  = False # if True, skip audio mux in pass 2
+_concerto_lead_in   = 0     # seconds of silence before audio
+_concerto_lead_out  = 0     # seconds of silence after audio
 _concerto_next      = 0     # next expected frame index WITHIN CURRENT SEGMENT
 _concerto_buf       = {}    # out-of-order frame buffer {index: raw_bytes}
 _concerto_segments  = []    # list of per-segment .mkv paths (for concat)
@@ -504,6 +506,7 @@ def concerto_start():
     global _concerto_next, _concerto_buf, _concerto_time_from, _concerto_time_to
     global _concerto_no_audio, _concerto_segments, _concerto_w, _concerto_h, _concerto_fps
     global _concerto_wire_format, _concerto_decode_threads
+    global _concerto_lead_in, _concerto_lead_out
 
     data       = request.get_json()
     seg_index  = int(data.get('segment_index', 0))
@@ -542,6 +545,8 @@ def concerto_start():
             _concerto_time_from = float(data.get('time_from', 0) or 0)
             _concerto_time_to   = float(data.get('time_to', 0) or 0)
             _concerto_no_audio  = bool(data.get('no_audio', False))
+            _concerto_lead_in   = float(data.get('lead_in', 0) or 0)
+            _concerto_lead_out  = float(data.get('lead_out', 0) or 0)
 
             # Wire format the browser will use to send frames. Only png
             # (lossless) and jpeg (fast) are supported now.
@@ -679,6 +684,23 @@ def concerto_start():
 
         _concerto_ffmpeg = proc
 
+        # Enlarge the pipe buffer so ffmpeg has breathing room before
+        # stdin.write blocks. Default is 64KB (< 1 raw 4K frame).
+        # On Linux, F_SETPIPE_SZ can raise it up to pipe-max-size (1MB).
+        # On macOS this call doesn't exist — silently skip.
+        try:
+            import fcntl
+            F_SETPIPE_SZ = 1031  # Linux-specific
+            pipe_max = 1048576   # 1MB — safe default
+            try:
+                with open('/proc/sys/fs/pipe-max-size') as f:
+                    pipe_max = int(f.read().strip())
+            except Exception:
+                pass
+            fcntl.fcntl(proc.stdin.fileno(), F_SETPIPE_SZ, pipe_max)
+        except Exception:
+            pass  # not Linux, or permission denied — carry on with default
+
         # Track segment for later concat (avoid duplicates if the browser retries)
         if seg_path not in _concerto_segments:
             _concerto_segments.append(seg_path)
@@ -784,15 +806,22 @@ def concerto_frame():
     try:
         idx_form = request.form.get('index')
         raw      = frame_blob.read()
+        chunks = []
         with _concerto_lock:
             if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
                 return jsonify({"error": "No active concerto render"}), 400
             idx = int(idx_form) if idx_form is not None else _concerto_next
             _concerto_buf[idx] = raw
             while _concerto_next in _concerto_buf:
-                _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+                chunks.append(_concerto_buf.pop(_concerto_next))
                 _concerto_next += 1
-        return jsonify({"ok": True})
+            proc = _concerto_ffmpeg
+            buf_lag = len(_concerto_buf)
+        t0 = _time.time()
+        for chunk in chunks:
+            proc.stdin.write(chunk)
+        write_ms = (_time.time() - t0) * 1000
+        return jsonify({"ok": True, "write_ms": round(write_ms, 1), "lag": buf_lag})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -801,8 +830,9 @@ def concerto_frame():
 def concerto_frames():
     """Batch frame upload — multiple frames packed in one request.
 
-    Direct stdin.write under the lock (reverted from writer-thread approach
-    which caused 1-fps regression due to queue timeout stalls).
+    Reorder buffer is managed under _concerto_lock; the actual
+    stdin.write happens OUTSIDE the lock so ffmpeg back-pressure
+    (blocking write on a full pipe) doesn't deadlock other handlers.
     """
     global _concerto_next, _concerto_buf
     if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
@@ -826,6 +856,7 @@ def concerto_frames():
             fsize   = len(raw_all) // count if count > 0 else len(raw_all)
             lengths = [fsize] * count
 
+        chunks = []
         with _concerto_lock:
             if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
                 return jsonify({"error": "No active concerto render"}), 400
@@ -835,9 +866,17 @@ def concerto_frames():
                 _concerto_buf[start_idx + i] = raw_all[offset : offset + length]
                 offset += length
             while _concerto_next in _concerto_buf:
-                _concerto_ffmpeg.stdin.write(_concerto_buf.pop(_concerto_next))
+                chunks.append(_concerto_buf.pop(_concerto_next))
                 _concerto_next += 1
-        return jsonify({"ok": True})
+            proc = _concerto_ffmpeg  # snapshot under lock
+            buf_lag = len(_concerto_buf)  # frames waiting out of order
+        # Write outside the lock — may block if pipe is full.
+        # Time it so the browser can adapt its send rate.
+        t0 = _time.time()
+        for chunk in chunks:
+            proc.stdin.write(chunk)
+        write_ms = (_time.time() - t0) * 1000
+        return jsonify({"ok": True, "write_ms": round(write_ms, 1), "lag": buf_lag})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -922,6 +961,22 @@ def concerto_finish():
                 if _concerto_time_to > _concerto_time_from:
                     audio_trim += ['-t', str(_concerto_time_to - _concerto_time_from)]
 
+            # Audio filter for lead-in/out: delay the audio start by
+            # lead_in seconds, pad with silence at the end so audio
+            # duration matches the video (which includes lead_out).
+            audio_filter = []
+            if _concerto_lead_in > 0 or _concerto_lead_out > 0:
+                parts = []
+                if _concerto_lead_in > 0:
+                    ms = int(_concerto_lead_in * 1000)
+                    parts.append(f'adelay={ms}|{ms}')  # delay both channels
+                if _concerto_lead_out > 0:
+                    parts.append(f'apad=pad_dur={_concerto_lead_out}')
+                audio_filter = ['-af', ','.join(parts)]
+                # adelay/apad require re-encoding; can't use -c:a copy
+                if audio_args == ['-c:a', 'copy']:
+                    audio_args = ['-c:a', 'aac', '-b:a', '320k']
+
             mux_cmd = [
                 'ffmpeg', '-y',
                 '-i', _concerto_video_tmp,
@@ -929,6 +984,7 @@ def concerto_finish():
                 '-i', PREVIEW_TMP,
                 '-c:v', 'copy',
                 *audio_args,
+                *audio_filter,
                 *(['-movflags', '+faststart'] if '-movflags' in args else []),
                 *fmt_args,
                 '-shortest',

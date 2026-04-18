@@ -84,39 +84,41 @@ function updateVizPanel(data) {
 }
 
 // ─── Viz 1: Marginal Gaussians ────────────────────────────────────────────────
-function _drawMarginalGaussians(ctx, W, H, data) {
+function _drawMarginalGaussians(ctx, W, H, data, renderState) {
   const D    = DIM_NAMES.length;
   const rowH = H / D;
-  const trace = data.trace;
-  const curIdx = _cursorIdx(trace);
-  const last   = trace[curIdx];
-  const NAMES = DIM_LABELS;
-  const STEPS = 100;
+  if (rowH < 15 || W < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
+
+  var trace = data.trace;
+  var curIdx = _cursorIdx(trace);
+  var last   = trace[curIdx];
+  var NAMES = DIM_LABELS;
+  var STEPS = 100;
 
   for (let d = 0; d < D; d++) {
-    const y0 = d * rowH;
-    const y1 = (d + 1) * rowH - 1;
-    const mid = (y0 + y1) / 2;
-    const [lo, hi] = DIM_RANGES[d];
-    const col  = _dimColor(d);
-    const [r, g, b] = _hexToRgb(col);
-    const mu  = last.mu[d];
-    const sig = Math.max(last.sigma_diag[d], 1e-6);
+    var y0 = d * rowH;
+    var y1 = (d + 1) * rowH - 1;
+    var mid = (y0 + y1) / 2;
+    var [lo, hi] = DIM_RANGES[d];
+    var col  = _dimColor(d);
+    var [r, g, b] = _hexToRgb(col);
+    var mu  = last.mu[d];
+    var sig = Math.max(last.sigma_diag[d], 1e-6);
 
-    const toX = v => ((v - lo) / (hi - lo)) * W;
-    const scaleY = rowH * 0.38;   // how tall the peak is in pixels
+    var toX = v => ((v - lo) / (hi - lo)) * W;
+    var scaleY = rowH * 0.38;   // how tall the peak is in pixels
 
     // Gaussian PDF peak (at sigma=1, pdf(mu) ≈ 0.399)
-    const peakPdf = 1 / (Math.sqrt(2 * Math.PI) * sig);
+    var peakPdf = 1 / (Math.sqrt(2 * Math.PI) * sig);
 
-    const drawBell = (muVal, sigVal, alpha, lw) => {
+    var drawBell = (muVal, sigVal, alpha, lw) => {
       ctx.beginPath();
       for (let i = 0; i <= STEPS; i++) {
-        const v  = lo + (hi - lo) * (i / STEPS);
-        const z  = (v - muVal) / sigVal;
-        const p  = Math.exp(-0.5 * z * z) / (Math.sqrt(2 * Math.PI) * sigVal);
-        const py = mid - (p / peakPdf) * scaleY;
-        const px = toX(v);
+        var v  = lo + (hi - lo) * (i / STEPS);
+        var z  = (v - muVal) / sigVal;
+        var p  = Math.exp(-0.5 * z * z) / (Math.sqrt(2 * Math.PI) * sigVal);
+        var py = mid - (p / peakPdf) * scaleY;
+        var px = toX(v);
         i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
       }
       ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
@@ -134,11 +136,11 @@ function _drawMarginalGaussians(ctx, W, H, data) {
     // 1σ fill under posterior
     ctx.beginPath();
     for (let i = 0; i <= STEPS; i++) {
-      const v  = lo + (hi - lo) * (i / STEPS);
-      const z  = (v - mu) / sig;
+      var v  = lo + (hi - lo) * (i / STEPS);
+      var z  = (v - mu) / sig;
       if (Math.abs(z) > 1) { i === 0 ? ctx.moveTo(toX(v), mid) : ctx.lineTo(toX(v), mid); continue; }
-      const p  = Math.exp(-0.5 * z * z) / (Math.sqrt(2 * Math.PI) * sig);
-      const py = mid - (p / peakPdf) * scaleY;
+      var p  = Math.exp(-0.5 * z * z) / (Math.sqrt(2 * Math.PI) * sig);
+      var py = mid - (p / peakPdf) * scaleY;
       i === 0 ? ctx.moveTo(toX(v), py) : ctx.lineTo(toX(v), py);
     }
     ctx.lineTo(toX(mu + sig), mid);
@@ -150,12 +152,12 @@ function _drawMarginalGaussians(ctx, W, H, data) {
     // Historical sample ticks
     ctx.lineWidth = 1;
     for (const step of trace) {
-      const sx = toX(step.sample[d]);
+      var sx = toX(step.sample[d]);
       ctx.strokeStyle = `rgba(${r},${g},${b},0.35)`;
       ctx.beginPath(); ctx.moveTo(sx, mid - 6); ctx.lineTo(sx, mid + 6); ctx.stroke();
     }
     // Most recent sample — brighter
-    const latestSx = toX(last.sample[d]);
+    var latestSx = toX(last.sample[d]);
     ctx.strokeStyle = col; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(latestSx, mid - 9); ctx.lineTo(latestSx, mid + 9); ctx.stroke();
 
@@ -270,36 +272,31 @@ function _drawInnovationTrace(ctx, W, H, data) {
 }
 
 // ─── Viz 4: AR(2) Phase Portrait ──────────────────────────────────────────────
-function _drawPhasePortrait(ctx, W, H, data) {
+function _drawPhasePortrait(ctx, W, H, data, renderState) {
+  if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
-  const dx  = parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
-  const dy  = parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
-  // Auto-scale to actual data range with 10% padding
-  const xVals = trace.map(s => s.sample[dx]);
-  const yVals = trace.map(s => s.sample[dy]);
+  const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  const dy  = (typeof _concertoDimY !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimY : parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   const pad = 24;
-  let lox = Math.min(...xVals), hix = Math.max(...xVals);
-  let loy = Math.min(...yVals), hiy = Math.max(...yVals);
-  const xPad = (hix - lox) * 0.15 || 0.1, yPad = (hiy - loy) * 0.15 || 0.1;
+
+  var xVals = trace.map(s => s.sample[dx]);
+  var yVals = trace.map(s => s.sample[dy]);
+  var lox = Math.min(...xVals), hix = Math.max(...xVals);
+  var loy = Math.min(...yVals), hiy = Math.max(...yVals);
+  var xPad = (hix - lox) * 0.15 || 0.1, yPad = (hiy - loy) * 0.15 || 0.1;
   lox -= xPad; hix += xPad; loy -= yPad; hiy += yPad;
-  const toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
-  const toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
-  const N = _cursorIdx(trace) + 1;   // draw only up to current playback position
+  var toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
+  var toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
+  var N = _cursorIdx(trace) + 1;
 
-  // Axis lines
   ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 1;
-  const x0 = toX(0), y0 = toY(0);
-  if (x0 > pad && x0 < W - pad) {
-    ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke();
-  }
-  if (y0 > pad && y0 < H - pad) {
-    ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke();
-  }
+  var x0 = toX(0), y0 = toY(0);
+  if (x0 > pad && x0 < W - pad) { ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke(); }
+  if (y0 > pad && y0 < H - pad) { ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke(); }
 
-  // Trail: x(t-1) vs x(t)
   for (let i = 1; i < N; i++) {
-    const age  = i / N;  // 0=oldest, 1=newest
-    const [r, g, b] = _hexToRgb(_dimColor(dx));
+    var age  = i / N;
+    var [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.1 + age * 0.75})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -307,16 +304,13 @@ function _drawPhasePortrait(ctx, W, H, data) {
     ctx.lineTo(toX(trace[i].sample[dx]),     toY(trace[i].sample[dy]));
     ctx.stroke();
   }
-  // Current point (bright)
   if (N > 0) {
     ctx.fillStyle = _dimColor(dx);
     ctx.beginPath();
     ctx.arc(toX(trace[N - 1].sample[dx]), toY(trace[N - 1].sample[dy]), 3.5, 0, Math.PI * 2);
     ctx.fill();
   }
-
-  // Axis labels
-  const NAMES = DIM_LABELS;
+  var NAMES = DIM_LABELS;
   ctx.fillStyle = '#444'; ctx.font = '9px monospace';
   ctx.fillText(NAMES[dx], W - 48, H - 4);
   ctx.save(); ctx.translate(11, H / 2 + 20); ctx.rotate(-Math.PI / 2);
@@ -324,82 +318,61 @@ function _drawPhasePortrait(ctx, W, H, data) {
 }
 
 // ─── Viz 5: State Trajectory 2D ───────────────────────────────────────────────
-function _drawStateTrajectory(ctx, W, H, data) {
+function _drawStateTrajectory(ctx, W, H, data, renderState) {
+  if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
-  const dx  = parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
-  const dy  = parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
-  // Auto-scale to actual μ range with padding
-  const xVals = trace.map(s => s.mu[dx]);
-  const yVals = trace.map(s => s.mu[dy]);
+  const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  const dy  = (typeof _concertoDimY !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimY : parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   const pad = 24;
-  let lox = Math.min(...xVals), hix = Math.max(...xVals);
-  let loy = Math.min(...yVals), hiy = Math.max(...yVals);
-  const xPad = (hix - lox) * 0.2 || 0.1, yPad = (hiy - loy) * 0.2 || 0.1;
+
+  var xVals = trace.map(s => s.mu[dx]), yVals = trace.map(s => s.mu[dy]);
+  var lox = Math.min(...xVals), hix = Math.max(...xVals);
+  var loy = Math.min(...yVals), hiy = Math.max(...yVals);
+  var xPad = (hix - lox) * 0.2 || 0.1, yPad = (hiy - loy) * 0.2 || 0.1;
   lox -= xPad; hix += xPad; loy -= yPad; hiy += yPad;
-  const toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
-  const toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
-  const N = _cursorIdx(trace) + 1;   // draw only up to current playback position
-  const pxW = W - pad * 2, pxH = H - pad * 2;
+  var toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
+  var toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
+  var N = _cursorIdx(trace) + 1;
+  var pxW = W - pad * 2, pxH = H - pad * 2;
 
-  // Axis lines
   ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 1;
-  const x0 = toX(0), y0 = toY(0);
-  if (x0 > pad && x0 < W - pad) {
-    ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke();
-  }
-  if (y0 > pad && y0 < H - pad) {
-    ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke();
-  }
+  var x0 = toX(0), y0 = toY(0);
+  if (x0 > pad && x0 < W - pad) { ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke(); }
+  if (y0 > pad && y0 < H - pad) { ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke(); }
 
-  // Covariance ellipses (axis-aligned, fading older ones)
   for (let i = 0; i < N; i++) {
-    const step = trace[i];
-    const age  = i / N;
-    const cx   = toX(step.mu[dx]);
-    const cy   = toY(step.mu[dy]);
-    const rx   = Math.max(2, (step.sigma_diag[dx] / (hix - lox)) * pxW);
-    const ry   = Math.max(2, (step.sigma_diag[dy] / (hiy - loy)) * pxH);
-    const [r, g, b] = _hexToRgb(_dimColor(dx));
+    var step = trace[i]; var age = i / N;
+    var cx = toX(step.mu[dx]), cy = toY(step.mu[dy]);
+    var rx = Math.max(2, (step.sigma_diag[dx] / (hix - lox)) * pxW);
+    var ry = Math.max(2, (step.sigma_diag[dy] / (hiy - loy)) * pxH);
+    var [r, g, b] = _hexToRgb(_dimColor(dx));
     ctx.strokeStyle = `rgba(${r},${g},${b},${0.05 + age * 0.2})`;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
   }
-
-  // Mean trajectory trail
   for (let i = 1; i < N; i++) {
-    const age  = i / N;
-    const [r, g, b] = _hexToRgb(_dimColor(dx));
-    ctx.strokeStyle = `rgba(${r},${g},${b},${0.15 + age * 0.75})`;
-    ctx.lineWidth   = 1.5;
+    var age = i / N; var [r, g, b] = _hexToRgb(_dimColor(dx));
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.15 + age * 0.75})`; ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(toX(trace[i - 1].mu[dx]), toY(trace[i - 1].mu[dy]));
-    ctx.lineTo(toX(trace[i].mu[dx]),     toY(trace[i].mu[dy]));
+    ctx.moveTo(toX(trace[i-1].mu[dx]), toY(trace[i-1].mu[dy]));
+    ctx.lineTo(toX(trace[i].mu[dx]), toY(trace[i].mu[dy]));
     ctx.stroke();
   }
-
-  // Current mean (bold dot + σ ellipse)
   if (N > 0) {
-    const last = trace[N - 1];
-    const cx   = toX(last.mu[dx]);
-    const cy   = toY(last.mu[dy]);
-    const rx   = Math.max(3, (last.sigma_diag[dx] / (hix - lox)) * pxW);
-    const ry   = Math.max(3, (last.sigma_diag[dy] / (hiy - loy)) * pxH);
-    const [r, g, b] = _hexToRgb(_dimColor(dx));
-    ctx.strokeStyle = `rgba(${r},${g},${b},0.7)`;
-    ctx.lineWidth = 1.5;
+    var last = trace[N-1];
+    var cx = toX(last.mu[dx]), cy = toY(last.mu[dy]);
+    var rx = Math.max(3, (last.sigma_diag[dx] / (hix - lox)) * pxW);
+    var ry = Math.max(3, (last.sigma_diag[dy] / (hiy - loy)) * pxH);
+    var [r, g, b] = _hexToRgb(_dimColor(dx));
+    ctx.strokeStyle = `rgba(${r},${g},${b},0.7)`; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = _dimColor(dx);
     ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
   }
-
-  // Axis labels
-  const NAMES = DIM_LABELS;
   ctx.fillStyle = '#444'; ctx.font = '9px monospace';
-  ctx.fillText(NAMES[dx], W - 48, H - 4);
+  ctx.fillText(DIM_LABELS[dx], W - 48, H - 4);
   ctx.save(); ctx.translate(11, H / 2 + 20); ctx.rotate(-Math.PI / 2);
-  ctx.fillText(NAMES[dy], 0, 0); ctx.restore();
+  ctx.fillText(DIM_LABELS[dy], 0, 0); ctx.restore();
 }
 
 // ─── Viz 6: Structural Salience ω Backdrop ───────────────────────────────────
@@ -604,6 +577,7 @@ function _drawProcessNoise(ctx, W, H, data) {
 
 // ─── Viz 9: Innovation Energy ε(t) ───────────────────────────────────────────
 function _drawInnovationEnergy(ctx, W, H, data) {
+  if (W < 50 || H < 50) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); return; }
   const trace = data.trace;
   const dur   = data.total_dur || 1;
   const toX   = t => (t / dur) * W;
@@ -656,67 +630,51 @@ function _drawInnovationEnergy(ctx, W, H, data) {
 }
 
 // ─── Viz 10: Sample Scatter vs Posterior ─────────────────────────────────────
-function _drawSampleScatter(ctx, W, H, data) {
+function _drawSampleScatter(ctx, W, H, data, renderState) {
+  if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
-  const dx  = parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
-  const dy  = parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
-  // Auto-scale to actual sample range
-  const xVals = trace.map(s => s.sample[dx]);
-  const yVals = trace.map(s => s.sample[dy]);
+  const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  const dy  = (typeof _concertoDimY !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimY : parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   const pad = 24;
-  let lox = Math.min(...xVals), hix = Math.max(...xVals);
-  let loy = Math.min(...yVals), hiy = Math.max(...yVals);
-  const xPad = (hix - lox) * 0.15 || 0.1, yPad = (hiy - loy) * 0.15 || 0.1;
-  lox -= xPad; hix += xPad; loy -= yPad; hiy += yPad;
-  const toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
-  const toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
 
-  // Axis lines
+  var xVals = trace.map(s => s.sample[dx]), yVals = trace.map(s => s.sample[dy]);
+  var lox = Math.min(...xVals), hix = Math.max(...xVals);
+  var loy = Math.min(...yVals), hiy = Math.max(...yVals);
+  var xPad = (hix - lox) * 0.15 || 0.1, yPad = (hiy - loy) * 0.15 || 0.1;
+  lox -= xPad; hix += xPad; loy -= yPad; hiy += yPad;
+  var toX = v => pad + ((v - lox) / (hix - lox)) * (W - pad * 2);
+  var toY = v => (H - pad) - ((v - loy) / (hiy - loy)) * (H - pad * 2);
+
   ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 1;
-  const ax = toX(0), ay = toY(0);
+  var ax = toX(0), ay = toY(0);
   if (ax > pad && ax < W - pad) { ctx.beginPath(); ctx.moveTo(ax, 0); ctx.lineTo(ax, H); ctx.stroke(); }
   if (ay > pad && ay < H - pad) { ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(W, ay); ctx.stroke(); }
 
-  const N = trace.length;
-  const [rx, gx, bx] = _hexToRgb(_dimColor(dx));
-  const [ry, gy, by] = _hexToRgb(_dimColor(dy));
-
-  const pxW = W - pad * 2, pxH = H - pad * 2;
-  // 2σ and 1σ bands (evolving — draw all historical ellipses, fading)
+  var N = trace.length;
+  var [rx, gx, bx] = _hexToRgb(_dimColor(dx));
+  var pxW = W - pad * 2, pxH = H - pad * 2;
   for (let i = 0; i < N; i++) {
-    const step = trace[i];
-    const cx   = toX(step.mu[dx]);
-    const cy   = toY(step.mu[dy]);
-    const rx2  = Math.max(2, (step.sigma_diag[dx] * 2 / (hix - lox)) * pxW);
-    const ry2  = Math.max(2, (step.sigma_diag[dy] * 2 / (hiy - loy)) * pxH);
-    const age  = i / N;
-    ctx.strokeStyle = `rgba(${rx},${gx},${bx},${0.04 + age * 0.12})`;
-    ctx.lineWidth = 0.8;
+    var step = trace[i]; var age = i / N;
+    var cx = toX(step.mu[dx]), cy = toY(step.mu[dy]);
+    var rx2 = Math.max(2, (step.sigma_diag[dx] * 2 / (hix - lox)) * pxW);
+    var ry2 = Math.max(2, (step.sigma_diag[dy] * 2 / (hiy - loy)) * pxH);
+    ctx.strokeStyle = `rgba(${rx},${gx},${bx},${0.04 + age * 0.12})`; ctx.lineWidth = 0.8;
     ctx.beginPath(); ctx.ellipse(cx, cy, rx2, ry2, 0, 0, Math.PI * 2); ctx.stroke();
   }
-
-  // Historical dots
   for (let i = 0; i < N; i++) {
-    const step = trace[i];
-    const age  = i / N;
+    var step = trace[i]; var age = i / N;
     ctx.fillStyle = `rgba(${rx},${gx},${bx},${0.2 + age * 0.65})`;
-    ctx.beginPath();
-    ctx.arc(toX(step.sample[dx]), toY(step.sample[dy]), 2.5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(toX(step.sample[dx]), toY(step.sample[dy]), 2.5, 0, Math.PI * 2); ctx.fill();
   }
-
-  // Current mean
   if (N > 0) {
-    const last = trace[N - 1];
+    var last = trace[N-1];
     ctx.fillStyle = _dimColor(dx);
     ctx.beginPath(); ctx.arc(toX(last.mu[dx]), toY(last.mu[dy]), 4, 0, Math.PI * 2); ctx.fill();
   }
-
-  const NAMES = DIM_LABELS;
   ctx.fillStyle = '#444'; ctx.font = '9px monospace';
-  ctx.fillText(NAMES[dx], W - 48, H - 4);
+  ctx.fillText(DIM_LABELS[dx], W - 48, H - 4);
   ctx.save(); ctx.translate(11, H / 2 + 20); ctx.rotate(-Math.PI / 2);
-  ctx.fillText(NAMES[dy], 0, 0); ctx.restore();
+  ctx.fillText(DIM_LABELS[dy], 0, 0); ctx.restore();
 }
 
 // ─── Viz 11: Regime Blend Timeline ───────────────────────────────────────────

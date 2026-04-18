@@ -13,6 +13,10 @@ const DIM_RANGES = DIM_RANGES_DEFAULT;
 // _concertoGreyscaleMode is true. Editor stays colorful; only the concerto
 // render (video export) uses this palette.
 var _concertoGreyscaleMode = false;
+// Cached viz dimension selection for concerto mode — phase portrait and
+// state trajectory read these instead of the DOM selects during render.
+var _concertoDimX = 0;
+var _concertoDimY = 1;
 const _GREY_PALETTE = [
   '#ffffff', '#e8e8e8', '#d0d0d0', '#b8b8b8',
   '#a0a0a0', '#888888', '#707070', '#585858',
@@ -115,7 +119,7 @@ async function fetchAndDrawTrace() {
 var _traceFixedSize = false;   // when true, skip auto-resize (concerto mode)
 var _concertoMaxT  = Infinity; // progressive reveal: only draw trace up to this time
 
-function drawKalmanTrace(data) {
+function drawKalmanTrace(data, renderState) {
   const wrap   = document.getElementById('kalman-trace-wrap');
   const canvas = document.getElementById('kalman-trace-canvas');
   if (!wrap || !canvas || !data || !data.trace || !data.trace.length) return;
@@ -129,17 +133,17 @@ function drawKalmanTrace(data) {
   const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
 
-  // Progressive reveal: in concerto mode, only show trace up to _concertoMaxT
+  // Progressive reveal: in concerto mode, only show trace up to _concertoMaxT.
+  // Uses binary search (_upperBoundTrace) instead of .filter() to avoid O(N)
+  // scan of the full trace array every frame.
   const trace = (_concertoMaxT < Infinity)
-    ? data.trace.filter(s => s.t <= _concertoMaxT)
+    ? data.trace.slice(0, _upperBoundTrace(data.trace, _concertoMaxT))
     : data.trace;
   if (!trace.length) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); return; }
   const D        = DIM_RANGES.length;
-  // totalDur uses the FULL trace so the x-axis scale stays constant (no jumpy rescaling)
   const totalDur = data.total_dur || (data.trace[data.trace.length-1].t - data.trace[0].t) || 1;
   const t0       = data.trace[0].t;
 
-  // Layout — left pad larger for y-axis labels
   const padL = 22, padR = 8, padT = 6, padB = 18;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
@@ -154,7 +158,7 @@ function drawKalmanTrace(data) {
   ctx.lineWidth   = 1;
   ctx.setLineDash([2, 4]);
   [0, 0.25, 0.5, 0.75, 1].forEach(frac => {
-    const y = padT + plotH * (1 - frac);
+    var y = padT + plotH * (1 - frac);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
   });
   ctx.setLineDash([]);
@@ -163,60 +167,60 @@ function drawKalmanTrace(data) {
   ctx.fillStyle = '#555';
   ctx.font      = '9px Courier New';
   [[0, '0'], [0.5, '.5'], [1, '1']].forEach(([frac, label]) => {
-    const y = padT + plotH * (1 - frac);
+    var y = padT + plotH * (1 - frac);
     ctx.fillText(label, 4, y + 3);
   });
 
   // Vertical time ticks — solid
-  const tickInt = _niceTickInterval(totalDur, plotW);
+  var tickInt = _niceTickInterval(totalDur, plotW);
   ctx.fillStyle   = '#444';
   ctx.strokeStyle = '#1d1d1d';
   for (let t = 0; t <= totalDur; t += tickInt) {
-    const x = padL + (t / totalDur) * plotW;
+    var x = padL + (t / totalDur) * plotW;
     ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
     ctx.fillText(t.toFixed(0) + 's', x + 2, H - 5);
   }
 
   // Per-dim: bold mean line (music-driven structure) + faint sample dots (stochasticity)
   // Only draw dimensions that are actually wired (mix_dims + per-event dims).
-  const _activeDims = new Set([
+  var _activeDims = new Set([
     ...(interpState.mix_dims || ['gain_db']),
     'timing_offset_ms', 'attack_shape', 'release_shape',  // always per-event
   ]);
-  const _activeDimIndices = [];
+  var _activeDimIndices = [];
   for (let d = 0; d < D; d++) {
     if (_activeDims.has(DIM_NAMES[d])) _activeDimIndices.push(d);
   }
 
   // Auto-scale each dim to its OBSERVED range so tiny variations are visible.
   for (const d of _activeDimIndices) {
-    const col      = _dimColor(d);
-    const [r, g, b] = _hexToRgb(col);
+    var col      = _dimColor(d);
+    var [r, g, b] = _hexToRgb(col);
 
     // Find observed min/max across both mu and sample for this dim
-    let oMin = +Infinity, oMax = -Infinity;
+    var oMin = +Infinity, oMax = -Infinity;
     for (const step of trace) {
       if (step.mu     && step.mu[d]     != null) { oMin = Math.min(oMin, step.mu[d]);     oMax = Math.max(oMax, step.mu[d]); }
       if (step.sample && step.sample[d] != null) { oMin = Math.min(oMin, step.sample[d]); oMax = Math.max(oMax, step.sample[d]); }
     }
     if (!isFinite(oMin) || !isFinite(oMax)) { oMin = 0; oMax = 1; }
     // Pad 10% so lines don't touch the edges; if flat, give a small synthetic span
-    let span = oMax - oMin;
+    var span = oMax - oMin;
     if (span < 1e-9) span = Math.max(Math.abs(oMax), 1) * 0.1;
-    const pad = span * 0.1;
-    const lo = oMin - pad, hi = oMax + pad;
-    const normOf = v => (hi > lo) ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
+    var pad = span * 0.1;
+    var lo = oMin - pad, hi = oMax + pad;
+    var normOf = v => (hi > lo) ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
 
     // Bold mean line (μ) — shows how markings drive the filter
     ctx.strokeStyle = `rgba(${r},${g},${b},0.9)`;
     ctx.lineWidth   = 1.5;
     ctx.beginPath();
-    let first = true;
+    var first = true;
     for (let i = 0; i < trace.length; i++) {
-      const step = trace[i];
-      const v    = step.mu ? step.mu[d] : 0;
-      const x    = padL + ((step.t - t0) / totalDur) * plotW;
-      const y    = padT + plotH * (1 - normOf(v));
+      var step = trace[i];
+      var v    = step.mu ? step.mu[d] : 0;
+      var x    = padL + ((step.t - t0) / totalDur) * plotW;
+      var y    = padT + plotH * (1 - normOf(v));
       if (first) { ctx.moveTo(x, y); first = false; }
       else ctx.lineTo(x, y);
     }
@@ -225,26 +229,26 @@ function drawKalmanTrace(data) {
     // Thin sample dots (the stochastic draws that actually drive audio)
     ctx.fillStyle = `rgba(${r},${g},${b},0.35)`;
     for (let i = 0; i < trace.length; i++) {
-      const step = trace[i];
-      const v    = step.sample ? step.sample[d] : null;
+      var step = trace[i];
+      var v    = step.sample ? step.sample[d] : null;
       if (v == null) continue;
-      const x = padL + ((step.t - t0) / totalDur) * plotW;
-      const y = padT + plotH * (1 - normOf(v));
+      var x = padL + ((step.t - t0) / totalDur) * plotW;
+      var y = padT + plotH * (1 - normOf(v));
       ctx.beginPath(); ctx.arc(x, y, 1.2, 0, Math.PI * 2); ctx.fill();
     }
   }
 
   // Compact legend (top-right, 2 cols) — only active dims
-  const legCols = 2;
-  const legW    = 92;
-  const legRowH = 11;
-  const legX    = W - padR - legW * legCols;
-  const legY    = padT + 2;
+  var legCols = 2;
+  var legW    = 92;
+  var legRowH = 11;
+  var legX    = W - padR - legW * legCols;
+  var legY    = padT + 2;
   ctx.font = '8px Courier New';
   _activeDimIndices.forEach((d, li) => {
-    const col = _dimColor(d);
-    const cx  = legX + (li % legCols) * legW;
-    const cy  = legY + Math.floor(li / legCols) * legRowH;
+    var col = _dimColor(d);
+    var cx  = legX + (li % legCols) * legW;
+    var cy  = legY + Math.floor(li / legCols) * legRowH;
     ctx.fillStyle = col;
     ctx.fillRect(cx, cy, 7, 7);
     ctx.fillStyle = 'rgba(200,200,200,0.65)';
@@ -252,13 +256,13 @@ function drawKalmanTrace(data) {
   });
 
   // Playback cursor (yellow dashed) — active during audio playback
-  let cursorT = -1;
+  var cursorT = -1;
   if (typeof isMixPlaying === 'function' && isMixPlaying()
       && typeof mixCurrentTime === 'function') {
     cursorT = mixCurrentTime();
   }
   if (cursorT >= 0 && cursorT <= totalDur) {
-    const x = padL + ((cursorT - t0) / totalDur) * plotW;
+    var x = padL + ((cursorT - t0) / totalDur) * plotW;
     ctx.save();
     ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(255,255,255,0.75)' : 'rgba(255,240,100,0.75)';
     ctx.lineWidth   = 1.5;
@@ -269,8 +273,8 @@ function drawKalmanTrace(data) {
 
   // Hover cursor (cyan solid) + tooltip — tracks mouse position
   if (_hoverX >= padL && _hoverX <= W - padR) {
-    const frac = (_hoverX - padL) / plotW;
-    const tHover = t0 + frac * totalDur;
+    var frac = (_hoverX - padL) / plotW;
+    var tHover = t0 + frac * totalDur;
 
     // Vertical line
     ctx.save();
@@ -280,19 +284,19 @@ function drawKalmanTrace(data) {
     ctx.restore();
 
     // Find nearest trace step
-    let bestIdx = 0, bestDt = Infinity;
+    var bestIdx = 0, bestDt = Infinity;
     for (let i = 0; i < trace.length; i++) {
-      const dt = Math.abs(trace[i].t - tHover);
+      var dt = Math.abs(trace[i].t - tHover);
       if (dt < bestDt) { bestDt = dt; bestIdx = i; }
     }
-    const step = trace[bestIdx];
+    var step = trace[bestIdx];
 
     // Tooltip — only active dims
-    const TT_W = 160;
-    const TT_H = 10 + _activeDimIndices.length * 10 + 8;
-    let ttX = _hoverX + 8;
+    var TT_W = 160;
+    var TT_H = 10 + _activeDimIndices.length * 10 + 8;
+    var ttX = _hoverX + 8;
     if (ttX + TT_W > W - 4) ttX = _hoverX - TT_W - 8;
-    let ttY = padT + 4;
+    var ttY = padT + 4;
     if (ttY + TT_H > padT + plotH) ttY = padT + plotH - TT_H - 4;
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(ttX, ttY, TT_W, TT_H);
@@ -302,13 +306,13 @@ function drawKalmanTrace(data) {
     ctx.fillStyle = '#ccc';
     ctx.fillText(`t = ${step.t.toFixed(2)}s`, ttX + 5, ttY + 10);
     _activeDimIndices.forEach((d, li) => {
-      const col = _dimColor(d);
-      const v = step.sample ? step.sample[d] : (step.mu ? step.mu[d] : 0);
+      var col = _dimColor(d);
+      var v = step.sample ? step.sample[d] : (step.mu ? step.mu[d] : 0);
       ctx.fillStyle = col;
       ctx.fillRect(ttX + 5, ttY + 15 + li * 10, 5, 5);
       ctx.fillStyle = '#aaa';
-      const label = DIM_LABELS[d];
-      const valStr = Math.abs(v) >= 100 ? v.toFixed(0)
+      var label = DIM_LABELS[d];
+      var valStr = Math.abs(v) >= 100 ? v.toFixed(0)
                    : Math.abs(v) >= 10  ? v.toFixed(1)
                                         : v.toFixed(2);
       ctx.fillText(`${label.padEnd(12).slice(0,12)} ${valStr}`, ttX + 14, ttY + 20 + li * 10);

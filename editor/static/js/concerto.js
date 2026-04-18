@@ -6,6 +6,40 @@ var _concertoActive = false;
 var _concertoRaf    = null;
 var _concertoViewMode = 'combined';  // 'combined' | 'score' | 'meta'
 var _concertoCleanMode = false;
+// Lead-in/out for live concerto view: during lead-in the view shows
+// black + suppresses viz; audio starts after leadIn seconds.
+var _concertoViewLeadIn  = 0;
+var _concertoViewLeadOut = 0;
+var _concertoViewStartT  = 0;     // performance.now() when view entered
+var _concertoViewPhase   = 'idle'; // 'lead-in' | 'playing' | 'lead-out' | 'idle'
+
+// Incremental render states for the 5 viz panels in the meta concerto
+// view. Created on first meta-mode composite frame, reset when render ends.
+// Each entry holds a persistent canvas + cached axes + lastIdx so the
+// viz functions only draw new trace points each frame (O(N) total instead
+// of O(N²)). Null when not in a meta render.
+var _metaRenderStates = null;
+
+function _makeRenderState(fullData, w, h) {
+  if (!fullData || !fullData.trace || !fullData.trace.length) return null;
+  var canvas = (typeof OffscreenCanvas !== 'undefined')
+    ? new OffscreenCanvas(w, h)
+    : document.createElement('canvas');
+  if (canvas.width !== w)  canvas.width  = w;
+  if (canvas.height !== h) canvas.height = h;
+  return {
+    fullTrace: fullData.trace,
+    totalDur:  fullData.total_dur || (fullData.trace[fullData.trace.length-1].t - fullData.trace[0].t) || 1,
+    t0:        fullData.trace[0].t,
+    lastIdx:   0,
+    canvas:    canvas,
+    ctx:       canvas.getContext('2d'),
+    axes:      null,    // set by each viz function on first call
+    bgDrawn:   false,
+    w:         w,
+    h:         h,
+  };
+}
 
 // Draw score/meta canvases with only the image + cursor, no annotations
 function _drawCleanFrameOverlay() {
@@ -76,7 +110,15 @@ function enterConcertoView() {
   _concertoActive = true;
   _concertoViewMode = (document.getElementById('concerto-view-mode') || {}).value || 'combined';
   _concertoCleanMode = true;
+  _concertoGreyscaleMode = true;
+  _concertoDimX = parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  _concertoDimY = parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   overlay.style.display = 'block';
+
+  // Read lead-in/out from the top bar inputs
+  _concertoViewLeadIn  = Math.max(0, parseFloat(document.getElementById('concerto-lead-in-bar')?.value) || 0);
+  _concertoViewLeadOut = Math.max(0, parseFloat(document.getElementById('concerto-lead-out-bar')?.value) || 0);
+  _concertoViewStartT  = performance.now();
 
   // Go fullscreen
   const el = document.documentElement;
@@ -88,21 +130,37 @@ function enterConcertoView() {
   const dpr = window.devicePixelRatio || 1;
   _upsizeSourceCanvases(
     Math.round(window.innerWidth * dpr),
-    Math.round(window.innerHeight * dpr)
+    Math.round(window.innerHeight * dpr),
+    _concertoViewMode
   );
   window.addEventListener('resize', _onConcertoResize);
 
+  // During lead-in: show black, suppress viz. Audio starts after leadIn.
+  if (_concertoViewLeadIn > 0) {
+    _concertoViewPhase = 'lead-in';
+    _concertoMaxT = -1;  // suppress viz
+    state.currentTime = 0;
+    setTimeout(() => {
+      if (!_concertoActive) return;
+      _concertoViewPhase = 'playing';
+      if (typeof togglePlay === 'function') togglePlay();
+    }, _concertoViewLeadIn * 1000);
+  } else {
+    _concertoViewPhase = 'playing';
+    if (typeof togglePlay === 'function') togglePlay();
+  }
+
   // Start the composite loop
   _concertoTick();
-
-  // Auto-start playback
-  if (typeof togglePlay === 'function') togglePlay();
 }
 
 function exitConcertoView() {
   _concertoActive = false;
   _concertoCleanMode = false;
+  _concertoGreyscaleMode = false;
   _concertoMaxT = Infinity;  // restore full view
+  _concertoViewPhase = 'idle';
+  _metaRenderStates = null;
   const overlay = document.getElementById('concerto-overlay');
   if (overlay) overlay.style.display = 'none';
   window.removeEventListener('resize', _onConcertoResize);
@@ -118,7 +176,8 @@ function _onConcertoResize() {
   const dpr = window.devicePixelRatio || 1;
   _upsizeSourceCanvases(
     Math.round(window.innerWidth * dpr),
-    Math.round(window.innerHeight * dpr)
+    Math.round(window.innerHeight * dpr),
+    _concertoViewMode
   );
 }
 
@@ -132,18 +191,30 @@ function _resizeConcertoCanvas() {
 function _concertoTick() {
   if (!_concertoActive) return;
 
-  // Update time from audio playback
-  if (typeof _waPlaying !== 'undefined' && _waPlaying && typeof _waCurrentTime === 'function') {
-    state.currentTime = _waCurrentTime();
-  } else if (typeof _mixPlaying !== 'undefined' && _mixPlaying && typeof mixCurrentTime === 'function' && typeof realToScore === 'function') {
-    state.currentTime = realToScore(mixCurrentTime());
+  if (_concertoViewPhase === 'lead-in') {
+    // During lead-in: elapsed time since view started → map to negative
+    // score time so the cursor is before the image (shows black).
+    var elapsed = (performance.now() - _concertoViewStartT) / 1000;
+    // Map elapsed [0..leadIn] → score time [-∞..0]. The cursor position
+    // at elapsed=leadIn should be at the image start (scoreTime=0).
+    // We use a simple linear map: scoreTime = elapsed - leadIn
+    state.currentTime = elapsed - _concertoViewLeadIn;
+    _concertoMaxT = -1;  // suppress viz
+    if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = -1;
   } else {
-    var pl = (typeof baseAudio !== 'undefined' && !baseAudio.paused && !baseAudio.ended) ? baseAudio : null;
-    if (pl) state.currentTime = pl.currentTime;
-  }
+    // Normal playback: update time from audio
+    if (typeof _waPlaying !== 'undefined' && _waPlaying && typeof _waCurrentTime === 'function') {
+      state.currentTime = _waCurrentTime();
+    } else if (typeof _mixPlaying !== 'undefined' && _mixPlaying && typeof mixCurrentTime === 'function' && typeof realToScore === 'function') {
+      state.currentTime = realToScore(mixCurrentTime());
+    } else {
+      var pl = (typeof baseAudio !== 'undefined' && !baseAudio.paused && !baseAudio.ended) ? baseAudio : null;
+      if (pl) state.currentTime = pl.currentTime;
+    }
 
-  _concertoMaxT = state.currentTime;
-  if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = state.currentTime;
+    _concertoMaxT = state.currentTime;
+    if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = state.currentTime;
+  }
 
   // Draw all source canvases ourselves — no reliance on playTick
   if (_concertoCleanMode) {
@@ -156,6 +227,11 @@ function _concertoTick() {
   }
   if (typeof drawKalmanTrace === 'function' && _lastTraceData)
     drawKalmanTrace(_lastTraceData);
+  // updateVizPanel is NOT needed here — _compositeConcerto('meta')
+  // draws the 4 viz panels directly into src.viz per frame using the
+  // _draw* functions. Calling updateVizPanel would double the work and
+  // overwrite src.viz with a single-panel view instead of the 4-panel
+  // compositing that _compositeConcerto does internally.
 
   _compositeConcerto(document.getElementById('concerto-canvas'));
   _concertoRaf = requestAnimationFrame(_concertoTick);
@@ -198,102 +274,107 @@ function _compositeConcerto(target, W, H, mode) {
   ctx.fillRect(0, 0, W, H);
 
   if (mode === 'score') {
-    // Draw score image + cursor directly (no reliance on frameCanvas)
-    var sv = (typeof scoreView !== 'undefined') ? scoreView : null;
-    if (sv && sv.img && sv.img.complete && sv.img.naturalWidth > 0) {
-      var s   = (H / sv.img.naturalHeight) * sv.scale;
-      var dur = sv.end - sv.start;
-      var dw  = sv.img.naturalWidth * s;
-      var curDisp = dur > 0 ? ((state.currentTime - sv.start) / dur) * dw : 0;
-      var sl  = curDisp - W / 2;
-      var srcX = sl / s, srcW = W / s;
-      var clSrcX = Math.max(0, srcX);
-      var clSrcW = Math.min(srcW, sv.img.naturalWidth - clSrcX);
-      var dstX = (clSrcX - srcX) * s, dstW = clSrcW * s;
-      if (clSrcW > 0 && dstW > 0) {
-        ctx.drawImage(sv.img, clSrcX, 0, clSrcW, sv.img.naturalHeight, dstX, 0, dstW, H);
-      }
-    } else if (src.score && src.score.width > 0 && src.score.height > 0) {
+    // Use the editor's frameCanvas directly — _drawCleanFrameOverlay (or
+    // draw()) already rendered the score image + cursor with the exact same
+    // scroll and timing logic the composer/interpreter uses. We just copy
+    // it to the output at full size.
+    if (src.score && src.score.width > 0 && src.score.height > 0) {
       ctx.drawImage(src.score, 0, 0, W, H);
     }
-    // Cursor
-    var cDur = sv ? (sv.end - sv.start) : (state.duration || 1);
-    var cx = cDur > 0 ? ((state.currentTime - (sv ? sv.start : 0)) / cDur) * W : 0;
-    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-    ctx.lineWidth = 1; ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(cx + W/2, 0); ctx.lineTo(cx + W/2, H); ctx.stroke();
   } else if (mode === 'meta') {
-    // Dashboard layout: metadata centered, viz panels top + bottom
-    const gap    = Math.round(W * 0.003);
-    const stripH = Math.round(H * 0.25);  // top/bottom strips = 25% each
-    const midH   = H - stripH * 2 - gap * 4;  // middle = 50%
+    // Dashboard layout:
+    //   Top row:    [Sample Scatter] [Kalman Trace (2×)] [State Trajectory]
+    //   Middle:     metadata weave (full width, scrolling)
+    //   Bottom row: X [Phase Portrait] X [Marginal Gaussians] X
+    //   ~1cm gap between top panels and margins; equal spacing on bottom.
+
+    // Gap ≈ 1cm everywhere for consistent spacing + alignment.
+    // At 4K (2160H) ≈ 43px; at 1080p ≈ 22px.
+    const gap = Math.round(Math.max(4, H * 0.02));
+
+    // Vertical: top strip | gap | middle (weave) | gap | bottom strip
+    const topH  = Math.round(H * 0.25);
+    const botH  = Math.round(H * 0.25);
+    const midY  = topH + gap;
+    const botY  = H - botH;
+    const midH  = botY - gap - midY;
 
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, W, H);
 
-    // Metadata centered in middle area at 70% width
+    // ── Metadata weave — use src.meta (score2Canvas) which
+    //    _drawCleanScoreOverlay already rendered with the editor's exact
+    //    scroll + cursor logic. Same behavior as composer/interpreter.
     if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
-      const metaW = Math.floor(W * 0.7);
-      const metaH = Math.min(midH - gap * 2, Math.round(metaW * (src.meta.height / src.meta.width)));
-      const mx = Math.floor((W - metaW) / 2);
-      const my = stripH + gap * 2 + Math.floor((midH - metaH) / 2);
-      ctx.drawImage(src.meta, mx, my, metaW, metaH);
+      ctx.drawImage(src.meta, 0, midY, W, midH);
     }
 
-    // Draw 4 different viz types + timeline
-    // Viz panels are square (stripH × stripH), centered with black space between
-    var sqSz = stripH;  // square side = strip height
-    var botY = stripH + gap * 2 + midH + gap;
+    // ── Prepare trace data ────────────────────────────────────────────
+    var trace = (_lastTraceData && _lastTraceData.trace) ? _lastTraceData.trace : [];
+    var hi    = (_concertoMaxT < Infinity && trace.length) ? _upperBoundTrace(trace, _concertoMaxT) : trace.length;
+    var fData = (!trace.length) ? _lastTraceData
+              : (hi === trace.length) ? _lastTraceData
+              : (hi === 0) ? _lastTraceData
+              : { ..._lastTraceData, trace: trace.slice(0, hi) };
 
-    // Top strip: 2 square viz panels centered
-    var topTotalW = sqSz * 2 + gap;
-    var topX0 = Math.floor((W - topTotalW) / 2);
+    if (fData && fData.trace && fData.trace.length) {
+      // ── TOP ROW ─────────────────────────────────────────────────────
+      // Layout: gap | scatter(1×) | gap | timeline(2×) | gap | trajectory(1×) | gap
+      // Total units = 4. Available width = W - 5*gap.
+      var topUnit   = Math.floor((W - gap * 5) / 4);
+      var topSmall  = Math.max(10, topUnit);
+      var topWide   = Math.max(10, topUnit * 2);
+      var topPanelH = Math.max(10, topH - gap * 2);
 
-    // Bottom strip: 2 square viz panels + timeline in the middle
-    var tlW = W - sqSz * 2 - gap * 4;  // timeline fills remaining width
-    var botX0 = gap;
+      // ── BOTTOM ROW ──────────────────────────────────────────────────
+      // Layout: X | panel1 | X | panel2 | X  (X = equal spacing)
+      // Add ~2cm to each panel beyond the square height
+      var botExtra  = Math.round(Math.max(4, H * 0.035));  // ~2cm
+      var botPanelH = Math.max(10, botH - gap * 2);
+      var botPanelW = Math.max(10, Math.min(botPanelH + botExtra, Math.floor((W - gap * 3) / 2)));
+      var botSpaceX = Math.floor((W - botPanelW * 2) / 3);
 
-    if (src.viz && _lastTraceData && _lastTraceData.trace && _lastTraceData.trace.length) {
-      src.viz.width  = sqSz;
-      src.viz.height = sqSz;
-      var vizCtx = src.viz.getContext('2d');
-      // Binary-search the upper-bound index (trace is sorted by .t). Slicing
-      // is still required because the viz functions iterate the trace array,
-      // but the slice is O(k) on the kept prefix instead of O(n) per frame.
-      var trace = _lastTraceData.trace;
-      var hi    = (_concertoMaxT < Infinity) ? _upperBoundTrace(trace, _concertoMaxT) : trace.length;
-      var fData = (hi === trace.length)
-        ? _lastTraceData
-        : (hi === 0 ? _lastTraceData : { ..._lastTraceData, trace: trace.slice(0, hi) });
+      var vizCtx;
 
-      // Top left: Marginal Gaussians
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
-      try { _drawMarginalGaussians(vizCtx, sqSz, sqSz, fData); } catch(e) {}
-      ctx.drawImage(src.viz, topX0, gap, sqSz, sqSz);
+      // Top left: Sample Scatter
+      src.viz.width = topSmall; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topSmall, topPanelH);
+      try { _drawSampleScatter(vizCtx, topSmall, topPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, gap, gap, topSmall, topPanelH);
 
-      // Top right: Phase Portrait
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
-      try { _drawPhasePortrait(vizCtx, sqSz, sqSz, fData); } catch(e) {}
-      ctx.drawImage(src.viz, topX0 + sqSz + gap, gap, sqSz, sqSz);
-
-      // Bottom left: Innovation Energy
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
-      try { _drawInnovationEnergy(vizCtx, sqSz, sqSz, fData); } catch(e) {}
-      ctx.drawImage(src.viz, botX0, botY, sqSz, sqSz);
-
-      // Bottom center: Timeline (wide, not square)
+      // Top middle: Kalman trace timeline (double width)
+      if (src.timeline) {
+        src.timeline.width  = topWide;
+        src.timeline.height = topPanelH;
+      }
+      if (typeof drawKalmanTrace === 'function' && _lastTraceData) {
+        try { drawKalmanTrace(_lastTraceData); } catch(e) {}
+      }
       if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-        ctx.drawImage(src.timeline, botX0 + sqSz + gap, botY, tlW, stripH);
+        ctx.drawImage(src.timeline, gap * 2 + topSmall, gap, topWide, topPanelH);
       }
 
-      // Bottom right: State Trajectory
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, sqSz, sqSz);
-      try { _drawStateTrajectory(vizCtx, sqSz, sqSz, fData); } catch(e) {}
-      ctx.drawImage(src.viz, botX0 + sqSz + gap * 2 + tlW, botY, sqSz, sqSz);
-    } else {
-      if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-        ctx.drawImage(src.timeline, gap, botY, W - gap * 2, stripH);
-      }
+      // Top right: State Trajectory
+      src.viz.width = topSmall; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topSmall, topPanelH);
+      try { _drawStateTrajectory(vizCtx, topSmall, topPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, gap * 3 + topSmall + topWide, gap, topSmall, topPanelH);
+
+      // Bottom left: Phase Portrait
+      src.viz.width = botPanelW; src.viz.height = botPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botPanelW, botPanelH);
+      try { _drawPhasePortrait(vizCtx, botPanelW, botPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botSpaceX, botY + gap, botPanelW, botPanelH);
+
+      // Bottom right: Marginal Gaussians
+      src.viz.width = botPanelW; src.viz.height = botPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botPanelW, botPanelH);
+      try { _drawMarginalGaussians(vizCtx, botPanelW, botPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botSpaceX * 2 + botPanelW, botY + gap, botPanelW, botPanelH);
     }
   } else if (mode === 'timeline') {
     // Standalone timeline strip — fills the full frame
@@ -302,7 +383,7 @@ function _compositeConcerto(target, W, H, mode) {
       ctx.drawImage(src.timeline, 0, 0, W, H);
     }
 
-  } else if (mode === 'marginal' || mode === 'phase' || mode === 'energy' || mode === 'trajectory') {
+  } else if (mode === 'scatter' || mode === 'marginal' || mode === 'phase' || mode === 'energy' || mode === 'trajectory') {
     // Standalone single viz panel — draw the specific viz function at full W×H
     ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H);
     if (_lastTraceData && _lastTraceData.trace && _lastTraceData.trace.length) {
@@ -312,7 +393,8 @@ function _compositeConcerto(target, W, H, mode) {
         ? _lastTraceData
         : (hi === 0 ? _lastTraceData : { ..._lastTraceData, trace: trace.slice(0, hi) });
       try {
-        if      (mode === 'marginal')   _drawMarginalGaussians(ctx, W, H, fData);
+        if      (mode === 'scatter')    _drawSampleScatter(ctx, W, H, fData);
+        else if (mode === 'marginal')   _drawMarginalGaussians(ctx, W, H, fData);
         else if (mode === 'phase')      _drawPhasePortrait(ctx, W, H, fData);
         else if (mode === 'energy')     _drawInnovationEnergy(ctx, W, H, fData);
         else if (mode === 'trajectory') _drawStateTrajectory(ctx, W, H, fData);
@@ -357,23 +439,53 @@ function _setConcertoFixedSize(on) {
   if (typeof _vizFixedSize   !== 'undefined') _vizFixedSize   = on;
 }
 
-function _upsizeSourceCanvases(W, H) {
+function _upsizeSourceCanvases(W, H, mode) {
   _setConcertoFixedSize(true);
   const src = _getSourceCanvases();
-  const vizW      = Math.floor(W * _CONCERTO_VIZ_RATIO);
-  const leftW     = W - vizW;
-  const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO);
-  const metaH     = Math.floor(H * _LEFT_META_RATIO);
-  const timelineH = H - scoreH - metaH;
+  mode = mode || _concertoViewMode || 'combined';
 
+  let targets;
+  if (mode === 'meta') {
+    // Meta layout: MUST match _compositeConcerto('meta') EXACTLY.
+    // Same gap, topH, botH, midH formulas as the compositing code.
+    const gap    = Math.round(Math.max(4, H * 0.02));
+    const topH   = Math.round(H * 0.25);
+    const botH   = Math.round(H * 0.25);
+    const midY   = topH + gap;
+    const botY   = H - botH;
+    const midH   = botY - gap - midY;
+    const topUnit   = Math.floor((W - gap * 5) / 4);
+    const topWide   = topUnit * 2;
+    const topPanelH = Math.max(10, topH - gap * 2);
+    targets = [
+      ['score',    W, midH],                   // not displayed but sized for safety
+      ['meta',     W, midH],                   // fills the full middle band
+      ['timeline', topWide, topPanelH],        // kalman trace (widest panel)
+      ['viz',      topWide, topPanelH],        // sized to largest panel
+    ];
+  } else if (mode === 'score') {
+    // Score-only: just needs the score canvas at full frame size
+    targets = [
+      ['score',    W, H],
+      ['meta',     W, H],
+      ['timeline', W, Math.round(H * 0.2)],
+      ['viz',      Math.round(W * 0.2), H],
+    ];
+  } else {
+    // Combined layout (original sizing)
+    const vizW      = Math.floor(W * _CONCERTO_VIZ_RATIO);
+    const leftW     = W - vizW;
+    const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO);
+    const metaH     = Math.floor(H * _LEFT_META_RATIO);
+    const timelineH = H - scoreH - metaH;
+    targets = [
+      ['score',    leftW, scoreH],
+      ['meta',     leftW, metaH],
+      ['timeline', leftW, timelineH],
+      ['viz',      vizW,  H],
+    ];
+  }
   _savedCanvasSizes = {};
-  // Save and resize each canvas to its target region size
-  const targets = [
-    ['score',    leftW, scoreH],
-    ['meta',     leftW, metaH],
-    ['timeline', leftW, timelineH],
-    ['viz',      vizW,  H],
-  ];
   for (const [key, tw, th] of targets) {
     const c = src[key];
     if (!c) continue;
@@ -417,7 +529,7 @@ let _concertoDownloading = false;
 async function _runConcertoSegments(opts) {
   const { W, H, FPS, totalFrames, startTime, frameDur,
           drawFrame, mode, isTest, statusLabel,
-          wireFormat = 'raw' } = opts;
+          wireFormat = 'raw', sequential = false } = opts;
 
   // Factory: make a fresh offscreen canvas. Called once here and again at
   // the start of each segment to release accumulated native (GPU/texture)
@@ -551,10 +663,17 @@ async function _runConcertoSegments(opts) {
         if (workerError) throw new Error(workerError);
         const f      = segStartFrame + sf;
         const realT  = startTime + f * frameDur;
-        const scoreT = (typeof realToScore === 'function') ? realToScore(realT) : realT;
+        // During lead-in (realT < 0), clamp to -1 so the score image
+        // shows black (cursor before image) and the viz panels show
+        // nothing (_concertoMaxT < 0 → _upperBoundTrace returns 0 →
+        // empty trace slice → blank viz). During lead-out (realT past
+        // audio end), the score clipping and viz progressive reveal
+        // handle it naturally.
+        const clampedRealT = Math.max(-1, realT);
+        const scoreT = (typeof realToScore === 'function') ? realToScore(clampedRealT) : clampedRealT;
         state.currentTime = scoreT;
-        _concertoMaxT = scoreT;
-        if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = realT;
+        _concertoMaxT = (realT < 0) ? -1 : scoreT;
+        if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = (realT < 0) ? -1 : realT;
 
         const _tDraw0 = performance.now();
         drawFrame(realT, scoreT);
@@ -617,16 +736,32 @@ async function _runConcertoSegments(opts) {
             fd.append('lengths', lengths);
 
             const upload = fetch('/concerto_frames', { method: 'POST', body: fd })
-              .then(() => { inflight = inflight.filter(p => p !== upload); });
+              .then(() => { inflight = inflight.filter(p => p !== upload); })
+              .catch(() => { inflight = inflight.filter(p => p !== upload); });
             inflight.push(upload);
 
             batchStartIdx = sf + 1;
             batchBuf = [];
 
-            if (inflight.length >= MAX_INFLIGHT) {
-              const _tWait0 = performance.now();
-              await inflight[0];
-              _profUploadWaitMs += (performance.now() - _tWait0);
+            if (sequential) {
+              // Sequential mode: wait for ALL uploads before sending more.
+              // Only 1 batch in the pipeline at a time. Prevents pipe-full
+              // deadlock but removes upload/render overlap.
+              if (inflight.length > 0) {
+                const _tWait0 = performance.now();
+                await Promise.all(inflight);
+                inflight = [];
+                _profUploadWaitMs += (performance.now() - _tWait0);
+              }
+            } else {
+              // Pipelined mode (default): allow up to MAX_INFLIGHT
+              // concurrent uploads. Faster but can freeze if ffmpeg
+              // falls behind and all inflight slots block on stdin.write.
+              if (inflight.length >= MAX_INFLIGHT) {
+                const _tWait0 = performance.now();
+                await inflight[0];
+                _profUploadWaitMs += (performance.now() - _tWait0);
+              }
             }
           }
         }
@@ -780,6 +915,18 @@ async function startConcertoDownload() {
         </div>
         <div style="font-size:9px;color:#555;margin-top:2px;">Full duration: ${dur.toFixed(1)}s. Leave as-is for whole piece.</div>
       </div>
+      <div>
+        <label style="font-size:11px;color:#888;">Lead-in / lead-out (seconds of black before and after music):</label>
+        <div style="display:flex;gap:6px;margin-top:3px;">
+          <input id="concerto-lead-in" type="number" value="${parseFloat(document.getElementById('concerto-lead-in-bar')?.value) || 0}" min="0" step="0.5" placeholder="lead-in"
+                 style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+          <span style="font-size:9px;color:#555;align-self:center;">in</span>
+          <input id="concerto-lead-out" type="number" value="${parseFloat(document.getElementById('concerto-lead-out-bar')?.value) || 0}" min="0" step="0.5" placeholder="lead-out"
+                 style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+          <span style="font-size:9px;color:#555;align-self:center;">out</span>
+        </div>
+        <div style="font-size:9px;color:#555;margin-top:2px;">Black screen before/after the score. Music starts when the image edge crosses the cursor.</div>
+      </div>
       <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
         <label style="font-size:11px;color:#ccc;display:block;margin-bottom:4px;"><b>Outputs</b> (pick any combination):</label>
         <label style="font-size:11px;color:#ccc;display:block;">
@@ -794,8 +941,15 @@ async function startConcertoDownload() {
         <div style="margin-top:6px;padding-left:4px;">
           <label style="font-size:10px;color:#888;display:block;margin-bottom:2px;">Individual viz videos (greyscale, no sound):</label>
           <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-scatter" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:120px;">Sample Scatter</span>
+            <input id="concerto-viz-scatter-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-scatter-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
             <input id="concerto-out-timeline" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Timeline</span>
+            <span style="font-size:10px;color:#aaa;width:120px;">Kalman Trace</span>
             <input id="concerto-viz-timeline-w" type="number" value="1920" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
             <span style="font-size:9px;color:#555;">\u00d7</span>
             <input id="concerto-viz-timeline-h" type="number" value="540" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
@@ -814,13 +968,6 @@ async function startConcertoDownload() {
             <span style="font-size:9px;color:#555;">\u00d7</span>
             <input id="concerto-viz-phase-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
           </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-energy" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Innovation Energy</span>
-            <input id="concerto-viz-energy-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-energy-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
           <div style="display:flex;align-items:center;gap:4px;">
             <input id="concerto-out-trajectory" type="checkbox" style="margin:0;">
             <span style="font-size:10px;color:#aaa;width:120px;">State Trajectory</span>
@@ -835,6 +982,12 @@ async function startConcertoDownload() {
           <input id="concerto-neutral" type="checkbox"> <b>Performance-neutral</b> (strips tempo/timing expression from audio)
         </label>
         <div style="font-size:9px;color:#555;margin-top:2px;">No accelerando/ritardando, no Kalman timing jitter, no articulation stretch. Pitch/dynamics/FX unchanged.</div>
+      </div>
+      <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
+        <label style="font-size:11px;color:#ccc;">
+          <input id="concerto-sequential" type="checkbox"> <b>Sequential upload</b> (slower but prevents render freezing)
+        </label>
+        <div style="font-size:9px;color:#555;margin-top:2px;">Wait for each batch to finish before sending the next. Use if the render stalls with the default pipelined mode.</div>
       </div>
     </div>`;
 
@@ -876,14 +1029,15 @@ async function startConcertoDownload() {
   const wantScore   = !!document.getElementById('concerto-out-score')?.checked;
   const wantMeta    = !!document.getElementById('concerto-meta-video')?.checked;
   const wantAudio   = !!document.getElementById('concerto-out-audio')?.checked;
-  const wantNeutral = !!document.getElementById('concerto-neutral')?.checked;
+  const wantNeutral    = !!document.getElementById('concerto-neutral')?.checked;
+  const wantSequential = !!document.getElementById('concerto-sequential')?.checked;
 
   // Individual viz video outputs — each with its own resolution
   const vizOutputs = [
-    { id: 'timeline',   mode: 'timeline',   label: 'Timeline' },
+    { id: 'scatter',    mode: 'scatter',    label: 'Sample Scatter' },
+    { id: 'timeline',   mode: 'timeline',   label: 'Kalman Trace' },
     { id: 'marginal',   mode: 'marginal',   label: 'Marginal Gaussians' },
     { id: 'phase',      mode: 'phase',      label: 'Phase Portrait' },
-    { id: 'energy',     mode: 'energy',     label: 'Innovation Energy' },
     { id: 'trajectory', mode: 'trajectory', label: 'State Trajectory' },
   ].filter(v => !!document.getElementById('concerto-out-' + v.id)?.checked)
    .map(v => ({
@@ -898,9 +1052,11 @@ async function startConcertoDownload() {
     return;
   }
 
-  // Time range
+  // Time range + lead-in/out
   const rangeFrom = parseFloat(document.getElementById('concerto-from')?.value) || 0;
   const rangeTo   = parseFloat(document.getElementById('concerto-to')?.value) || 0;
+  const leadIn    = Math.max(0, parseFloat(document.getElementById('concerto-lead-in')?.value) || 0);
+  const leadOut   = Math.max(0, parseFloat(document.getElementById('concerto-lead-out')?.value) || 0);
 
   const statusEl = document.getElementById('concerto-status');
   const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
@@ -908,6 +1064,10 @@ async function startConcertoDownload() {
   _concertoDownloading = true;
   _concertoCleanMode = true;
   _concertoGreyscaleMode = true;  // all viz renders use greyscale palette
+  // Cache the user's dimension selection so phase portrait + state trajectory
+  // use the intended dims during the render, not whatever the DOM defaults to.
+  _concertoDimX = parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  _concertoDimY = parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   const dlBtn     = document.getElementById('concerto-download-btn');
   const cancelBtn = document.getElementById('concerto-cancel-btn');
   if (dlBtn)     dlBtn.style.display = 'none';
@@ -936,7 +1096,10 @@ async function startConcertoDownload() {
   const startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
   const endTime     = rangeTo > startTime ? Math.min(rangeTo, fullDur) : fullDur;
   const audioDur    = endTime - startTime;
-  const totalFrames = Math.ceil(audioDur * FPS);
+  // Video duration includes lead-in (black before music) and lead-out
+  // (black after music). Total frames = the full video span.
+  const videoDur    = leadIn + audioDur + leadOut;
+  const totalFrames = Math.ceil(videoDur * FPS);
   const frameDur    = 1.0 / FPS;
   // The offscreen canvas is created (and recreated per segment) inside
   // `_runConcertoSegments` now, so we don't pass one in.
@@ -995,15 +1158,16 @@ async function startConcertoDownload() {
     // render entirely — jump to meta below. Otherwise do the score render.
     if (!wantScore) {
       // Just upsize canvases so meta render has them at target size.
-      _upsizeSourceCanvases(W, H);
+      _upsizeSourceCanvases(W, H, wantMeta ? 'meta' : 'combined');
     } else {
     // 1. Start the ffmpeg pipeline for segment 0 (also sets up encode state)
     const startRes = await fetch('/concerto_start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ width: W, height: H, fps: FPS, duration: audioDur,
+      body: JSON.stringify({ width: W, height: H, fps: FPS, duration: videoDur,
                              quality, out_path: outPath,
                              time_from: startTime, time_to: endTime,
+                             lead_in: leadIn, lead_out: leadOut,
                              wire_format: wireFormat,
                              ...(decodeThreads != null ? { decode_threads: decodeThreads } : {}),
                              segment_index: 0 })
@@ -1012,17 +1176,15 @@ async function startConcertoDownload() {
     if (startData.error) { setStatus('error: ' + startData.error); _concertoDownloading = false; return; }
 
     // 2. Upsize source canvases to target resolution for sharp rendering
-    _upsizeSourceCanvases(W, H);
+    _upsizeSourceCanvases(W, H, 'score');
 
-    // 3. Render in segments — each segment has its own short-lived ffmpeg
-    //    Score compositing in _compositeConcerto reads ONLY `src.score`;
-    //    it does NOT read src.timeline or src.viz. So this drawFrame
-    //    callback intentionally skips drawKalmanTrace and updateVizPanel,
-    //    which otherwise run O(N) per frame and dominate the render as
-    //    the trace grows.
+    // 3. Render in segments. startTime is shifted back by leadIn so the
+    //    video begins with black (cursor before the image edge). The
+    //    existing clipping in _compositeConcerto('score') already shows
+    //    black when scoreT < scoreView.start.
     await _runConcertoSegments({
-      W, H, FPS, totalFrames, startTime, frameDur, wireFormat,
-      mode: 'score', isTest,
+      W, H, FPS, totalFrames, startTime: startTime - leadIn, frameDur, wireFormat,
+      sequential: wantSequential, mode: 'score', isTest,
       statusLabel: 'rendering',
       drawFrame: () => {
         if (_concertoCleanMode) {
@@ -1070,9 +1232,10 @@ async function startConcertoDownload() {
       const metaStartRes = await fetch('/concerto_start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ width: W, height: H, fps: FPS, duration: audioDur,
+        body: JSON.stringify({ width: W, height: H, fps: FPS, duration: videoDur,
                                quality, out_path: metaPath,
                                time_from: startTime, time_to: endTime,
+                               lead_in: leadIn, lead_out: leadOut,
                                wire_format: wireFormat,
                                ...(decodeThreads != null ? { decode_threads: decodeThreads } : {}),
                                no_audio: true,
@@ -1082,18 +1245,24 @@ async function startConcertoDownload() {
       if (metaStartData.error) { setStatus('meta error: ' + metaStartData.error); }
       else {
         await _runConcertoSegments({
-          W, H, FPS, totalFrames, startTime, frameDur, wireFormat,
-          mode: 'meta', isTest,
+          W, H, FPS, totalFrames, startTime: startTime - leadIn, frameDur, wireFormat,
+          sequential: wantSequential, mode: 'meta', isTest,
           statusLabel: 'meta video',
           drawFrame: () => {
+            // Draw the clean weave (no composer annotations) into
+            // score2Canvas (src.meta). Do NOT call drawScoreOverlay —
+            // that adds composer symbols which don't belong in the
+            // metadata concerto view.
             if (_concertoCleanMode) {
               _drawCleanFrameOverlay();
               _drawCleanScoreOverlay();
             } else {
               if (typeof draw === 'function') draw();
             }
-            if (typeof drawScoreOverlay === 'function' && typeof score2Canvas !== 'undefined')
-              drawScoreOverlay(score2Canvas, score2Ctx, score2View);
+            // Meta compositing reads src.timeline (the Kalman trace canvas)
+            // so we must populate it each frame for progressive reveal.
+            if (typeof drawKalmanTrace === 'function' && typeof _lastTraceData !== 'undefined' && _lastTraceData)
+              drawKalmanTrace(_lastTraceData);
           },
         });
 
@@ -1133,8 +1302,9 @@ async function startConcertoDownload() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ width: vizOut.w, height: vizOut.h, fps: FPS,
-                               duration: audioDur, quality, out_path: vizPath,
+                               duration: videoDur, quality, out_path: vizPath,
                                time_from: startTime, time_to: endTime,
+                               lead_in: leadIn, lead_out: leadOut,
                                wire_format: wireFormat,
                                ...(decodeThreads != null ? { decode_threads: decodeThreads } : {}),
                                no_audio: true,
@@ -1144,8 +1314,8 @@ async function startConcertoDownload() {
       if (vizStartData.error) { setStatus(`${vizOut.label} error: ` + vizStartData.error); continue; }
 
       await _runConcertoSegments({
-        W: vizOut.w, H: vizOut.h, FPS, totalFrames, startTime, frameDur,
-        wireFormat, mode: vizOut.mode, isTest,
+        W: vizOut.w, H: vizOut.h, FPS, totalFrames, startTime: startTime - leadIn, frameDur,
+        wireFormat, sequential: wantSequential, mode: vizOut.mode, isTest,
         statusLabel: vizOut.label,
         drawFrame: () => {
           // Viz modes draw directly inside _compositeConcerto using
@@ -1202,6 +1372,7 @@ async function startConcertoDownload() {
     if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = -1;
     _concertoCleanMode = false;
     _concertoGreyscaleMode = false;
+    _metaRenderStates = null;  // release persistent viz canvases
     _restoreSourceCanvases();
     // Redraw at normal size to restore the editor view
     if (typeof draw === 'function') draw();
