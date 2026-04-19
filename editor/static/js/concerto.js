@@ -908,12 +908,14 @@ async function startConcertoDownload() {
       <div>
         <label style="font-size:11px;color:#888;">Quality:</label>
         <select id="concerto-quality" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
-          <option value="b1" selected>B1: High Quality 4K — HEVC 10-bit CRF 16 + AAC 320k (.mp4) — best for fine detail / mesh</option>
-          <option value="b2">B2: High Quality 4K — HEVC 10-bit CRF 16 + lossless WAV (.ts) — best for fine detail / mesh</option>
-          <option value="a1">A1: Maximum Quality 4K — HEVC 10-bit CRF 14, very slow (.mp4)</option>
-          <option value="a2">A2: Maximum Quality 4K — HEVC 10-bit CRF 14, very slow (.ts)</option>
-          <option value="h1">H1: Hardware HEVC (Intel VAAPI) + AAC 320k (.mp4) — fast preview (weaker on fine line/mesh)</option>
-          <option value="h2">H2: Hardware HEVC (Intel VAAPI) + lossless WAV (.ts) — fast preview (weaker on fine line/mesh)</option>
+          <option value="h1" selected>H1: Hardware HEVC QP 22 + AAC 320k (.mp4) — fast, good quality</option>
+          <option value="h2">H2: Hardware HEVC QP 22 + lossless WAV (.ts)</option>
+          <option value="h1q">H1Q: Hardware HEVC QP 16 + AAC 320k (.mp4) — higher quality, larger file</option>
+          <option value="h2q">H2Q: Hardware HEVC QP 16 + lossless WAV (.ts)</option>
+          <option value="b1">B1: Software HEVC CRF 16 + AAC 320k (.mp4) — best for fine detail / mesh, slow</option>
+          <option value="b2">B2: Software HEVC CRF 16 + lossless WAV (.ts) — best for fine detail / mesh, slow</option>
+          <option value="a1">A1: Maximum Quality — HEVC CRF 14, very slow (.mp4)</option>
+          <option value="a2">A2: Maximum Quality — HEVC CRF 14, very slow (.ts)</option>
           <option value="t1">T1: Test 1080p — HEVC 8-bit CRF 22 + AAC 256k (.mp4)</option>
           <option value="t2">T2: Test 1080p — HEVC 8-bit CRF 22 + lossless WAV (.ts)</option>
         </select>
@@ -1071,7 +1073,7 @@ async function startConcertoDownload() {
                       .replace(/\.ya?ml$/, '') || 'concerto';
         const selQ = document.getElementById('concerto-quality')?.value || 'a1';
         // All *2 quality presets (a2/b2/h2/t2) use the .ts container.
-        const ext  = selQ.endsWith('2') ? '.ts' : '.mp4';
+        const ext  = (selQ === 'a2' || selQ === 'b2' || selQ === 'h2' || selQ === 'h2q' || selQ === 't2') ? '.ts' : '.mp4';
         openSaveBrowser((fullPath) => { pathInput.value = fullPath; },
                         name + '_concerto' + ext, ['.mp4', '.ts']);
       });

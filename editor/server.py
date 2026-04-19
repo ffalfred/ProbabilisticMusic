@@ -419,10 +419,30 @@ _CONCERTO_PRESETS = {
             '-f', 'mpegts',
         ],
     },
-    # H1: Hardware HEVC 10-bit (Intel VAAPI / iHD) + AAC 320k (MP4)
-    #     ~10-30× faster than B1 on Meteor Lake and similar iGPUs.
-    #     QP 22 is visually comparable to x265 CRF 16 for screen content.
+    # H1: Hardware HEVC 10-bit (Intel VAAPI / iHD) QP 22 + AAC 320k (MP4)
     'h1': {
+        'ext':  '.mp4',
+        'hw':   'vaapi',
+        'args': [
+            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-profile:v', 'main10',
+            '-c:a', 'aac', '-b:a', '320k',
+            '-movflags', '+faststart',
+        ],
+    },
+    # H2: Hardware HEVC 10-bit (Intel VAAPI / iHD) QP 22 + lossless WAV (TS)
+    'h2': {
+        'ext':  '.ts',
+        'hw':   'vaapi',
+        'args': [
+            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-profile:v', 'main10',
+            '-c:a', 'pcm_s16le',
+            '-f', 'mpegts',
+        ],
+    },
+    # H1Q: Hardware HEVC 10-bit QP 16 (higher quality) + AAC 320k (MP4)
+    'h1q': {
         'ext':  '.mp4',
         'hw':   'vaapi',
         'args': [
@@ -432,8 +452,8 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # H2: Hardware HEVC 10-bit (Intel VAAPI / iHD) + lossless WAV (TS)
-    'h2': {
+    # H2Q: Hardware HEVC 10-bit QP 16 (higher quality) + lossless WAV (TS)
+    'h2q': {
         'ext':  '.ts',
         'hw':   'vaapi',
         'args': [
