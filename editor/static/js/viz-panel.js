@@ -272,11 +272,15 @@ function _drawInnovationTrace(ctx, W, H, data) {
 }
 
 // ─── Viz 4: AR(2) Phase Portrait ──────────────────────────────────────────────
-function _drawPhasePortrait(ctx, W, H, data, renderState) {
+function _drawPhasePortrait(ctx, W, H, data, renderState, overrideDx, overrideDy) {
   if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
-  const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
-  const dy  = (typeof _concertoDimY !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimY : parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
+  const dx  = (overrideDx != null) ? overrideDx
+            : (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX
+            : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
+  const dy  = (overrideDy != null) ? overrideDy
+            : (typeof _concertoDimY !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimY
+            : parseInt(document.getElementById('viz-dim-y')?.value ?? '1');
   const pad = 24;
 
   var xVals = trace.map(s => s.sample[dx]);
@@ -509,6 +513,7 @@ function _drawLookaheadPhi(ctx, W, H, data) {
 
 // ─── Viz 8: Process Noise Q(t) Envelope ──────────────────────────────────────
 function _drawProcessNoise(ctx, W, H, data) {
+  if (W < 50 || H < 50) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); return; }
   const withQ = data.trace.filter(s => s.Q_diag && s.Q_diag.length);
   if (!withQ.length) {
     ctx.fillStyle = '#444'; ctx.font = '10px monospace';

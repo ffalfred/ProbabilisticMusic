@@ -75,6 +75,12 @@ function _switchWorkspace(target) {
     });
   }
 
+  // Clear interpreter trace data when switching to composer so the
+  // concerto metadata view doesn't show stale interpreter viz panels.
+  if (target === 'composer' && typeof _lastTraceData !== 'undefined') {
+    _lastTraceData = null;
+  }
+
   if (target === 'composer') {
     if (composerTopbar)  composerTopbar.style.display  = '';
     if (interpTopbar)    interpTopbar.style.display    = 'none';

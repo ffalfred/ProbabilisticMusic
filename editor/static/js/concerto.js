@@ -317,64 +317,101 @@ function _compositeConcerto(target, W, H, mode) {
               : (hi === 0) ? _lastTraceData
               : { ..._lastTraceData, trace: trace.slice(0, hi) };
 
+    // ── Panel dimensions (always computed, even without trace data) ──
+    var topPanelW = Math.max(10, Math.floor((W - gap * 6) / 5));
+    var topPanelH = Math.max(10, topH - gap * 2);
+    var botUnit   = Math.max(10, Math.floor((W - gap * 4) / 4));
+    var botSmall  = botUnit;
+    var botWide   = botUnit * 2;
+    var botPanelH = Math.max(10, botH - gap * 2);
+
+    // Panel positions (top row: 5 panels, bottom row: 3 panels)
+    var topPositions = [
+      gap,
+      gap * 2 + topPanelW,
+      gap * 3 + topPanelW * 2,
+      gap * 4 + topPanelW * 3,
+      gap * 5 + topPanelW * 4,
+    ];
+    var botPositions = [
+      gap,
+      gap * 2 + botSmall,
+      gap * 3 + botSmall + botWide,
+    ];
+
+    // Always draw dark panel backgrounds (visible even without trace)
+    var vizCtx;
+    for (var i = 0; i < 5; i++) {
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(topPositions[i], gap, topPanelW, topPanelH);
+    }
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(botPositions[0], botY + gap, botSmall, botPanelH);
+    ctx.fillRect(botPositions[1], botY + gap, botWide, botPanelH);
+    ctx.fillRect(botPositions[2], botY + gap, botSmall, botPanelH);
+
+    // Draw viz content only when trace data exists
     if (fData && fData.trace && fData.trace.length) {
-      // ── TOP ROW ─────────────────────────────────────────────────────
-      // Layout: gap | scatter(1×) | gap | timeline(2×) | gap | trajectory(1×) | gap
-      // Total units = 4. Available width = W - 5*gap.
-      var topUnit   = Math.floor((W - gap * 5) / 4);
-      var topSmall  = Math.max(10, topUnit);
-      var topWide   = Math.max(10, topUnit * 2);
-      var topPanelH = Math.max(10, topH - gap * 2);
-
-      // ── BOTTOM ROW ──────────────────────────────────────────────────
-      // Layout: X | panel1 | X | panel2 | X  (X = equal spacing)
-      // Add ~2cm to each panel beyond the square height
-      var botExtra  = Math.round(Math.max(4, H * 0.035));  // ~2cm
-      var botPanelH = Math.max(10, botH - gap * 2);
-      var botPanelW = Math.max(10, Math.min(botPanelH + botExtra, Math.floor((W - gap * 3) / 2)));
-      var botSpaceX = Math.floor((W - botPanelW * 2) / 3);
-
-      var vizCtx;
-
-      // Top left: Sample Scatter
-      src.viz.width = topSmall; src.viz.height = topPanelH;
+      // ── TOP 1: Process Noise
+      src.viz.width = topPanelW; src.viz.height = topPanelH;
       vizCtx = src.viz.getContext('2d');
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topSmall, topPanelH);
-      try { _drawSampleScatter(vizCtx, topSmall, topPanelH, fData); } catch(e) {}
-      ctx.drawImage(src.viz, gap, gap, topSmall, topPanelH);
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topPanelW, topPanelH);
+      try { _drawProcessNoise(vizCtx, topPanelW, topPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, topPositions[0], gap, topPanelW, topPanelH);
 
-      // Top middle: Kalman trace timeline (double width)
+      // ── TOP 2: Innovation Energy
+      src.viz.width = topPanelW; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topPanelW, topPanelH);
+      try { _drawInnovationEnergy(vizCtx, topPanelW, topPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, topPositions[1], gap, topPanelW, topPanelH);
+
+      // ── TOP 3: Marginal Gaussians
+      src.viz.width = topPanelW; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topPanelW, topPanelH);
+      try { _drawMarginalGaussians(vizCtx, topPanelW, topPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, topPositions[2], gap, topPanelW, topPanelH);
+
+      // ── TOP 4: Phase Portrait (Gain / Brightness)
+      src.viz.width = topPanelW; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topPanelW, topPanelH);
+      try { _drawPhasePortrait(vizCtx, topPanelW, topPanelH, fData, null, 0, 1); } catch(e) {}
+      ctx.drawImage(src.viz, topPositions[3], gap, topPanelW, topPanelH);
+
+      // ── TOP 5: Phase Portrait (Gain / Filter Cutoff)
+      src.viz.width = topPanelW; src.viz.height = topPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topPanelW, topPanelH);
+      try { _drawPhasePortrait(vizCtx, topPanelW, topPanelH, fData, null, 0, 6); } catch(e) {}
+      ctx.drawImage(src.viz, topPositions[4], gap, topPanelW, topPanelH);
+
+      // ── BOT 1: Sample Scatter
+      src.viz.width = botSmall; src.viz.height = botPanelH;
+      vizCtx = src.viz.getContext('2d');
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botSmall, botPanelH);
+      try { _drawSampleScatter(vizCtx, botSmall, botPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botPositions[0], botY + gap, botSmall, botPanelH);
+
+      // ── BOT 2: Kalman Trace (2× wide)
       if (src.timeline) {
-        src.timeline.width  = topWide;
-        src.timeline.height = topPanelH;
+        src.timeline.width  = botWide;
+        src.timeline.height = botPanelH;
       }
       if (typeof drawKalmanTrace === 'function' && _lastTraceData) {
         try { drawKalmanTrace(_lastTraceData); } catch(e) {}
       }
       if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-        ctx.drawImage(src.timeline, gap * 2 + topSmall, gap, topWide, topPanelH);
+        ctx.drawImage(src.timeline, botPositions[1], botY + gap, botWide, botPanelH);
       }
 
-      // Top right: State Trajectory
-      src.viz.width = topSmall; src.viz.height = topPanelH;
+      // ── BOT 3: State Trajectory
+      src.viz.width = botSmall; src.viz.height = botPanelH;
       vizCtx = src.viz.getContext('2d');
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, topSmall, topPanelH);
-      try { _drawStateTrajectory(vizCtx, topSmall, topPanelH, fData); } catch(e) {}
-      ctx.drawImage(src.viz, gap * 3 + topSmall + topWide, gap, topSmall, topPanelH);
-
-      // Bottom left: Phase Portrait
-      src.viz.width = botPanelW; src.viz.height = botPanelH;
-      vizCtx = src.viz.getContext('2d');
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botPanelW, botPanelH);
-      try { _drawPhasePortrait(vizCtx, botPanelW, botPanelH, fData); } catch(e) {}
-      ctx.drawImage(src.viz, botSpaceX, botY + gap, botPanelW, botPanelH);
-
-      // Bottom right: Marginal Gaussians
-      src.viz.width = botPanelW; src.viz.height = botPanelH;
-      vizCtx = src.viz.getContext('2d');
-      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botPanelW, botPanelH);
-      try { _drawMarginalGaussians(vizCtx, botPanelW, botPanelH, fData); } catch(e) {}
-      ctx.drawImage(src.viz, botSpaceX * 2 + botPanelW, botY + gap, botPanelW, botPanelH);
+      vizCtx.fillStyle = '#0a0a0a'; vizCtx.fillRect(0, 0, botSmall, botPanelH);
+      try { _drawStateTrajectory(vizCtx, botSmall, botPanelH, fData); } catch(e) {}
+      ctx.drawImage(src.viz, botPositions[2], botY + gap, botSmall, botPanelH);
     }
   } else if (mode === 'timeline') {
     // Standalone timeline strip — fills the full frame
@@ -383,7 +420,7 @@ function _compositeConcerto(target, W, H, mode) {
       ctx.drawImage(src.timeline, 0, 0, W, H);
     }
 
-  } else if (mode === 'scatter' || mode === 'marginal' || mode === 'phase' || mode === 'energy' || mode === 'trajectory') {
+  } else if (mode === 'scatter' || mode === 'marginal' || mode === 'phase' || mode === 'phase_gb' || mode === 'phase_gfc' || mode === 'energy' || mode === 'trajectory' || mode === 'noise') {
     // Standalone single viz panel — draw the specific viz function at full W×H
     ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H);
     if (_lastTraceData && _lastTraceData.trace && _lastTraceData.trace.length) {
@@ -396,8 +433,11 @@ function _compositeConcerto(target, W, H, mode) {
         if      (mode === 'scatter')    _drawSampleScatter(ctx, W, H, fData);
         else if (mode === 'marginal')   _drawMarginalGaussians(ctx, W, H, fData);
         else if (mode === 'phase')      _drawPhasePortrait(ctx, W, H, fData);
+        else if (mode === 'phase_gb')   _drawPhasePortrait(ctx, W, H, fData, null, 0, 1);
+        else if (mode === 'phase_gfc')  _drawPhasePortrait(ctx, W, H, fData, null, 0, 6);
         else if (mode === 'energy')     _drawInnovationEnergy(ctx, W, H, fData);
         else if (mode === 'trajectory') _drawStateTrajectory(ctx, W, H, fData);
+        else if (mode === 'noise')      _drawProcessNoise(ctx, W, H, fData);
       } catch (e) {}
     }
 
@@ -448,20 +488,27 @@ function _upsizeSourceCanvases(W, H, mode) {
   if (mode === 'meta') {
     // Meta layout: MUST match _compositeConcerto('meta') EXACTLY.
     // Same gap, topH, botH, midH formulas as the compositing code.
+    // MUST match _compositeConcerto('meta') EXACTLY.
     const gap    = Math.round(Math.max(4, H * 0.02));
     const topH   = Math.round(H * 0.25);
     const botH   = Math.round(H * 0.25);
     const midY   = topH + gap;
     const botY   = H - botH;
     const midH   = botY - gap - midY;
-    const topUnit   = Math.floor((W - gap * 5) / 4);
-    const topWide   = topUnit * 2;
+    // Top: 5 equal panels. Bot: 3 panels (trace = 2×).
+    const topPanelW = Math.floor((W - gap * 6) / 5);
     const topPanelH = Math.max(10, topH - gap * 2);
+    const botUnit   = Math.floor((W - gap * 4) / 4);
+    const botWide   = botUnit * 2;
+    const botPanelH = Math.max(10, botH - gap * 2);
+    // Largest panel dimensions for canvas sizing
+    const maxW = Math.max(topPanelW, botWide);
+    const maxH = Math.max(topPanelH, botPanelH);
     targets = [
-      ['score',    W, midH],                   // not displayed but sized for safety
-      ['meta',     W, midH],                   // fills the full middle band
-      ['timeline', topWide, topPanelH],        // kalman trace (widest panel)
-      ['viz',      topWide, topPanelH],        // sized to largest panel
+      ['score',    W, midH],              // not displayed but sized for safety
+      ['meta',     W, midH],              // fills the full middle band
+      ['timeline', botWide, botPanelH],   // kalman trace (2× wide, bottom)
+      ['viz',      maxW, maxH],           // sized to largest panel
     ];
   } else if (mode === 'score') {
     // Score-only: just needs the score canvas at full frame size
@@ -941,36 +988,57 @@ async function startConcertoDownload() {
         <div style="margin-top:6px;padding-left:4px;">
           <label style="font-size:10px;color:#888;display:block;margin-bottom:2px;">Individual viz videos (greyscale, no sound):</label>
           <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-noise" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">Process Noise</span>
+            <input id="concerto-viz-noise-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-noise-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-energy" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">Innovation Energy</span>
+            <input id="concerto-viz-energy-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-energy-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-marginal" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">Marginal Gaussians</span>
+            <input id="concerto-viz-marginal-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-marginal-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-phase_gb" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">Phase Portrait (Gain/Bright.)</span>
+            <input id="concerto-viz-phase_gb-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-phase_gb-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-phase_gfc" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">Phase Portrait (Gain/Filter)</span>
+            <input id="concerto-viz-phase_gfc-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+            <span style="font-size:9px;color:#555;">\u00d7</span>
+            <input id="concerto-viz-phase_gfc-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
+          </div>
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
             <input id="concerto-out-scatter" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Sample Scatter</span>
+            <span style="font-size:10px;color:#aaa;width:155px;">Sample Scatter</span>
             <input id="concerto-viz-scatter-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
             <span style="font-size:9px;color:#555;">\u00d7</span>
             <input id="concerto-viz-scatter-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
           </div>
           <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
             <input id="concerto-out-timeline" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Kalman Trace</span>
+            <span style="font-size:10px;color:#aaa;width:155px;">Kalman Trace</span>
             <input id="concerto-viz-timeline-w" type="number" value="1920" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
             <span style="font-size:9px;color:#555;">\u00d7</span>
             <input id="concerto-viz-timeline-h" type="number" value="540" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
           </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-marginal" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Marginal Gaussians</span>
-            <input id="concerto-viz-marginal-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-marginal-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-phase" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">Phase Portrait</span>
-            <input id="concerto-viz-phase-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-phase-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
           <div style="display:flex;align-items:center;gap:4px;">
             <input id="concerto-out-trajectory" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:120px;">State Trajectory</span>
+            <span style="font-size:10px;color:#aaa;width:155px;">State Trajectory</span>
             <input id="concerto-viz-trajectory-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
             <span style="font-size:9px;color:#555;">\u00d7</span>
             <input id="concerto-viz-trajectory-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
@@ -1034,10 +1102,13 @@ async function startConcertoDownload() {
 
   // Individual viz video outputs — each with its own resolution
   const vizOutputs = [
+    { id: 'noise',      mode: 'noise',      label: 'Process Noise' },
+    { id: 'energy',     mode: 'energy',     label: 'Innovation Energy' },
+    { id: 'marginal',   mode: 'marginal',   label: 'Marginal Gaussians' },
+    { id: 'phase_gb',   mode: 'phase_gb',   label: 'Phase Portrait (Gain/Bright.)' },
+    { id: 'phase_gfc',  mode: 'phase_gfc',  label: 'Phase Portrait (Gain/Filter)' },
     { id: 'scatter',    mode: 'scatter',    label: 'Sample Scatter' },
     { id: 'timeline',   mode: 'timeline',   label: 'Kalman Trace' },
-    { id: 'marginal',   mode: 'marginal',   label: 'Marginal Gaussians' },
-    { id: 'phase',      mode: 'phase',      label: 'Phase Portrait' },
     { id: 'trajectory', mode: 'trajectory', label: 'State Trajectory' },
   ].filter(v => !!document.getElementById('concerto-out-' + v.id)?.checked)
    .map(v => ({
@@ -1105,34 +1176,47 @@ async function startConcertoDownload() {
   // `_runConcertoSegments` now, so we don't pass one in.
 
   try {
-    // 0. Regenerate the audio via /preview if audio is requested OR if
-    //    performance-neutral is on (which means the current PREVIEW_TMP
-    //    may not reflect neutral mode). We always re-render when the user
-    //    ticks either of those; otherwise assume PREVIEW_TMP is fresh
-    //    from the main editor and reuse it.
-    if (wantAudio || wantNeutral) {
-      setStatus(wantNeutral ? 'rendering neutral audio…' : 'rendering audio…');
+    // 0. ALWAYS re-render the audio via /preview so the trace data and
+    //    audio come from the same interpreter run. This guarantees the
+    //    viz panels in the metadata video match the audio exactly.
+    setStatus(wantNeutral ? 'rendering neutral audio…' : 'rendering audio…');
+    try {
+      const body = {
+        path: state.filePath,
+        score_path: (typeof interpState !== 'undefined' ? interpState.scorePath : null),
+        interp: (typeof interpState !== 'undefined') ? {
+          golems:   interpState.golems,
+          v2config: interpState.v2config,
+        } : {},
+        performance_neutral: wantNeutral,
+      };
+      const pr = await fetch('/preview', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const pd = await pr.json();
+      if (pd.error) throw new Error('audio render: ' + (pd.detail || pd.error));
+
+      // Update tempo map + duration from the fresh render
+      if (pd.tempo_map) state.tempoMap = pd.tempo_map;
+      if (pd.duration_real) state.durationReal = pd.duration_real;
+
+      // Fetch the trace from this same interpreter run so viz panels
+      // are guaranteed to match the audio.
       try {
-        const body = {
-          path: state.filePath,
-          score_path: (typeof interpState !== 'undefined' ? interpState.scorePath : null),
-          interp: (typeof interpState !== 'undefined') ? {
-            golems:   interpState.golems,
-            v2config: interpState.v2config,
-          } : {},
-          performance_neutral: wantNeutral,
-        };
-        const pr = await fetch('/preview', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body),
-        });
-        const pd = await pr.json();
-        if (pd.error) throw new Error('audio render: ' + (pd.detail || pd.error));
-      } catch (e) {
-        setStatus('audio render failed: ' + e.message);
-        _concertoDownloading = false;
-        return;
-      }
+        const trRes = await fetch('/get_last_trace');
+        const trData = await trRes.json();
+        if (trData.trace) {
+          _lastTraceData = {
+            trace: trData.trace,
+            total_dur: state.durationReal || state.duration || 0,
+          };
+        }
+      } catch (e) {} // non-fatal — viz will use whatever trace was there
+    } catch (e) {
+      setStatus('audio render failed: ' + e.message);
+      _concertoDownloading = false;
+      return;
     }
 
     // If the user ONLY wants audio, save it and return — no video render.

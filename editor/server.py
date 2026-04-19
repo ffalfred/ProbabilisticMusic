@@ -42,6 +42,9 @@ def _load_server_config(override: dict = None) -> dict:
     return cfg
 
 PREVIEW_TMP = os.path.join(tempfile.gettempdir(), "opacity_toke_preview.wav")
+# Last interpreter trace from /preview — saved so the concerto download
+# can fetch it via /get_last_trace to ensure viz panels match the audio.
+_last_preview_trace = None
 
 # Audio export quality settings
 _AUDIO_FORMATS = {
@@ -240,13 +243,15 @@ def preview():
         score = _apply_phrase_tempo(score)
         bank, sr, base = build_bank(score)
 
+        global _last_preview_trace
         if config.get("engine") == "v2":
             from src.interpreter import interpret
             events, _state_trace = interpret(score, config, return_trace=True)
             score['_state_trace'] = _state_trace
-            # per-dim toggles for state-to-base modulation
+            _last_preview_trace = _state_trace  # save for /get_last_trace
         else:
             events = get_events(score)
+            _last_preview_trace = None  # no trace in composer mode
 
         # Performance-neutral mode: strip all expressive timing from the
         # score + events so the output follows the raw score grid. Must
@@ -421,7 +426,7 @@ _CONCERTO_PRESETS = {
         'ext':  '.mp4',
         'hw':   'vaapi',
         'args': [
-            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-c:v', 'hevc_vaapi', '-qp', '16',
             '-profile:v', 'main10',
             '-c:a', 'aac', '-b:a', '320k',
             '-movflags', '+faststart',
@@ -432,7 +437,7 @@ _CONCERTO_PRESETS = {
         'ext':  '.ts',
         'hw':   'vaapi',
         'args': [
-            '-c:v', 'hevc_vaapi', '-qp', '22',
+            '-c:v', 'hevc_vaapi', '-qp', '16',
             '-profile:v', 'main10',
             '-c:a', 'pcm_s16le',
             '-f', 'mpegts',
@@ -1052,6 +1057,20 @@ def preview_audio():
     directory = os.path.dirname(PREVIEW_TMP)
     filename  = os.path.basename(PREVIEW_TMP)
     return send_from_directory(directory, filename, mimetype="audio/wav", conditional=True)
+
+
+@app.route("/get_last_trace")
+def get_last_trace():
+    """Return the interpreter trace from the most recent /preview call.
+
+    Used by the concerto download to ensure the viz panels show the
+    exact same trace that produced the audio — not a stale trace from
+    a separate Trace button click.
+    """
+    if _last_preview_trace is None:
+        return jsonify({"trace": None})
+    # Format matches what kalman-trace.js expects in _lastTraceData
+    return jsonify({"trace": _last_preview_trace})
 
 
 @app.route("/save_preview_audio", methods=["POST"])
