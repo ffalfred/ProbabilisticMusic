@@ -166,6 +166,7 @@ async function renderInterpAndPlay() {
       interp: {
         golems:   interpState.golems,
         v2config: interpState.v2config,
+        mix_dims: interpState.mix_dims,
       },
     };
     const res  = await fetch('/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });

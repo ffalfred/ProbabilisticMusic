@@ -23,6 +23,7 @@ Golem envelope:
 
 import os
 import copy
+import math
 import yaml
 import bisect
 import numpy as np
@@ -42,6 +43,43 @@ _TABLE_PATH = os.path.join(os.path.dirname(__file__), 'transition_table.yaml')
 OUTPUT_KEYS = DIM_NAMES
 
 _OUTPUT_LIMITS = {k: tuple(v) for k, v in zip(DIM_NAMES, _CHAR_DIM_RANGES)}
+
+
+# ── Transition smoothing ─────────────────────────────────────────────────────
+# Logarithmic window: preparation time grows with gap but caps out.
+_TRANS_BASE = 1.5   # controls window growth rate
+_TRANS_MAX  = 8.0   # max preparation window in seconds
+
+# Markings that should never be blended (subito dynamics)
+_SUBITO_SET = frozenset({'sfz', 'fp', 'subito_p', 'subito_f'})
+
+# Per-preset defaults for transition_blend and transition_shape.
+# Golems not listed here get blend=0.5, shape='sigmoid'.
+_PRESET_TRANSITION_DEFAULTS = {
+    'dramatic':     (0.25, 'exponential'),   # holds back then surges at the end
+    'lyrical':      (0.8,  'sigmoid'),       # smooth S-curve, natural phrasing
+    'sparse':       (0.1,  'step'),          # minimal, blunt
+    'turbulent':    (0.15, 'exponential'),   # short aggressive burst
+    'disciplined':  (0.6,  'ramp'),          # linear, metronomic, predictable
+    'impressionist':(0.9,  'sigmoid'),       # long dreamy dissolves
+    'impulsive':    (0.0,  'step'),          # no preparation — instant jumps
+    'volatile':     (0.2,  'ramp'),          # short but even — not explosive, just quick
+    'sight_reading':(0.05, 'step'),          # reacting, not anticipating
+    'memorised':    (0.85, 'ramp'),          # starts early, steady linear approach
+}
+
+
+def _transition_shape_fn(frac: float, shape: str) -> float:
+    """Map a linear fraction 0..1 through a transition curve."""
+    frac = max(0.0, min(1.0, frac))
+    if shape == 'sigmoid':
+        return 1.0 / (1.0 + math.exp(-10.0 * (frac - 0.5)))
+    elif shape == 'ramp':
+        return frac
+    elif shape == 'exponential':
+        return 1.0 - math.exp(-3.0 * frac)
+    else:  # 'step' — current behaviour (no blending)
+        return 1.0 if frac >= 1.0 else 0.0
 
 
 # ── Distribution sampling ─────────────────────────────────────────────────────
@@ -192,6 +230,16 @@ def _total_duration(events: list, score: dict) -> float:
     dyn = [d for d in score.get('dynamics', []) if 't' in d]
     if dyn:
         last = max(last, max(d['t'] for d in dyn) + 1.0)
+    # Also consider the audio file duration so the trace extends to
+    # the end of the piece even if there are no events after some point.
+    # The Kalman filter free-runs (no observations) in the gap.
+    base_track = score.get('base_track', '')
+    if base_track and os.path.exists(base_track):
+        try:
+            import soundfile as sf
+            last = max(last, sf.info(base_track).duration)
+        except Exception:
+            pass
     return max(last, 1.0)
 
 
@@ -668,6 +716,8 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             _sal_cond     = None
             _clip_sigma   = None
             _clip_sigma_dims = None
+            _trans_blend  = 0.5
+            _trans_shape  = 'sigmoid'
 
             if _k_active:
                 _dom = max(_k_active, key=lambda g: float(g.get('weight', 1.0)))
@@ -719,6 +769,12 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                     char['A1_dims'] = _dom['A1_dims']
                 if 'A2_dims' in _dom and _dom['A2_dims'] is not None:
                     char['A2_dims'] = _dom['A2_dims']
+
+                # Transition smoothing: per-golem blend and shape
+                _char_name = _dom.get('character', '')
+                _preset_def = _PRESET_TRANSITION_DEFAULTS.get(_char_name, (0.5, 'sigmoid'))
+                _trans_blend = float(_dom.get('transition_blend', _preset_def[0]))
+                _trans_shape = str(_dom.get('transition_shape', _preset_def[1]))
 
             # Per-dim or scalar A1/A2
             A1_val = char.get('A1_dims') or char['A1']
@@ -802,28 +858,57 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             # Direct target pull from dynamics marking level.
             # The marking defines WHERE each dim should be; the Kalman controls
             # HOW it gets there. Decoupled from H/R — no observation model changes.
-            _marking_name = marking_pairs[m_idx][1] if marking_pairs else 'mf'
-            _target_lin = DYNAMIC_LEVELS.get(_marking_name, 0.65)
-            _dyn_level  = encode_marking(_marking_name)  # 0–1 scalar
+            #
+            # Logarithmic-window blending: instead of pulling toward the current
+            # marking's target only, we blend toward the NEXT marking's target
+            # during a preparation window before the boundary. The window size
+            # is logarithmic in the gap, capped at _TRANS_MAX, and scaled by the
+            # golem's transition_blend. Subito markings bypass blending entirely.
+
+            _cur_name = marking_pairs[m_idx][1] if marking_pairs else 'mf'
+            _cur_lin  = DYNAMIC_LEVELS.get(_cur_name, 0.65)
+            _cur_dyn  = encode_marking(_cur_name)
+
+            # Look ahead to next marking
+            if m_idx + 1 < len(marking_pairs):
+                _nxt_name = marking_pairs[m_idx + 1][1]
+                _t_cur_m  = marking_pairs[m_idx][0]
+                _t_nxt_m  = marking_pairs[m_idx + 1][0]
+            else:
+                _nxt_name = _cur_name
+                _t_cur_m  = marking_pairs[m_idx][0] if marking_pairs else 0.0
+                _t_nxt_m  = total_dur
+
+            # Compute blend fraction toward the next marking
+            _blend = 0.0
+            _gap   = _t_nxt_m - _t_cur_m
+            if _gap > 0 and _nxt_name != _cur_name and _nxt_name.lower() not in _SUBITO_SET:
+                _raw_win = min(_TRANS_MAX, _TRANS_BASE * math.log(1.0 + _gap))
+                _eff_win = _raw_win * _trans_blend
+                if _eff_win > 0:
+                    _win_start = _t_nxt_m - _eff_win
+                    if t >= _win_start:
+                        _frac  = (t - _win_start) / _eff_win
+                        _blend = _transition_shape_fn(_frac, _trans_shape)
+
+            # Blended targets
+            _nxt_lin = DYNAMIC_LEVELS.get(_nxt_name, 0.65)
+            _nxt_dyn = encode_marking(_nxt_name)
+            _eff_lin = _cur_lin + _blend * (_nxt_lin - _cur_lin)
+            _eff_dyn = _cur_dyn + _blend * (_nxt_dyn - _cur_dyn)
 
             # dim 0: gain_db
-            _target_db = float(20.0 * np.log10(max(_target_lin, 0.01)))
+            _target_db = float(20.0 * np.log10(max(_eff_lin, 0.01)))
             _pull_strength = float(obs_w) * 0.45
             X_mu_bar[0] += (_target_db - X_mu_bar[0]) * _pull_strength
 
             # dims 1/5/6: brightness, reverb_wet, filter_cutoff
-            # Conservative ranges — subtle timbral movement, not transformation.
-            # Pull is weaker than gain (0.25 vs 0.45) so the golem has more
-            # creative freedom on these dimensions.
             _timbral_pull = float(obs_w) * timbral_pull
-            # dim 1: brightness — 0.4 (warm at pp) to 0.65 (bright at ff)
-            _bright_target = 0.4 + _dyn_level * 0.25
+            _bright_target = 0.4 + _eff_dyn * 0.25
             X_mu_bar[1] += (_bright_target - X_mu_bar[1]) * _timbral_pull
-            # dim 5: reverb_wet — 0.03 (dry at pp) to 0.20 (light hall at ff)
-            _reverb_target = 0.03 + _dyn_level * 0.17
+            _reverb_target = 0.03 + _eff_dyn * 0.17
             X_mu_bar[5] += (_reverb_target - X_mu_bar[5]) * _timbral_pull
-            # dim 6: filter_cutoff — normalized 0–1; 0.3 (6kHz) to 0.9 (18kHz)
-            _cutoff_target = 0.3 + _dyn_level * 0.6
+            _cutoff_target = 0.3 + _eff_dyn * 0.6
             X_mu_bar[6] += (_cutoff_target - X_mu_bar[6]) * _timbral_pull
 
             y    = build_window_obs(markings_list, m_idx, N)

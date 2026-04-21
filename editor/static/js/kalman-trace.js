@@ -197,9 +197,10 @@ function drawKalmanTrace(data, renderState) {
     var col      = _dimColor(d);
     var [r, g, b] = _hexToRgb(col);
 
-    // Find observed min/max across both mu and sample for this dim
+    // Find observed min/max across the FULL trace (not the progressive-reveal
+    // slice) so the Y axis stays stable throughout concerto video rendering.
     var oMin = +Infinity, oMax = -Infinity;
-    for (const step of trace) {
+    for (const step of data.trace) {
       if (step.mu     && step.mu[d]     != null) { oMin = Math.min(oMin, step.mu[d]);     oMax = Math.max(oMax, step.mu[d]); }
       if (step.sample && step.sample[d] != null) { oMin = Math.min(oMin, step.sample[d]); oMax = Math.max(oMax, step.sample[d]); }
     }

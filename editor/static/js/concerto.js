@@ -47,7 +47,7 @@ function _drawCleanFrameOverlay() {
   var W = frameCanvas.width, H = frameCanvas.height;
   frameCtx.clearRect(0, 0, W, H);
   if (typeof scoreView !== 'undefined') {
-    frameCtx.fillStyle = '#111';
+    frameCtx.fillStyle = '#000';
     frameCtx.fillRect(0, 0, W, H);
     var img = scoreView.img;
     if (img && img.complete && img.naturalWidth > 0) {
@@ -61,7 +61,7 @@ function _drawCleanFrameOverlay() {
     }
   }
   var cx = typeof tToXF === 'function' ? tToXF(state.currentTime) : 0;
-  frameCtx.strokeStyle = 'rgba(255,255,255,0.8)';
+  frameCtx.strokeStyle = 'rgba(66,65,65,0.5)';
   frameCtx.lineWidth = 1; frameCtx.setLineDash([]);
   frameCtx.beginPath(); frameCtx.moveTo(cx, 0); frameCtx.lineTo(cx, H); frameCtx.stroke();
 }
@@ -70,7 +70,7 @@ function _drawCleanScoreOverlay() {
   if (typeof score2Canvas === 'undefined' || typeof score2Ctx === 'undefined' || typeof score2View === 'undefined') return;
   var c = score2Canvas, ctx = score2Ctx, view = score2View;
   var W = c.width, H = c.height;
-  ctx.fillStyle = '#111';
+  ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
   var img = view.img;
   if (img && img.complete && img.naturalWidth > 0) {
@@ -86,7 +86,7 @@ function _drawCleanScoreOverlay() {
     if (clSrcW > 0 && dstW > 0) ctx.drawImage(img, clSrcX, 0, clSrcW, img.naturalHeight, dstX, 0, dstW, H);
   }
   var tx = typeof tToXFor === 'function' ? tToXFor(state.currentTime, c, view) : 0;
-  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.strokeStyle = 'rgba(66,65,65,0.5)';
   ctx.lineWidth = 1; ctx.setLineDash([]);
   ctx.beginPath(); ctx.moveTo(tx, 0); ctx.lineTo(tx, H); ctx.stroke();
 }
@@ -299,7 +299,7 @@ function _compositeConcerto(target, W, H, mode) {
     const botY  = H - botH;
     const midH  = botY - gap - midY;
 
-    ctx.fillStyle = '#111';
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
 
     // ── Metadata weave — use src.meta (score2Canvas) which
@@ -312,9 +312,11 @@ function _compositeConcerto(target, W, H, mode) {
     // ── Prepare trace data ────────────────────────────────────────────
     var trace = (_lastTraceData && _lastTraceData.trace) ? _lastTraceData.trace : [];
     var hi    = (_concertoMaxT < Infinity && trace.length) ? _upperBoundTrace(trace, _concertoMaxT) : trace.length;
+    // When hi === 0, no trace points are visible (e.g., during lead-in).
+    // Use empty trace so viz panels show nothing — NOT the full trace.
     var fData = (!trace.length) ? _lastTraceData
+              : (hi === 0) ? { ..._lastTraceData, trace: [] }
               : (hi === trace.length) ? _lastTraceData
-              : (hi === 0) ? _lastTraceData
               : { ..._lastTraceData, trace: trace.slice(0, hi) };
 
     // ── Panel dimensions (always computed, even without trace data) ──
@@ -576,7 +578,8 @@ let _concertoDownloading = false;
 async function _runConcertoSegments(opts) {
   const { W, H, FPS, totalFrames, startTime, frameDur,
           drawFrame, mode, isTest, statusLabel,
-          wireFormat = 'raw', sequential = false } = opts;
+          wireFormat = 'raw', sequential = false,
+          skipSegments = new Set() } = opts;
 
   // Factory: make a fresh offscreen canvas. Called once here and again at
   // the start of each segment to release accumulated native (GPU/texture)
@@ -605,7 +608,7 @@ async function _runConcertoSegments(opts) {
   const SEG_DURATION       = 30;           // seconds per segment
   const SEG_FRAMES         = SEG_DURATION * FPS;
   const numSegments        = Math.max(1, Math.ceil(totalFrames / SEG_FRAMES));
-  const MAX_INFLIGHT       = 3;            // concurrent uploads
+  const MAX_INFLIGHT       = 3;            // resume protects against freeze — go fast
   const BATCH_SIZE         = 3;            // frames per HTTP request (small for raw RGBA)
   // PNG (lossless) is used for the wire format — fine mesh / line-art
   // content suffers visible JPEG DCT ringing at any quality. Final output
@@ -668,20 +671,26 @@ async function _runConcertoSegments(opts) {
   }
 
   try {
-    for (let seg = 0; seg < numSegments; seg++) {
+    let _uploadError = null;
+    for (let seg = (skipSegments.size > 0 ? 1 : 0); seg < numSegments; seg++) {
       if (!_concertoDownloading) return;
       if (workerError) throw new Error(workerError);
 
-      // Spawn next segment's ffmpeg (segment 0 was started by the caller).
-      if (seg > 0) {
+      // Skip segments that already exist on disk from a previous render
+      if (skipSegments.has(seg)) {
+        totalRendered += SEG_FRAMES;
+        continue;
+      }
+
+      // Spawn this segment's ffmpeg. Segment 0 (fresh render, no skips)
+      // was already started by the caller.
+      if (seg > 0 || skipSegments.size > 0) {
         const r = await fetch('/concerto_start', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ segment_index: seg })
+          body: JSON.stringify({ segment_index: seg, resume: skipSegments.size > 0 })
         });
         const d = await r.json();
         if (d.error) throw new Error(`segment ${seg} start: ${d.error}`);
-        // (Earlier tried recreating offscreen canvas here; didn't help,
-        // and may have hurt throughput in chunked mode. Removed.)
       }
 
       const segStartFrame = seg * SEG_FRAMES;
@@ -708,16 +717,17 @@ async function _runConcertoSegments(opts) {
       for (let sf = 0; sf < segCount; sf++) {
         if (!_concertoDownloading) return;
         if (workerError) throw new Error(workerError);
+        if (_uploadError) throw new Error(`upload failed: ${_uploadError}`);
         const f      = segStartFrame + sf;
         const realT  = startTime + f * frameDur;
-        // During lead-in (realT < 0), clamp to -1 so the score image
-        // shows black (cursor before image) and the viz panels show
-        // nothing (_concertoMaxT < 0 → _upperBoundTrace returns 0 →
-        // empty trace slice → blank viz). During lead-out (realT past
-        // audio end), the score clipping and viz progressive reveal
-        // handle it naturally.
-        const clampedRealT = Math.max(-1, realT);
-        const scoreT = (typeof realToScore === 'function') ? realToScore(clampedRealT) : clampedRealT;
+        // During lead-in (realT < 0), use realT directly as currentTime
+        // so the scroll calculation moves the image off-screen (it
+        // gradually enters from the right as time approaches 0).
+        // realToScore() clamps negative times to 0, which would freeze
+        // the image at center. After lead-in (realT >= 0), use the
+        // normal tempo-mapped score time.
+        const scoreT = (realT < 0) ? realT
+          : (typeof realToScore === 'function') ? realToScore(realT) : realT;
         state.currentTime = scoreT;
         _concertoMaxT = (realT < 0) ? -1 : scoreT;
         if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = (realT < 0) ? -1 : realT;
@@ -783,8 +793,17 @@ async function _runConcertoSegments(opts) {
             fd.append('lengths', lengths);
 
             const upload = fetch('/concerto_frames', { method: 'POST', body: fd })
-              .then(() => { inflight = inflight.filter(p => p !== upload); })
-              .catch(() => { inflight = inflight.filter(p => p !== upload); });
+              .then(async (resp) => {
+                inflight = inflight.filter(p => p !== upload);
+                if (!resp.ok) {
+                  const d = await resp.json().catch(() => ({}));
+                  _uploadError = d.error || `HTTP ${resp.status}`;
+                }
+              })
+              .catch((e) => {
+                inflight = inflight.filter(p => p !== upload);
+                _uploadError = e.message || 'network error';
+              });
             inflight.push(upload);
 
             batchStartIdx = sf + 1;
@@ -1052,6 +1071,9 @@ async function startConcertoDownload() {
           <input id="concerto-neutral" type="checkbox"> <b>Performance-neutral</b> (strips tempo/timing expression from audio)
         </label>
         <div style="font-size:9px;color:#555;margin-top:2px;">No accelerando/ritardando, no Kalman timing jitter, no articulation stretch. Pitch/dynamics/FX unchanged.</div>
+        <label style="font-size:11px;color:#ccc;margin-top:4px;display:block;">
+          <input id="concerto-composer" type="checkbox"> <b>Composer audio</b> (raw score mix — no interpreter/golems)
+        </label>
       </div>
       <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
         <label style="font-size:11px;color:#ccc;">
@@ -1100,6 +1122,7 @@ async function startConcertoDownload() {
   const wantMeta    = !!document.getElementById('concerto-meta-video')?.checked;
   const wantAudio   = !!document.getElementById('concerto-out-audio')?.checked;
   const wantNeutral    = !!document.getElementById('concerto-neutral')?.checked;
+  const wantComposer   = !!document.getElementById('concerto-composer')?.checked;
   const wantSequential = !!document.getElementById('concerto-sequential')?.checked;
 
   // Individual viz video outputs — each with its own resolution
@@ -1164,61 +1187,113 @@ async function startConcertoDownload() {
   const W   = isTest ? 1920 : userW;
   const H   = isTest ? 1080 : userH;
   const FPS = isTest ? 30 : 60;
-  // Use real (audio) duration for frame count — the WAV is in real time
-  const fullDur     = state.durationReal || state.duration || 0;
-  const startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
-  const endTime     = rangeTo > startTime ? Math.min(rangeTo, fullDur) : fullDur;
-  const audioDur    = endTime - startTime;
+  // Use real (audio) duration for frame count — the WAV is in real time.
+  // Preliminary values — recalculated after /preview returns the actual
+  // duration_real (which may be 0 or stale here if the user hasn't played).
+  let fullDur     = state.durationReal || state.duration || 0;
+  let startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
+  let endTime     = rangeTo > startTime ? Math.min(rangeTo, fullDur) : fullDur;
+  let audioDur    = endTime - startTime;
   // Video duration includes lead-in (black before music) and lead-out
   // (black after music). Total frames = the full video span.
-  const videoDur    = leadIn + audioDur + leadOut;
-  const totalFrames = Math.ceil(videoDur * FPS);
+  let videoDur    = leadIn + audioDur + leadOut;
+  let totalFrames = Math.ceil(videoDur * FPS);
   const frameDur    = 1.0 / FPS;
   // The offscreen canvas is created (and recreated per segment) inside
   // `_runConcertoSegments` now, so we don't pass one in.
 
   try {
-    // 0. ALWAYS re-render the audio via /preview so the trace data and
-    //    audio come from the same interpreter run. This guarantees the
-    //    viz panels in the metadata video match the audio exactly.
-    setStatus(wantNeutral ? 'rendering neutral audio…' : 'rendering audio…');
+    // 0. Check if segments exist from a previous failed render.
+    //    If so, skip /preview to keep the same trace + audio.
+    let _isResume = false;
     try {
-      const body = {
-        path: state.filePath,
-        score_path: (typeof interpState !== 'undefined' ? interpState.scorePath : null),
-        interp: (typeof interpState !== 'undefined') ? {
-          golems:   interpState.golems,
-          v2config: interpState.v2config,
-        } : {},
-        performance_neutral: wantNeutral,
-      };
-      const pr = await fetch('/preview', {
+      const chkRes = await fetch('/concerto_check_segments', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body),
+        body: JSON.stringify({ out_path: outPath }),
       });
-      const pd = await pr.json();
-      if (pd.error) throw new Error('audio render: ' + (pd.detail || pd.error));
+      const chkData = await chkRes.json();
+      _isResume = chkData.existing && chkData.existing.length > 0;
+    } catch (e) {} // non-fatal — treat as fresh render
 
-      // Update tempo map + duration from the fresh render
-      if (pd.tempo_map) state.tempoMap = pd.tempo_map;
-      if (pd.duration_real) state.durationReal = pd.duration_real;
-
-      // Fetch the trace from this same interpreter run so viz panels
-      // are guaranteed to match the audio.
+    if (_isResume) {
+      // Resume: load saved trace from disk instead of re-rendering
+      setStatus('resuming — loading saved trace…');
       try {
-        const trRes = await fetch('/get_last_trace');
+        const trRes = await fetch('/concerto_load_trace', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ out_path: outPath }),
+        });
         const trData = await trRes.json();
         if (trData.trace) {
           _lastTraceData = {
             trace: trData.trace,
-            total_dur: state.durationReal || state.duration || 0,
+            total_dur: trData.duration_real || state.durationReal || state.duration || 0,
           };
         }
-      } catch (e) {} // non-fatal — viz will use whatever trace was there
-    } catch (e) {
-      setStatus('audio render failed: ' + e.message);
-      _concertoDownloading = false;
-      return;
+      } catch (e) {
+        // No saved trace — fall back to re-rendering
+        _isResume = false;
+      }
+    }
+
+    if (!_isResume) {
+      // Fresh render: run /preview for audio + trace
+      setStatus(wantComposer ? 'rendering composer audio…'
+        : wantNeutral ? 'rendering neutral audio…' : 'rendering audio…');
+      try {
+        const body = {
+          path: state.filePath,
+          score_path: (typeof interpState !== 'undefined' ? interpState.scorePath : null),
+          engine: wantComposer ? 'v1' : undefined,
+          interp: wantComposer ? {} : (typeof interpState !== 'undefined') ? {
+            golems:   interpState.golems,
+            v2config: interpState.v2config,
+            mix_dims: interpState.mix_dims,
+          } : {},
+          performance_neutral: wantNeutral,
+        };
+        const pr = await fetch('/preview', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const pd = await pr.json();
+        if (pd.error) throw new Error('audio render: ' + (pd.detail || pd.error));
+
+        if (pd.tempo_map) state.tempoMap = pd.tempo_map;
+        if (pd.duration_real) state.durationReal = pd.duration_real;
+
+        if (wantComposer) {
+          _lastTraceData = null;  // no trace in composer mode
+        } else {
+          try {
+            const trRes = await fetch('/get_last_trace');
+            const trData = await trRes.json();
+            if (trData.trace) {
+              _lastTraceData = {
+                trace: trData.trace,
+                total_dur: state.durationReal || state.duration || 0,
+              };
+            }
+          } catch (e) {}
+        }
+      } catch (e) {
+        setStatus('audio render failed: ' + e.message);
+        _concertoDownloading = false;
+        return;
+      }
+    }
+
+    // Recalculate now that /preview has set state.durationReal.
+    // The preliminary calc above may have used state.duration (score time)
+    // because durationReal was 0. The audio WAV is in real time, so the
+    // video frame count must match real time, not score time.
+    if (state.durationReal) {
+      fullDur     = state.durationReal;
+      startTime   = 0;
+      endTime     = fullDur;
+      audioDur    = fullDur;
+      videoDur    = leadIn + audioDur + leadOut;
+      totalFrames = Math.ceil(videoDur * FPS);
     }
 
     // If the user ONLY wants audio, save it and return — no video render.
@@ -1260,6 +1335,18 @@ async function startConcertoDownload() {
     });
     const startData = await startRes.json();
     if (startData.error) { setStatus('error: ' + startData.error); _concertoDownloading = false; return; }
+    const scoreExisting = new Set(startData.existing_segments || []);
+    if (scoreExisting.size > 0) setStatus(`found ${scoreExisting.size} existing segments — skipping them`);
+
+    // Save trace to disk on fresh render so resume can load it later
+    if (!_isResume && _lastTraceData) {
+      try {
+        await fetch('/concerto_save_trace', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ duration_real: state.durationReal || state.duration || 0 }),
+        });
+      } catch (e) {} // non-fatal
+    }
 
     // 2. Upsize source canvases to target resolution for sharp rendering
     _upsizeSourceCanvases(W, H, 'score');
@@ -1271,6 +1358,7 @@ async function startConcertoDownload() {
     await _runConcertoSegments({
       W, H, FPS, totalFrames, startTime: startTime - leadIn, frameDur, wireFormat,
       sequential: wantSequential, mode: 'score', isTest,
+      skipSegments: scoreExisting,
       statusLabel: 'rendering',
       drawFrame: () => {
         if (_concertoCleanMode) {
@@ -1324,15 +1412,17 @@ async function startConcertoDownload() {
                                lead_in: leadIn, lead_out: leadOut,
                                wire_format: wireFormat,
                                ...(decodeThreads != null ? { decode_threads: decodeThreads } : {}),
-                               no_audio: true,
                                segment_index: 0 })
       });
       const metaStartData = await metaStartRes.json();
       if (metaStartData.error) { setStatus('meta error: ' + metaStartData.error); }
       else {
+        const metaExisting = new Set(metaStartData.existing_segments || []);
+        if (metaExisting.size > 0) setStatus(`meta: found ${metaExisting.size} existing segments — skipping them`);
         await _runConcertoSegments({
           W, H, FPS, totalFrames, startTime: startTime - leadIn, frameDur, wireFormat,
           sequential: wantSequential, mode: 'meta', isTest,
+          skipSegments: metaExisting,
           statusLabel: 'meta video',
           drawFrame: () => {
             // Draw the clean weave (no composer annotations) into
