@@ -61,8 +61,8 @@ function _drawCleanFrameOverlay() {
     }
   }
   var cx = typeof tToXF === 'function' ? tToXF(state.currentTime) : 0;
-  frameCtx.strokeStyle = 'rgba(66,65,65,0.5)';
-  frameCtx.lineWidth = 1; frameCtx.setLineDash([]);
+  frameCtx.strokeStyle = 'rgba(40,40,40,0.9)';
+  frameCtx.lineWidth = 4; frameCtx.setLineDash([]);
   frameCtx.beginPath(); frameCtx.moveTo(cx, 0); frameCtx.lineTo(cx, H); frameCtx.stroke();
 }
 
@@ -86,8 +86,8 @@ function _drawCleanScoreOverlay() {
     if (clSrcW > 0 && dstW > 0) ctx.drawImage(img, clSrcX, 0, clSrcW, img.naturalHeight, dstX, 0, dstW, H);
   }
   var tx = typeof tToXFor === 'function' ? tToXFor(state.currentTime, c, view) : 0;
-  ctx.strokeStyle = 'rgba(66,65,65,0.5)';
-  ctx.lineWidth = 1; ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(40,40,40,0.9)';
+  ctx.lineWidth = 4; ctx.setLineDash([]);
   ctx.beginPath(); ctx.moveTo(tx, 0); ctx.lineTo(tx, H); ctx.stroke();
 }
 
@@ -1187,17 +1187,10 @@ async function startConcertoDownload() {
   const W   = isTest ? 1920 : userW;
   const H   = isTest ? 1080 : userH;
   const FPS = isTest ? 30 : 60;
-  // Use real (audio) duration for frame count — the WAV is in real time.
-  // Preliminary values — recalculated after /preview returns the actual
-  // duration_real (which may be 0 or stale here if the user hasn't played).
-  let fullDur     = state.durationReal || state.duration || 0;
-  let startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
-  let endTime     = rangeTo > startTime ? Math.min(rangeTo, fullDur) : fullDur;
-  let audioDur    = endTime - startTime;
-  // Video duration includes lead-in (black before music) and lead-out
-  // (black after music). Total frames = the full video span.
-  let videoDur    = leadIn + audioDur + leadOut;
-  let totalFrames = Math.ceil(videoDur * FPS);
+  // Duration-dependent values are calculated after /preview returns
+  // the actual audio duration (state.durationReal). Declared here,
+  // assigned after the preview/resume block below.
+  let fullDur, startTime, endTime, audioDur, videoDur, totalFrames;
   const frameDur    = 1.0 / FPS;
   // The offscreen canvas is created (and recreated per segment) inside
   // `_runConcertoSegments` now, so we don't pass one in.
@@ -1283,18 +1276,21 @@ async function startConcertoDownload() {
       }
     }
 
-    // Recalculate now that /preview has set state.durationReal.
-    // The preliminary calc above may have used state.duration (score time)
-    // because durationReal was 0. The audio WAV is in real time, so the
-    // video frame count must match real time, not score time.
-    if (state.durationReal) {
-      fullDur     = state.durationReal;
-      startTime   = 0;
-      endTime     = fullDur;
-      audioDur    = fullDur;
-      videoDur    = leadIn + audioDur + leadOut;
-      totalFrames = Math.ceil(videoDur * FPS);
-    }
+    // Now that /preview has set state.durationReal, calculate the actual
+    // frame count. This is the only place these values are set — using the
+    // fresh duration_real that matches the WAV file just rendered.
+    fullDur     = state.durationReal || state.duration || 0;
+    startTime   = Math.max(0, Math.min(rangeFrom, fullDur));
+    // The popup "to" field defaults to state.duration.toFixed(1) (score time).
+    // If the user left it at the default, use fullDur (real time) so we don't
+    // cut the audio short when tempo stretching makes real time > score time.
+    // If the user manually typed a custom range, respect it.
+    const _defaultTo = parseFloat((state.duration || 0).toFixed(1));
+    const _userEditedRange = (rangeTo !== _defaultTo && rangeTo > 0);
+    endTime     = _userEditedRange ? Math.min(rangeTo, fullDur) : fullDur;
+    audioDur    = endTime - startTime;
+    videoDur    = leadIn + audioDur + leadOut;
+    totalFrames = Math.ceil(videoDur * FPS);
 
     // If the user ONLY wants audio, save it and return — no video render.
     if (wantAudio && !wantScore && !wantMeta) {
