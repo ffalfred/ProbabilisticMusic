@@ -1223,6 +1223,10 @@ async function startConcertoDownload() {
             total_dur: trData.duration_real || state.durationReal || state.duration || 0,
           };
         }
+        // On resume, also sync state.durationReal from the saved trace so
+        // the duration recalculation below uses the original render's value,
+        // not a stale one from a previous session.
+        if (trData.duration_real) state.durationReal = trData.duration_real;
       } catch (e) {
         // No saved trace — fall back to re-rendering
         _isResume = false;
