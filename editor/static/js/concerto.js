@@ -672,7 +672,7 @@ async function _runConcertoSegments(opts) {
 
   try {
     let _uploadError = null;
-    for (let seg = (skipSegments.size > 0 ? 1 : 0); seg < numSegments; seg++) {
+    for (let seg = 0; seg < numSegments; seg++) {
       if (!_concertoDownloading) return;
       if (workerError) throw new Error(workerError);
 

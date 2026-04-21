@@ -619,7 +619,7 @@ def concerto_start():
             # Build a set of existing segment indices (may have gaps).
             _concerto_segments  = []
             _existing_set = set()
-            for _i in range(1, 9999):
+            for _i in range(0, 9999):
                 seg_candidate = _concerto_out + f'.seg_{_i:04d}.mkv'
                 if os.path.exists(seg_candidate) and os.path.getsize(seg_candidate) > 0:
                     _concerto_segments.append(seg_candidate)
@@ -1139,7 +1139,7 @@ def concerto_check_segments():
     base, _ = os.path.splitext(out_path)
     existing = []
     for ext in ('.mp4', '.mkv', '.mov'):
-        for i in range(1, 9999):
+        for i in range(0, 9999):
             seg = base + ext + f'.seg_{i:04d}.mkv'
             if os.path.exists(seg) and os.path.getsize(seg) > 0:
                 existing.append(i)
