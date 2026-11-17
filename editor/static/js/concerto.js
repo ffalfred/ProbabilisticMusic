@@ -1,6 +1,150 @@
 // ─── Concerto View + Concerto Download ───────────────────────────────────────
+// Concerto is a presentation mode for whichever workspace is active: it takes
+// that workspace's SOURCE (see registry below) and shows it fullscreen or
+// renders it to video.
 // Depends on: state.js, draw.js (frameCanvas, score2Canvas), viz-panel.js,
-//             kalman-trace.js, playback.js, interpreter.js, filebrowser.js (openSaveBrowser)
+//             kalman-trace.js, playback.js, interpreter.js, concerto-lanes.js,
+//             filebrowser.js (openSaveBrowser)
+
+// ─── Sources ─────────────────────────────────────────────────────────────────
+// Each workspace registers what Concerto needs from it:
+//   label            shown in the download dialog
+//   audioModes       the audio choices offered in the Concerto bar, first is
+//                    the default: { value, label, trace }. `value` is also the
+//                    play mode View plays (togglePlay). `trace: true` means it
+//                    comes with a performance trace (trace panels); otherwise
+//                    Concerto shows the score lanes.
+//   available()      true, or a message saying what is missing
+//   defaultName()    base file name for downloads
+//   previewBody(o)   /preview request rendering o.audio (a mode value);
+//                    o.seed (when set) must reproduce an earlier render
+// A workspace without a source (the Conductor, for now) disables Concerto.
+const _concertoSources = {};
+const _concertoAudioChoice = {};   // workspace → chosen audio mode value
+let _concertoRunMode = null;       // audio mode fixed while a View/Download runs
+
+function registerConcertoSource(workspace, source) {
+  _concertoSources[workspace] = source;
+  _updateConcertoBar();
+}
+
+function _concertoWorkspace() {
+  return (typeof _activeWorkspace !== 'undefined') ? _activeWorkspace : 'composer';
+}
+
+function _concertoSource() {
+  return _concertoSources[_concertoWorkspace()] || null;
+}
+
+// The audio mode chosen for the active source (or the one a running
+// View/Download was started with).
+function _concertoAudioMode(src) {
+  if (_concertoRunMode) return _concertoRunMode;
+  src = src || _concertoSource();
+  if (!src) return null;
+  const v = _concertoAudioChoice[_concertoWorkspace()];
+  return src.audioModes.find(m => m.value === v) || src.audioModes[0];
+}
+
+function _updateConcertoBar() {
+  const bar = document.getElementById('concerto-bar');
+  if (!bar) return;
+  const src = _concertoSource();
+  bar.classList.toggle('unavailable', !src);
+  bar.title = src ? `Concerto — presents the ${src.label}`
+                  : 'Concerto is not available in this workspace yet';
+  const sel = document.getElementById('concerto-audio');
+  if (sel) {
+    const cur = src ? _concertoAudioMode(src) : null;
+    sel.innerHTML = src ? src.audioModes.map(m =>
+      `<option value="${m.value}"${m === cur ? ' selected' : ''}>${m.label}</option>`).join('') : '';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('concerto-audio');
+  if (sel) sel.addEventListener('change', () => {
+    _concertoAudioChoice[_concertoWorkspace()] = sel.value;
+  });
+});
+
+// Score with no events: just the source tracks as loaded (gain, mute,
+// automation), like the Source/Raw play modes.
+function _rawSourceScore() {
+  const s = buildComposerScore();
+  return { samples: {}, events: [], ...(s.tracks ? { tracks: s.tracks } : {}) };
+}
+
+// Returns the active source if it can be presented now; otherwise tells the
+// user why not and returns null.
+function _concertoReadySource() {
+  const src = _concertoSource();
+  if (!src) { alert('Concerto is not available in this workspace yet.'); return null; }
+  const ok = src.available();
+  if (ok !== true) { alert(`Concerto (${src.label}): ${ok}.`); return null; }
+  return src;
+}
+
+registerConcertoSource('composer', {
+  label: 'Composer',
+  audioModes: [
+    { value: 'mix',    label: 'Mix',    trace: false },   // the composed piece
+    { value: 'source', label: 'Source', trace: false },   // the loaded audio as-is
+  ],
+  available: () => state.filePath ? true : 'load audio first',
+  defaultName: () => (state.lastScorePath || state.filePath || 'concerto')
+                       .split('/').pop().replace(/\.[^.]+$/, '') || 'concerto',
+  // The Composer's current state (saved or not), plain v1 render.
+  previewBody: ({ seed, audio }) => ({
+    path: state.filePath,
+    score: audio === 'source' ? _rawSourceScore() : buildComposerScore(),
+    engine: 'v1',
+    ...(seed != null ? { _config: { seed } } : {}),
+  }),
+});
+
+registerConcertoSource('interpreter', {
+  label: 'Interpreter',
+  audioModes: [
+    { value: 'interp', label: 'Interp', trace: true  },   // score performed by the golems
+    { value: 'score',  label: 'Score',  trace: false },   // score without golems
+    { value: 'raw',    label: 'Raw',    trace: false },   // the loaded audio as-is
+  ],
+  available: () => !_interpAudioPath() ? 'load audio first'
+                 : !interpState.scorePath ? 'load a score first' : true,
+  defaultName: () => (interpState.scorePath || 'concerto')
+                       .split('/').pop().replace(/\.ya?ml$/, '') || 'concerto',
+  // Same requests as the Interpreter's play modes, with the seed pinned
+  // when given.
+  previewBody: ({ seed, audio }) => {
+    if (audio === 'raw')
+      return { path: _interpAudioPath(), score: _rawSourceScore(), engine: 'v1',
+               ...(seed != null ? { _config: { seed } } : {}) };
+    const golems = audio === 'score' ? [] : interpState.golems;
+    let v2config = audio === 'score' ? {} : interpState.v2config;
+    if (seed != null) v2config = { ...(v2config || {}), v2: { ...((v2config || {}).v2 || {}), seed } };
+    return {
+      path: _interpAudioPath(), score_path: interpState.scorePath,
+      interp: { golems, v2config, mix_dims: interpState.mix_dims },
+    };
+  },
+});
+
+function _interpAudioPath() {
+  const el = document.getElementById('interp-audio-path');
+  return (el && el.value.trim()) || state.filePath || '';
+}
+
+document.addEventListener('workspace:activated', _updateConcertoBar);
+
+// True when the chosen audio comes with a performance trace and one is
+// loaded — decides between the trace panels and the score lanes everywhere.
+function _concertoHasTrace() {
+  const mode = _concertoAudioMode();
+  return !!(mode && mode.trace &&
+            typeof _lastTraceData !== 'undefined' && _lastTraceData &&
+            _lastTraceData.trace && _lastTraceData.trace.length);
+}
 
 var _concertoActive = false;
 var _concertoRaf    = null;
@@ -30,6 +174,17 @@ function _concertoAudioPlaying() {
   if (typeof isMixPlaying === 'function' && isMixPlaying()) return true;
   if (typeof baseAudio !== 'undefined' && !baseAudio.paused && !baseAudio.ended) return true;
   return false;
+}
+
+// Score-time position of whatever is playing (state.currentTime if nothing is).
+function _concertoPlayPosition() {
+  if (typeof _waPlaying !== 'undefined' && _waPlaying && typeof _waCurrentTime === 'function')
+    return _waCurrentTime();
+  if (typeof _mixPlaying !== 'undefined' && _mixPlaying && typeof mixCurrentTime === 'function' && typeof realToScore === 'function')
+    return realToScore(mixCurrentTime());
+  if (typeof baseAudio !== 'undefined' && !baseAudio.paused && !baseAudio.ended)
+    return baseAudio.currentTime;
+  return state.currentTime;
 }
 
 // Best-effort: tell the server to kill ffmpeg and discard the partial
@@ -108,7 +263,10 @@ function enterConcertoView() {
   const overlay = document.getElementById('concerto-overlay');
   const canvas  = document.getElementById('concerto-canvas');
   if (!overlay || !canvas) return;
+  const source = _concertoReadySource();
+  if (!source) return;
 
+  _concertoRunMode = _concertoAudioMode(source);   // fixed until exit
   _concertoActive = true;
   _concertoViewMode = (document.getElementById('concerto-view-mode') || {}).value || 'combined';
   _concertoCleanMode = true;
@@ -139,13 +297,23 @@ function enterConcertoView() {
 
   // Start playback only if nothing is playing yet (togglePlay would
   // otherwise PAUSE audio that is already running).
+  // Plays the audio chosen in the Concerto bar, not the editor's play mode.
+  // If something is already playing (possibly another mode), it is replaced
+  // by the chosen audio from the same position.
   const _startPlayback = () => {
-    if (_concertoAudioPlaying()) return;
-    if (typeof togglePlay === 'function') { togglePlay(); _concertoViewStartedAudio = true; }
+    if (typeof togglePlay !== 'function') return;
+    if (_concertoAudioPlaying()) {
+      const pos = _concertoPlayPosition();
+      if (typeof stopAll === 'function') stopAll();   // also resets the cursor to 0
+      state.currentTime = pos;
+    }
+    togglePlay(_concertoRunMode.value);
+    _concertoViewStartedAudio = true;
   };
 
   // During lead-in: show black, suppress viz. Audio starts after leadIn.
-  // If audio is already running there is nothing to lead into.
+  // If audio is already running there is nothing to lead into: the chosen
+  // audio takes over right away from the current position.
   if (_concertoViewLeadIn > 0 && !_concertoAudioPlaying()) {
     _concertoViewPhase = 'lead-in';
     _concertoMaxT = -1;  // suppress viz
@@ -167,6 +335,7 @@ function enterConcertoView() {
 
 function exitConcertoView() {
   _concertoActive = false;
+  _concertoRunMode = null;
   _concertoCleanMode = false;
   _concertoGreyscaleMode = false;
   _concertoMaxT = Infinity;  // restore full view
@@ -222,14 +391,7 @@ function _concertoTick() {
     if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = -1;
   } else {
     // Normal playback: update time from audio
-    if (typeof _waPlaying !== 'undefined' && _waPlaying && typeof _waCurrentTime === 'function') {
-      state.currentTime = _waCurrentTime();
-    } else if (typeof _mixPlaying !== 'undefined' && _mixPlaying && typeof mixCurrentTime === 'function' && typeof realToScore === 'function') {
-      state.currentTime = realToScore(mixCurrentTime());
-    } else {
-      var pl = (typeof baseAudio !== 'undefined' && !baseAudio.paused && !baseAudio.ended) ? baseAudio : null;
-      if (pl) state.currentTime = pl.currentTime;
-    }
+    state.currentTime = _concertoPlayPosition();
 
     _concertoMaxT = state.currentTime;
     if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = state.currentTime;
@@ -249,7 +411,7 @@ function _concertoTick() {
   // 'combined' composites viz-panel-canvas as-is, and upsizing cleared it,
   // so redraw the active single viz into it every tick. 'meta' draws its
   // panels itself (reusing src.viz as scratch) and 'score' doesn't use it.
-  if (_concertoViewMode === 'combined' && typeof _renderVizPanelCanvas === 'function')
+  if (_concertoViewMode === 'combined' && _concertoHasTrace() && typeof _renderVizPanelCanvas === 'function')
     _renderVizPanelCanvas(_lastTraceData);
 
   _compositeConcerto(document.getElementById('concerto-canvas'));
@@ -267,7 +429,7 @@ const _LEFT_META_RATIO       = 0.35;
 const _LEFT_TIMELINE_RATIO   = 0.23;
 // Single-panel export modes (one viz / the timeline filling the frame)
 const _CONCERTO_VIZ_MODES        = new Set(['scatter', 'marginal', 'phase', 'phase_gb', 'phase_gfc', 'energy', 'trajectory', 'noise']);
-const _CONCERTO_STANDALONE_MODES = new Set(['timeline', ..._CONCERTO_VIZ_MODES]);
+const _CONCERTO_STANDALONE_MODES = new Set(['timeline', 'lanes', ..._CONCERTO_VIZ_MODES]);
 
 // Index of the first trace sample with .t > maxT, or trace.length if all
 // samples have .t <= maxT. Used to slice the trace prefix without scanning
@@ -321,6 +483,14 @@ function _compositeConcerto(target, W, H, mode) {
     //    scroll + cursor logic. Same behavior as composer/interpreter.
     if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
       ctx.drawImage(src.meta, 0, midY, W, midH);
+    }
+
+    // No performance trace (Composer source): dynamics lane on top, tempo
+    // lane at the bottom, in place of the trace panel rows.
+    if (!_concertoHasTrace()) {
+      drawDynamicsLane(ctx, gap, gap, W - gap * 2, L.topH - gap * 2);
+      drawTempoLane(ctx, gap, botY + gap, W - gap * 2, L.botH - gap * 2);
+      return;
     }
 
     // ── Prepare trace data ────────────────────────────────────────────
@@ -411,6 +581,10 @@ function _compositeConcerto(target, W, H, mode) {
       try { _drawStateTrajectory(vizCtx, botSmall, botPanelH, fData); } catch(e) {}
       ctx.drawImage(src.viz, botPositions[2], botY + gap, botSmall, botPanelH);
     }
+  } else if (mode === 'lanes') {
+    // Standalone dynamics + tempo lanes — fills the full frame
+    drawScoreLanes(ctx, 0, 0, W, H);
+
   } else if (mode === 'timeline') {
     // Standalone timeline strip — fills the full frame
     ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H);
@@ -442,13 +616,16 @@ function _compositeConcerto(target, W, H, mode) {
     }
 
   } else {
-    // Combined layout — all panels with gaps
+    // Combined layout — all panels with gaps. Without a trace the viz
+    // column is dropped and the timeline slot shows the score lanes.
+    const hasTrace = _concertoHasTrace();
     const gap = Math.round(W * 0.003);
-    const vizW  = Math.floor(W * _CONCERTO_VIZ_RATIO) - gap;
-    const leftW = W - vizW - gap * 2;
+    const vizW  = hasTrace ? Math.floor(W * _CONCERTO_VIZ_RATIO) - gap : 0;
+    const leftW = hasTrace ? W - vizW - gap * 2 : W - gap * 2;
     const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO) - gap;
     const metaH     = Math.floor(H * _LEFT_META_RATIO) - gap;
     const timelineH = H - scoreH - metaH - gap * 3;
+    const timelineY = gap * 3 + scoreH + metaH;
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
@@ -459,11 +636,15 @@ function _compositeConcerto(target, W, H, mode) {
     if (src.meta && src.meta.width > 0 && src.meta.height > 0) {
       ctx.drawImage(src.meta, gap, gap * 2 + scoreH, leftW, metaH);
     }
-    if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
-      ctx.drawImage(src.timeline, gap, gap * 3 + scoreH + metaH, leftW, timelineH);
-    }
-    if (src.viz && src.viz.width > 0 && src.viz.height > 0) {
-      ctx.drawImage(src.viz, gap + leftW + gap, gap, vizW, H - gap * 2);
+    if (!hasTrace) {
+      drawScoreLanes(ctx, gap, timelineY, leftW, timelineH);
+    } else {
+      if (src.timeline && src.timeline.width > 0 && src.timeline.height > 0) {
+        ctx.drawImage(src.timeline, gap, timelineY, leftW, timelineH);
+      }
+      if (src.viz && src.viz.width > 0 && src.viz.height > 0) {
+        ctx.drawImage(src.viz, gap + leftW + gap, gap, vizW, H - gap * 2);
+      }
     }
   }
 }
@@ -515,8 +696,9 @@ function _upsizeSourceCanvases(W, H, mode) {
       ['viz',      Math.round(W * 0.2), H],
     ];
   } else {
-    // Combined layout (original sizing)
-    const vizW      = Math.floor(W * _CONCERTO_VIZ_RATIO);
+    // Combined layout (original sizing; full width when there's no trace,
+    // matching _compositeConcerto)
+    const vizW      = _concertoHasTrace() ? Math.floor(W * _CONCERTO_VIZ_RATIO) : 0;
     const leftW     = W - vizW;
     const scoreH    = Math.floor(H * _LEFT_SCORE_RATIO);
     const metaH     = Math.floor(H * _LEFT_META_RATIO);
@@ -525,7 +707,7 @@ function _upsizeSourceCanvases(W, H, mode) {
       ['score',    leftW, scoreH],
       ['meta',     leftW, metaH],
       ['timeline', leftW, timelineH],
-      ['viz',      vizW,  H],
+      ['viz',      Math.max(1, vizW), H],   // unused (width 0) without a trace
     ];
   }
   // Record the editor's ORIGINAL sizes only on the first upsize; later
@@ -864,17 +1046,53 @@ function setConcertoStatus(msg) {
   if (el) el.textContent = msg;
 }
 
+// Individual video outputs. `trace` ones need a performance trace and are
+// offered only for sources that have one.
+const _CONCERTO_VIZ_OUTPUTS = [
+  { id: 'noise',      label: 'Process Noise',                 trace: true,  w: 1080, h: 1080 },
+  { id: 'energy',     label: 'Innovation Energy',             trace: true,  w: 1080, h: 1080 },
+  { id: 'marginal',   label: 'Marginal Gaussians',            trace: true,  w: 1080, h: 1080 },
+  { id: 'phase_gb',   label: 'Phase Portrait (Gain/Bright.)', trace: true,  w: 1080, h: 1080 },
+  { id: 'phase_gfc',  label: 'Phase Portrait (Gain/Filter)',  trace: true,  w: 1080, h: 1080 },
+  { id: 'scatter',    label: 'Sample Scatter',                trace: true,  w: 1080, h: 1080 },
+  { id: 'timeline',   label: 'Kalman Trace',                  trace: true,  w: 1920, h: 540  },
+  { id: 'trajectory', label: 'State Trajectory',              trace: true,  w: 1080, h: 1080 },
+  { id: 'lanes',      label: 'Dynamics & Tempo Lanes',        trace: false, w: 1920, h: 540  },
+];
+
+function _vizOutputRowHtml(v) {
+  const num = `background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;width:55px;`;
+  return `
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+            <input id="concerto-out-${v.id}" type="checkbox" style="margin:0;">
+            <span style="font-size:10px;color:#aaa;width:155px;">${v.label}</span>
+            <input id="concerto-viz-${v.id}-w" type="number" value="${v.w}" min="100" step="1" style="${num}">
+            <span style="font-size:9px;color:#555;">×</span>
+            <input id="concerto-viz-${v.id}-h" type="number" value="${v.h}" min="100" step="1" style="${num}">
+          </div>`;
+}
+
 async function startConcertoDownload() {
   if (_concertoDownloading) return;
+  const source = _concertoReadySource();
+  if (!source) return;
   if (!state.duration || state.duration <= 0) {
-    alert('Load audio and run a trace first.');
+    alert('Load audio first.');
     return;
   }
+  const audioMode  = _concertoAudioMode(source);
+  const vizChoices = _CONCERTO_VIZ_OUTPUTS.filter(v => audioMode.trace || !v.trace);
 
   // Show export popup
   const dur = state.duration || 0;
   const html = `
     <div style="display:flex;flex-direction:column;gap:8px;">
+      <div style="font-size:11px;color:#888;">
+        Source: <b style="color:#ccc;">${source.label} · ${audioMode.label}</b>
+        ${audioMode.trace ? '— with performance trace'
+                          : '— no performance trace (score lanes instead of trace panels)'}
+        <div style="font-size:9px;color:#555;margin-top:2px;">Change the audio in the Concerto bar.</div>
+      </div>
       <div>
         <label style="font-size:11px;color:#888;">Quality:</label>
         <select id="concerto-quality" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
@@ -958,63 +1176,8 @@ async function startConcertoDownload() {
           <input id="concerto-out-audio" type="checkbox"> Audio (.wav)
         </label>
         <div style="margin-top:6px;padding-left:4px;">
-          <label style="font-size:10px;color:#888;display:block;margin-bottom:2px;">Individual viz videos (greyscale, no sound):</label>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-noise" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Process Noise</span>
-            <input id="concerto-viz-noise-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-noise-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-energy" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Innovation Energy</span>
-            <input id="concerto-viz-energy-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-energy-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-marginal" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Marginal Gaussians</span>
-            <input id="concerto-viz-marginal-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-marginal-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-phase_gb" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Phase Portrait (Gain/Bright.)</span>
-            <input id="concerto-viz-phase_gb-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-phase_gb-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-phase_gfc" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Phase Portrait (Gain/Filter)</span>
-            <input id="concerto-viz-phase_gfc-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-phase_gfc-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-scatter" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Sample Scatter</span>
-            <input id="concerto-viz-scatter-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-scatter-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
-            <input id="concerto-out-timeline" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">Kalman Trace</span>
-            <input id="concerto-viz-timeline-w" type="number" value="1920" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-timeline-h" type="number" value="540" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
-          <div style="display:flex;align-items:center;gap:4px;">
-            <input id="concerto-out-trajectory" type="checkbox" style="margin:0;">
-            <span style="font-size:10px;color:#aaa;width:155px;">State Trajectory</span>
-            <input id="concerto-viz-trajectory-w" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-            <span style="font-size:9px;color:#555;">\u00d7</span>
-            <input id="concerto-viz-trajectory-h" type="number" value="1080" min="100" step="1" style="width:55px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px;font-size:10px;">
-          </div>
+          <label style="font-size:10px;color:#888;display:block;margin-bottom:2px;">Individual videos (greyscale, no sound):</label>
+${vizChoices.map(_vizOutputRowHtml).join('')}
         </div>
       </div>
       <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
@@ -1022,9 +1185,6 @@ async function startConcertoDownload() {
           <input id="concerto-neutral" type="checkbox"> <b>Performance-neutral</b> (strips tempo/timing expression from audio)
         </label>
         <div style="font-size:9px;color:#555;margin-top:2px;">No accelerando/ritardando, no Kalman timing jitter, no articulation stretch. Pitch/dynamics/FX unchanged.</div>
-        <label style="font-size:11px;color:#ccc;margin-top:4px;display:block;">
-          <input id="concerto-composer" type="checkbox"> <b>Composer audio</b> (raw score mix — no interpreter/golems)
-        </label>
       </div>
       <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
         <label style="font-size:11px;color:#ccc;">
@@ -1042,8 +1202,7 @@ async function startConcertoDownload() {
     const pathInput = document.getElementById('concerto-path');
     if (browseBtn && pathInput) {
       browseBtn.addEventListener('click', () => {
-        const name = (interpState.scorePath || 'concerto').split('/').pop()
-                      .replace(/\.ya?ml$/, '') || 'concerto';
+        const name = source.defaultName();
         const selQ = document.getElementById('concerto-quality')?.value || 'a1';
         // All *2 quality presets (a2/b2/h2/t2) use the .ts container.
         const ext  = (selQ === 'a2' || selQ === 'b2' || selQ === 'h2' || selQ === 'h2q' || selQ === 't2') ? '.ts' : '.mp4';
@@ -1073,25 +1232,16 @@ async function startConcertoDownload() {
   const wantMeta    = !!document.getElementById('concerto-meta-video')?.checked;
   const wantAudio   = !!document.getElementById('concerto-out-audio')?.checked;
   const wantNeutral    = !!document.getElementById('concerto-neutral')?.checked;
-  const wantComposer   = !!document.getElementById('concerto-composer')?.checked;
   const wantSequential = !!document.getElementById('concerto-sequential')?.checked;
 
-  // Individual viz video outputs — each with its own resolution
-  const vizOutputs = [
-    { id: 'noise',      mode: 'noise',      label: 'Process Noise' },
-    { id: 'energy',     mode: 'energy',     label: 'Innovation Energy' },
-    { id: 'marginal',   mode: 'marginal',   label: 'Marginal Gaussians' },
-    { id: 'phase_gb',   mode: 'phase_gb',   label: 'Phase Portrait (Gain/Bright.)' },
-    { id: 'phase_gfc',  mode: 'phase_gfc',  label: 'Phase Portrait (Gain/Filter)' },
-    { id: 'scatter',    mode: 'scatter',    label: 'Sample Scatter' },
-    { id: 'timeline',   mode: 'timeline',   label: 'Kalman Trace' },
-    { id: 'trajectory', mode: 'trajectory', label: 'State Trajectory' },
-  ].filter(v => !!document.getElementById('concerto-out-' + v.id)?.checked)
-   .map(v => ({
-     ...v,
-     w: parseInt(document.getElementById('concerto-viz-' + v.id + '-w')?.value) || 1080,
-     h: parseInt(document.getElementById('concerto-viz-' + v.id + '-h')?.value) || 1080,
-   }));
+  // Individual video outputs — each with its own resolution (mode = id)
+  const vizOutputs = vizChoices
+    .filter(v => !!document.getElementById('concerto-out-' + v.id)?.checked)
+    .map(v => ({
+      ...v, mode: v.id,
+      w: parseInt(document.getElementById('concerto-viz-' + v.id + '-w')?.value) || v.w,
+      h: parseInt(document.getElementById('concerto-viz-' + v.id + '-h')?.value) || v.h,
+    }));
 
   const anyOutput = wantScore || wantMeta || wantAudio || vizOutputs.length > 0;
   if (!anyOutput) {
@@ -1109,6 +1259,7 @@ async function startConcertoDownload() {
   const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
 
   _concertoDownloading = true;
+  _concertoRunMode = audioMode;   // fixed for the whole render
   _concertoCleanMode = true;
   _concertoGreyscaleMode = true;  // all viz renders use greyscale palette
   // Cache the user's dimension selection so phase portrait + state trajectory
@@ -1184,23 +1335,10 @@ async function startConcertoDownload() {
     {
       // Run /preview for audio + trace (with the saved seed when resuming)
       setStatus(_isResume ? 'resuming — re-rendering audio…'
-        : wantComposer ? 'rendering composer audio…'
-        : wantNeutral ? 'rendering neutral audio…' : 'rendering audio…');
+        : `rendering ${source.label} ${audioMode.label}${wantNeutral ? ' (neutral)' : ''} audio…`);
       try {
-        let v2config = (typeof interpState !== 'undefined') ? interpState.v2config : undefined;
-        if (_resumeSeed != null && !wantComposer) {
-          v2config = { ...(v2config || {}), v2: { ...((v2config || {}).v2 || {}), seed: _resumeSeed } };
-        }
         const body = {
-          path: state.filePath,
-          score_path: (typeof interpState !== 'undefined' ? interpState.scorePath : null),
-          engine: wantComposer ? 'v1' : undefined,
-          interp: wantComposer ? {} : (typeof interpState !== 'undefined') ? {
-            golems:   interpState.golems,
-            v2config,
-            mix_dims: interpState.mix_dims,
-          } : {},
-          ...(wantComposer && _resumeSeed != null ? { _config: { seed: _resumeSeed } } : {}),
+          ...source.previewBody({ seed: _resumeSeed, audio: audioMode.value }),
           performance_neutral: wantNeutral,
         };
         const pr = await fetch('/preview', {
@@ -1213,8 +1351,8 @@ async function startConcertoDownload() {
         state.tempoMap = Array.isArray(pd.tempo_map) ? pd.tempo_map : [];
         if (pd.duration_real) state.durationReal = pd.duration_real;
 
-        if (wantComposer) {
-          _lastTraceData = null;  // no trace in composer mode
+        if (!audioMode.trace) {
+          _lastTraceData = null;  // no performance trace → score lanes
         } else {
           try {
             const trRes = await fetch('/get_last_trace');
@@ -1521,6 +1659,7 @@ async function startConcertoDownload() {
     // so a later resume doesn't reuse it.
     await _concertoCancelServer();
   } finally {
+    _concertoRunMode = null;
     _concertoMaxT = Infinity;
     if (typeof _vizCurrentT !== 'undefined') _vizCurrentT = -1;
     _concertoCleanMode = false;

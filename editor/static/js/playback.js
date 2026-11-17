@@ -77,8 +77,11 @@ function stopAll() {
     drawKalmanTrace(_lastTraceData);
 }
 
-async function togglePlay() {
-  const mode = (document.getElementById("play-mode-select") || {}).value || "source";
+// `mode` overrides the play-mode select (Concerto plays its own audio choice).
+// Ignored unless a string, so togglePlay also works as an event handler.
+async function togglePlay(mode) {
+  if (typeof mode !== 'string')
+    mode = (document.getElementById("play-mode-select") || {}).value || "source";
   if      (mode === "source") toggleBase();
   else if (mode === "mix")    toggleMix();
   else if (mode === "raw")    toggleBase();
@@ -190,6 +193,46 @@ function seekTo(t) {
   draw();
 }
 
+// The Composer's current state as a score dict for /preview — what the Mix
+// button renders, saved or not. Also used by Concerto's Composer source.
+function buildComposerScore() {
+  const samplesClean = {};
+  for (const [k, v] of Object.entries(state.samples))
+    samplesClean[k] = { from: v.from, to: v.to,
+      fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
+      ...(v.track ? { track: v.track } : {}) };
+  // The backend only honours `muted` on events/dynamics/articulations —
+  // drop muted phrases, tempo ranges, fx zones and note relations here.
+  const _live = arr => (arr || []).filter(x => !x.muted);
+  const noteRel = _live(state.noteRel);
+  return {
+    samples: samplesClean,
+    dynamics: state.dynamics,
+    tempo: _live(state.tempo),
+    base_fx: state.baseFx,
+    fx_ranges: _live(state.fxRanges),
+    events: state.events,
+    phrases: _live(state.phrases).map(p => ({
+      from: p.from, to: p.to, label: p.label,
+      gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
+      fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
+    })),
+    ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
+      path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
+      ...(tk.from != null ? { from: tk.from } : {}),
+      ...(tk.to   != null ? { to:   tk.to   } : {}),
+      ...(tk.fx?.length         ? { fx:   tk.fx   } : {}),
+      ...(tk.automation?.length ? { automation: tk.automation } : {}),
+      ...(tk.fx_regions?.length ? { fx_regions: tk.fx_regions } : {}),
+    })) } : {}),
+    ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
+    ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
+    ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
+    ...(state.articulations.length ? { articulations: state.articulations } : {}),
+    ...(noteRel.length             ? { note_rel: noteRel }                  : {}),
+  };
+}
+
 async function renderAndPlay() {
   const btn = document.getElementById("play-btn");
   if (!state.filePath) return;
@@ -197,49 +240,13 @@ async function renderAndPlay() {
   _setPlayBtn("⏳ rendering…");
   if (btn) btn.disabled = true;
   try {
-    const samplesClean = {};
-    for (const [k, v] of Object.entries(state.samples))
-      samplesClean[k] = { from: v.from, to: v.to,
-        fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
-        ...(v.track ? { track: v.track } : {}) };
-    // The backend only honours `muted` on events/dynamics/articulations —
-    // drop muted phrases, tempo ranges, fx zones and note relations here.
-    const _live = arr => (arr || []).filter(x => !x.muted);
-    const noteRel = _live(state.noteRel);
-    const score = {
-      samples: samplesClean,
-      dynamics: state.dynamics,
-      tempo: _live(state.tempo),
-      base_fx: state.baseFx,
-      fx_ranges: _live(state.fxRanges),
-      events: state.events,
-      phrases: _live(state.phrases).map(p => ({
-        from: p.from, to: p.to, label: p.label,
-        gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
-        fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
-      })),
-      ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
-        path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
-        ...(tk.from != null ? { from: tk.from } : {}),
-        ...(tk.to   != null ? { to:   tk.to   } : {}),
-        ...(tk.fx?.length         ? { fx:   tk.fx   } : {}),
-        ...(tk.automation?.length ? { automation: tk.automation } : {}),
-        ...(tk.fx_regions?.length ? { fx_regions: tk.fx_regions } : {}),
-      })) } : {}),
-      ...(state.duckBase.enabled ? { duck_base: state.duckBase } : {}),
-      ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
-      ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
-      ...(state.articulations.length ? { articulations: state.articulations } : {}),
-      ...(noteRel.length             ? { note_rel: noteRel }                  : {}),
-    };
-
     // 1. Ask the server to render and get back the audio URL.
     //    Composer mix is the v1 engine — without this the server falls back to
     //    config.yaml's engine (v2/Kalman).
     const res = await fetch("/preview", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.filePath, score, engine: 'v1' })
+      body: JSON.stringify({ path: state.filePath, score: buildComposerScore(), engine: 'v1' })
     });
     const data = await res.json();
     if (gen !== _renderGen) return;

@@ -9,6 +9,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const tabs = document.querySelectorAll('.ws-tab');
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
+      // A Concerto download renders the active workspace — switching would
+      // change its source (and trace) mid-render.
+      if (typeof _concertoDownloading !== 'undefined' && _concertoDownloading) {
+        alert('A Concerto download is running — cancel it or wait before switching workspace.');
+        return;
+      }
       tabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       _switchWorkspace(tab.dataset.ws);

@@ -62,6 +62,16 @@ class ServerTests(unittest.TestCase):
         d = self._post('/preview', {'path': self.audio, 'score': dict(self.score), 'engine': 'v1'})
         self.assertIn('seed', d)
 
+    def test_source_only_preview_is_the_loaded_audio(self):
+        # Concerto's "Source"/"Raw" audio: a score with no events
+        self._post('/preview', {'path': self.audio, 'engine': 'v1',
+                                'score': {'samples': {}, 'events': []}})
+        rendered, _ = sf.read(server.PREVIEW_TMP, dtype='float32')
+        source, _ = sf.read(self.audio, dtype='float32')
+        self.assertEqual(len(rendered), len(source))
+        # normalised copy of the source: same shape, peak 0.9
+        np.testing.assert_allclose(rendered, source / np.max(np.abs(source)) * 0.9, atol=1e-3)
+
     def test_preview_is_reproducible_from_its_seed(self):
         body = {'path': self.audio, 'score_path': self.score_path,
                 'interp': {'golems': self.score['golems'], 'v2config': {'v2': {'seed': 11}}}}

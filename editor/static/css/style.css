@@ -555,6 +555,25 @@
   }
   .ws-tab:hover:not(.active) { color: #666; background: #111; }
 
+  /* Concerto — presentation mode for whichever workspace is active */
+  #concerto-bar {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+  }
+  #concerto-bar-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #444;
+  }
+  #concerto-bar.unavailable > :not(#concerto-bar-label):not(#concerto-status) {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
   /* ── Workspace panels ── */
   .workspace {
     display: flex;

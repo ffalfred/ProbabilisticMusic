@@ -11,6 +11,28 @@
   <button class="ws-tab active" data-ws="composer">Composer</button>
   <button class="ws-tab" data-ws="interpreter">Interpreter</button>
   <button class="ws-tab" data-ws="conductor">Conductor</button>
+  <div id="concerto-bar" title="">
+    <span id="concerto-bar-label">concerto</span>
+    <select id="concerto-audio" title="Audio that Concerto plays (View) and renders (Download)"
+            style="background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:2px 4px;"></select>
+    <select id="concerto-view-mode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:2px 4px;">
+      <option value="combined">Combined</option>
+      <option value="score">Score only</option>
+      <option value="meta">Metadata only</option>
+    </select>
+    <span style="font-size:9px;color:#666;">in:</span>
+    <input id="concerto-lead-in-bar" type="number" value="0" min="0" step="0.5"
+           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
+           title="Lead-in: seconds of black before music starts">
+    <span style="font-size:9px;color:#666;">out:</span>
+    <input id="concerto-lead-out-bar" type="number" value="0" min="0" step="0.5"
+           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
+           title="Lead-out: seconds of black after music ends">
+    <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; View</button>
+    <button id="concerto-download-btn" title="Render 4K 60fps video">&#8595; Concerto Download</button>
+    <button id="concerto-cancel-btn" style="display:none;color:#c66;border-color:#633;" title="Cancel render">&#10005; Cancel</button>
+    <span id="concerto-status" style="font-size:10px;color:#888;"></span>
+  </div>
 </div>
 
 <!-- Context menu (right-click on canvas items) -->
@@ -97,25 +119,6 @@
     <input id="interp-timbral-pull" type="number" value="0.25" min="0" max="1" step="0.05"
            style="width:45px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
            title="Timbral pull: 0=golem ignores score, 0.5=moderate tracking, 1=strict">
-  </div>
-  <div id="interp-topbar-concerto" style="display:flex;align-items:center;gap:6px;padding:2px 8px;">
-    <select id="concerto-view-mode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:2px 4px;">
-      <option value="combined">Combined</option>
-      <option value="score">Score only</option>
-      <option value="meta">Metadata only</option>
-    </select>
-    <span style="font-size:9px;color:#666;">in:</span>
-    <input id="concerto-lead-in-bar" type="number" value="0" min="0" step="0.5"
-           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
-           title="Lead-in: seconds of black before music starts">
-    <span style="font-size:9px;color:#666;">out:</span>
-    <input id="concerto-lead-out-bar" type="number" value="0" min="0" step="0.5"
-           style="width:35px;background:#1a1a1a;border:1px solid #333;color:#ccc;font-size:10px;padding:1px 3px;"
-           title="Lead-out: seconds of black after music ends">
-    <button id="concerto-view-btn" title="Fullscreen concerto presentation">&#9654; View</button>
-    <button id="concerto-download-btn" title="Render 4K 60fps video">&#8595; Concerto Download</button>
-    <button id="concerto-cancel-btn" style="display:none;color:#c66;border-color:#633;" title="Cancel render">&#10005; Cancel</button>
-    <span id="concerto-status" style="font-size:10px;color:#888;"></span>
   </div>
 </div><!-- /interp-topbar -->
 
@@ -926,6 +929,7 @@
 <script src="js/kalman-trace.js"></script>
 <script src="js/viz-panel.js"></script>
 <script src="js/interpreter.js"></script>
+<script src="js/concerto-lanes.js"></script>
 <script src="js/concerto.js"></script>
 </body>
 </html>

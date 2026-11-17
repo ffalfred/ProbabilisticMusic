@@ -11,6 +11,13 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 
 ## [Unreleased]
 
+### Changed — Concerto is a mode, not an Interpreter feature
+- The Concerto controls (View, Download, layout, lead-in/out) sit in the shared bar next to the workspace tabs and present whichever workspace is active.
+- Each workspace registers a Concerto source (how to render its audio, whether it has a performance trace). The Composer source renders the Composer's current state, saved or not, instead of the score file on disk; the Interpreter source renders the score with its golems. The Conductor has no source yet, so Concerto is disabled there.
+- Without a performance trace, layouts show score lanes (dynamics and tempo curves, computed the same way the renderer applies them) instead of the trace panels; there is also a standalone "Dynamics & Tempo Lanes" video. Work in progress.
+- Workspaces can't be switched while a Concerto download runs.
+- An audio selector in the Concerto bar chooses what View plays and Download renders, independently of the editor's play mode: Composer — Mix or Source; Interpreter — Interp (with trace panels), Score or Raw. The choice is remembered per workspace and fixed while a View or Download runs. If audio is already playing when View starts, the chosen audio replaces it from the same position.
+
 ### Fixed — engine
 - Multi-track scores loaded only the last track (indentation bug in `build_bank`); samples now slice from the right track.
 - Simultaneous events (chords) were collapsed to one by the V2 interpreter.
