@@ -19,12 +19,14 @@ config.yaml     score.yaml  +  source audio/video
      │               │           (multi-track or single file)
      │  (V2 only)    └───────────────┘
      │     ▼
-     │  v2/interpreter.py
-     │  interpret(score, config)
-     │     ├── v2/context.py     phrase boundaries, event density
-     │     ├── v2/emission.py    Gaussian sampling from transition table
-     │     ├── v2/markov_*.py    Markov chain (symbolic or joint)
-     │     └── enriched events   (gain offsets, timing shifts, reverb, EQ)
+     │  src/interpreter.py
+     │  interpret(score, config) → (events, trace)
+     │     ├── src/character.py   golem characters + blending
+     │     ├── src/drama.py       marking salience + look-ahead pull
+     │     ├── src/kalman.py      AR(2) predict / update
+     │     ├── src/observation.py marking window → H, R (transition_table.yaml)
+     │     └── enriched events    (timing offset, attack/release shape)
+     │         + trace            (12-dim state per step → applied to the mix)
      │           │
      └───────────▼
             src/mixer.py
@@ -265,23 +267,31 @@ Also adds `src/pitch.py`:
 
 | Function | What it does |
 |----------|-------------|
-| `resolve_event_pitch(event_t, base_pitch, note_rels)` | Returns interpolated semitone value if event falls in a `glissando` range, else `base_pitch` |
+| `resolve_event_pitch(event_t, base_pitch, note_rels)` | Returns interpolated semitone value if event falls in a full-band `glissando` range, else `base_pitch`. Band-limited glissandi (`freq_from`/`freq_to`) are applied to the mix by `apply_noterel_to_mix` instead, so events are never shifted twice. |
 | `apply_pitch_shift(clip, sr, semitones)` | Wraps `librosa.effects.pitch_shift`; no-ops for shifts < 0.05 st |
 
 ---
 
-## `v2/` package
+## V2 interpreter (`src/`)
 
-Only active when `config.yaml` has `engine: v2`.
+Only active when `config.yaml` has `engine: v2` (or a request passes `engine: 'v2'`).
 
 | Module | Role |
 |--------|------|
-| `v2/interpreter.py` | Entry point: `interpret(score, config) → list[dict]`. Orchestrates all other V2 modules. |
-| `v2/context.py` | Computes context vectors (phrase position, tempo direction, event density) and infers phrase boundaries from inter-event gaps. |
-| `v2/emission.py` | `sample_output()`: looks up the transition table, builds a Gaussian (diagonal or full covariance), draws the output vector. |
-| `v2/markov_symbolic.py` | `SymbolicMarkov`: history tracks score markings only. |
-| `v2/markov_joint.py` | `JointMarkov`: history tracks markings + rendered outputs; applies history_decay weighting. |
-| `v2/transition_table.yaml` | Expert priors for every dynamic transition (mean and std per output parameter). |
+| `src/interpreter.py` | Entry point: `interpret(score, config, return_trace)`. Steps the state at every marking, event, element boundary and every `trace_step` s; each step = AR(2) predict → pull toward the current/next marking's target → Kalman update → sample. Simultaneous events share one sample. |
+| `src/character.py` | The 12 state dimensions, their limits/defaults, and the built-in Kalman and random-walk characters; blends overlapping golems. |
+| `src/kalman.py` | Augmented AR(2) state, `predict` / `update`. |
+| `src/drama.py` | Per-marking salience ω and look-ahead pull φ. |
+| `src/observation.py` | Encodes the marking window as an observation and looks up H / R in `src/transition_table.yaml`. |
+
+In practice the target pull dominates; the Kalman update's corrections are small with the current table — see [v2.md](v2.md#how-the-engine-behaves-in-practice).
+
+## Seeding and shared rendering
+
+- `src/parser.py: seed_everything(config)` seeds numpy's global RNG and Python's `random` from `v2.seed` / `seed` (drawing one if unset) and writes it back to `config['v2']['seed']`. The interpreter's own RNG uses the same seed; plugins draw their generators via `plugins.plugin_rng()`. One seed therefore reproduces a whole render.
+- `src/parser.py: resolve_score(score)` resolves random event values (ranges, distributions) and normalises `marking:` → `mark:`. Used by `load_score` and by every server render route.
+- `src/renderer.py: render_mix(score, bank, events, sr, base)` is the single post-interpretation pipeline (mix → tempo stretch → section/global FX → envelopes → duck_key → normalise), shared by the CLI and the editor server.
+- `src/dsp.py` holds the overlap-add / crossfade helpers used wherever audio is processed in pieces (glissandi, piecewise plugins).
 
 ---
 

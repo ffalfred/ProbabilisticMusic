@@ -161,6 +161,7 @@ document.getElementById("separate-btn").addEventListener("click", async () => {
     baseAudio.pause();
     vid.pause();
     const replaceStem = document.getElementById('stem-replace')?.checked;
+    pushHistory();   // undo removes the new stems (and restores replaced ones)
     if (replaceStem) state.tracks.splice(1);
     Object.keys(_waCache).forEach(k => delete _waCache[k]);
     for (const stem of data.stems) {
@@ -311,9 +312,12 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     const data = await res.json();
     if (data.error) { alert("Import failed: " + data.error); statusEl.textContent = ""; return; }
     const sc = data.score;
+    clearHistory();   // a new document — undo must not reach into the old one
 
-    if (sc.samples)      state.samples       = sc.samples;
-    if (sc.dynamics)     state.dynamics      = sc.dynamics.map(d => {
+    // Reset every score field to its empty default first so nothing from
+    // the previously loaded score survives when the new one omits a field.
+    state.samples       = sc.samples || {};
+    state.dynamics      = (sc.dynamics || []).map(d => {
       // Normalize YAML field 'marking' → internal field 'mark'
       if (d.marking !== undefined && d.mark === undefined) {
         const { marking, ...rest } = d;
@@ -321,17 +325,18 @@ document.getElementById("import-btn").addEventListener("click", async () => {
       }
       return d;
     });
-    if (sc.tempo)        state.tempo         = sc.tempo;
-    if (sc.events)       state.events        = sc.events;
-    if (sc.phrases)      state.phrases       = (sc.phrases || []).map(p => Object.assign({ gain_db: 0, fade_in: 0, fade_out: 0, tempo_factor: 1.0 }, p));
-    if (sc.note_rel)     state.noteRel       = sc.note_rel;
-    if (sc.articulations) state.articulations = sc.articulations;
-    if (sc.base_fx)      state.baseFx        = sc.base_fx;
-    if (sc.fx_ranges)    state.fxRanges      = sc.fx_ranges;
-    if (sc.duck_base)    Object.assign(state.duckBase, sc.duck_base);
-    if (sc.duck_key)     Object.assign(state.duckKey,  sc.duck_key);
-    if (sc.auto_mix)     Object.assign(state.autoMix,  sc.auto_mix);
-    if (sc.golems)       interpState.golems = sc.golems;
+    state.tempo         = sc.tempo || [];
+    state.events        = sc.events || [];
+    state.phrases       = (sc.phrases || []).map(p => Object.assign({ gain_db: 0, fade_in: 0, fade_out: 0, tempo_factor: 1.0 }, p));
+    state.noteRel       = sc.note_rel || [];
+    state.articulations = sc.articulations || [];
+    state.baseFx        = sc.base_fx || [];
+    state.fxRanges      = sc.fx_ranges || [];
+    Object.assign(state.duckBase, { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 }, sc.duck_base || {});
+    Object.assign(state.duckKey,  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 }, sc.duck_key || {});
+    Object.assign(state.autoMix,  { enabled: false, mode: "sqrt" }, sc.auto_mix || {});
+    interpState.golems  = sc.golems || [];
+    if (typeof _renderGolemListCol === 'function') _renderGolemListCol();
 
     for (const k of Object.keys(state.samples)) {
       if (!state.samples[k].color) state.samples[k].color = nextColor();
@@ -343,9 +348,55 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     const _interpScIn = document.getElementById('interp-score-path');
     if (_interpScIn) _interpScIn.value = path;
 
-    if (sc.base_track && !state.filePath) {
-      document.getElementById("path-input").value = sc.base_track;
+    // Load the score's base audio if nothing is loaded yet OR if the
+    // imported score names a different base track than the current file.
+    const _scTracks = Array.isArray(sc.tracks) ? sc.tracks : [];
+    const _baseTrack = sc.base_track || (_scTracks[0] && _scTracks[0].path) || '';
+    if (_baseTrack && _baseTrack !== state.filePath) {
+      document.getElementById("path-input").value = _baseTrack;
       await loadFile();
+    }
+
+    // Tracks: keep only the base track (loadFile resets it), then apply the
+    // imported track list — track 0 settings go onto the base, the rest are
+    // loaded as extra tracks (their waveforms come from /load).
+    state.tracks = state.tracks.slice(0, 1);
+    if (state.tracks[0]) {
+      const tk0 = state.tracks[0];
+      Object.assign(tk0, { gain_db: 0, muted: false });
+      delete tk0.fx; delete tk0.automation; delete tk0.fx_regions;
+      if (_scTracks[0] && (!_scTracks[0].path || _scTracks[0].path === tk0.path)) {
+        const { path: _p, name: _n, ...rest0 } = _scTracks[0];
+        Object.assign(tk0, rest0);
+      }
+    }
+    if (typeof _waCache !== 'undefined') Object.keys(_waCache).forEach(k => delete _waCache[k]);
+    for (const tk of _scTracks.slice(1)) {
+      if (!tk || !tk.path) continue;
+      let wf = [];
+      try {
+        const wr = await fetch("/load", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ path: tk.path })
+        });
+        const wd = await wr.json();
+        wf = wd.waveform || [];
+      } catch (e) {}
+      state.tracks.push({
+        name: tk.name || tk.path.split("/").pop().replace(/\.[^.]+$/, ""),
+        gain_db: 0, muted: false, fx: [], automation: [],
+        ...tk, waveform: wf,
+      });
+    }
+    if (typeof renderTracksPanel === 'function') renderTracksPanel();
+
+    if (!sc.score_image) {
+      scoreView.img = null; scoreView.path = "";
+      document.getElementById("score-path-input").value = "";
+    }
+    if (!sc.score2_image) {
+      score2View.img = null; score2View.path = "";
+      document.getElementById("score2-path-input").value = "";
     }
 
     if (sc.score_image) {

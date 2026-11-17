@@ -13,8 +13,32 @@ function _applyPlaybackSpeed() {
   const s = _getPlaybackSpeed();
   vid.playbackRate       = s;
   baseAudio.playbackRate = s;
-  // Update Web Audio mix source rate if currently playing
-  if (_mixSource) _mixSource.playbackRate.value = s;
+  // Update Web Audio mix source rate if currently playing (re-anchor first so
+  // mixCurrentTime stays continuous across the rate change)
+  if (_mixSource) { _reanchorMix(); _mixSource.playbackRate.value = s; }
+  // Multi-stem source: restart from the current position at the new rate
+  if (_waPlaying && _waRate !== s) void _waStart(_waCurrentTime());
+}
+
+// Signature of everything that affects a Score/Interp render. A cached _mixBuf
+// is only replayed when the current signature matches the one it was rendered
+// from — any edit to golems/mix_dims/v2config/score/audio or a mode switch
+// forces a fresh render.
+function _mixRenderKey(mode) {
+  const audioEl   = document.getElementById('interp-audio-path');
+  const audioPath = (audioEl && audioEl.value.trim()) || state.filePath;
+  const seedEl    = document.getElementById('interp-seed');
+  const key = { mode, audioPath, scorePath: interpState.scorePath, mix_dims: interpState.mix_dims };
+  if (mode === 'interp') {
+    // seed is tracked via the seed box; trace_step only affects the trace
+    const { seed, ...cfg } = interpState.v2config || {};
+    const v2 = { ...(cfg.v2 || {}) };
+    delete v2.trace_step;
+    key.golems   = interpState.golems;
+    key.v2config = { ...cfg, v2 };
+    key.seed     = seedEl ? seedEl.value.trim() : '';
+  }
+  return JSON.stringify(key);
 }
 
 function goToBeginning() {
@@ -37,6 +61,8 @@ function stopAll() {
   vid.pause();
   baseAudio.pause();
   if (_waPlaying)  { state.currentTime = _waCurrentTime(); _waStop(); }
+  _waGen++;                     // cancel in-flight source starts and stale onended handlers
+  _waStarting = false;
   if (_mixPlaying) { state.currentTime = realToScore(mixCurrentTime()); stopMix(); }
   else _renderGen++;            // cancel any in-flight render even if not yet playing
   if (typeof clearMixBuf === 'function') clearMixBuf();
@@ -67,7 +93,7 @@ async function toggleScore() {
     _setPlayBtn("▶ Play");
     return;
   }
-  if (_mixBuf) {
+  if (_mixBuf && _mixBufKey === _mixRenderKey('score')) {
     await playMixBuffer(_mixBuf, scoreToReal(state.currentTime || 0));
     return;
   }
@@ -81,7 +107,7 @@ async function toggleInterp() {
     _setPlayBtn("▶ Play");
     return;
   }
-  if (_mixBuf) {
+  if (_mixBuf && _mixBufKey === _mixRenderKey('interp')) {
     await playMixBuffer(_mixBuf, scoreToReal(state.currentTime || 0));
     return;
   }
@@ -176,14 +202,18 @@ async function renderAndPlay() {
       samplesClean[k] = { from: v.from, to: v.to,
         fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
         ...(v.track ? { track: v.track } : {}) };
+    // The backend only honours `muted` on events/dynamics/articulations —
+    // drop muted phrases, tempo ranges, fx zones and note relations here.
+    const _live = arr => (arr || []).filter(x => !x.muted);
+    const noteRel = _live(state.noteRel);
     const score = {
       samples: samplesClean,
       dynamics: state.dynamics,
-      tempo: state.tempo,
+      tempo: _live(state.tempo),
       base_fx: state.baseFx,
-      fx_ranges: state.fxRanges,
+      fx_ranges: _live(state.fxRanges),
       events: state.events,
-      phrases: state.phrases.map(p => ({
+      phrases: _live(state.phrases).map(p => ({
         from: p.from, to: p.to, label: p.label,
         gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
         fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
@@ -200,14 +230,16 @@ async function renderAndPlay() {
       ...(state.duckKey.enabled  ? { duck_key:  state.duckKey  } : {}),
       ...(state.autoMix.enabled  ? { auto_mix:  state.autoMix  } : {}),
       ...(state.articulations.length ? { articulations: state.articulations } : {}),
-      ...(state.noteRel.length       ? { note_rel: state.noteRel }            : {}),
+      ...(noteRel.length             ? { note_rel: noteRel }                  : {}),
     };
 
-    // 1. Ask the server to render and get back the audio URL
+    // 1. Ask the server to render and get back the audio URL.
+    //    Composer mix is the v1 engine — without this the server falls back to
+    //    config.yaml's engine (v2/Kalman).
     const res = await fetch("/preview", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.filePath, score })
+      body: JSON.stringify({ path: state.filePath, score, engine: 'v1' })
     });
     const data = await res.json();
     if (gen !== _renderGen) return;
@@ -228,6 +260,7 @@ async function renderAndPlay() {
 
     // 3. Play — convert score time (state.currentTime) to real time for the buffer offset
     await playMixBuffer(buf, scoreToReal(state.currentTime));
+    _mixBufKey = 'mix';   // never matches a Score/Interp key → no cross-mode reuse
   } catch(e) {
     if (gen === _renderGen) alert("Render failed: " + e);
   } finally {

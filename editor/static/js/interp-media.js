@@ -41,8 +41,8 @@ function _drawInterpWave() {
   const dur = interpState.scoreDuration || state.duration || 1;
   const midY = H / 2;
 
-  // Time grid
-  const step = _niceTickInterval(dur, Math.floor(W / 80));
+  // Time grid — _niceTickInterval takes the pixel width of the time axis
+  const step = _niceTickInterval(dur, W);
   ctx.strokeStyle = '#191919';
   ctx.lineWidth = 1;
   ctx.setLineDash([]);

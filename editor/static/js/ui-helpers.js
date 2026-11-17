@@ -1,4 +1,18 @@
 // ─── UI helpers (collapsible rows, image sync) ────────────────────────────────
+
+// Escape a user-controlled string for safe insertion into innerHTML
+// (text content and quoted attribute values).
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// parseFloat with a fallback that keeps 0 (unlike `parseFloat(x) || def`).
+function _numOr(val, def) {
+  const n = parseFloat(val);
+  return isNaN(n) ? def : n;
+}
+
 function toggleBarContent(contentId, chevronId) {
   const el = document.getElementById(contentId);
   const ch = document.getElementById(chevronId);

@@ -36,7 +36,8 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         frozen_mag[top_idx, f] = frame_mag[top_idx]
 
     # Advance phase slowly (freeze_rate 1.0 = natural, 0.0 = frozen)
-    phase_increment = 2 * np.pi * np.arange(n_bins) / n_fft
+    # Expected per-frame phase advance of bin k is 2π·k·hop/n_fft.
+    phase_increment = 2 * np.pi * np.arange(n_bins) * hop / n_fft
     new_phase = phase.copy()
     for f in range(1, n_frames):
         new_phase[:, f] = new_phase[:, f - 1] + phase_increment * freeze_rate

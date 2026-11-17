@@ -94,7 +94,7 @@ ProbabilisticMusic/
 │   └── static/
 │       └── index.html   ← the editor interface
 │
-├── v2/                  ← V2 expressive interpretation engine (beta)
+├── tests/               ← regression tests (python -m unittest discover -s tests)
 │
 ├── scores/              ← your saved scores go here
 ├── interpretations/     ← saved interpretation configs (Golems + V2 params)

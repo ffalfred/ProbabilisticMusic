@@ -1,5 +1,7 @@
 """Penderecki: Textural — layered clusters + aleatoric detune (Polymorphia style)."""
 import numpy as np
+from plugins import plugin_rng
+from src.dsp import ola_blocks
 
 NAME     = "Penderecki: Textural"
 GROUP    = "morphogenics"
@@ -23,7 +25,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
 
     audio = clip.astype(np.float32)
     wet   = np.zeros_like(audio)
-    rng   = np.random.default_rng()
+    rng   = plugin_rng()
 
     # Cluster layer
     for v in range(voices):
@@ -35,22 +37,20 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         min_len = min(len(wet), len(layer))
         wet[:min_len] += layer[:min_len] / voices * 0.6
 
-    # Aleatoric layer over ~250ms segments
+    # Aleatoric layer: a new random detune every ~250 ms, crossfaded via
+    # overlapping windows so segment changes don't click.
     seg_len = max(sr // 4, 1024)
-    n_segs  = max(1, (len(audio) + seg_len - 1) // seg_len)
-    for s in range(n_segs):
-        i0  = s * seg_len
-        i1  = min(i0 + seg_len, len(audio))
-        seg = audio[i0:i1]
+
+    def _detune(k, seg):
         shift = float(rng.uniform(-detune, detune))
         if abs(shift) < 0.02:
-            continue
+            return np.zeros_like(seg)
         try:
-            shifted = librosa.effects.pitch_shift(seg, sr=sr, n_steps=shift)
+            return librosa.effects.pitch_shift(seg, sr=sr, n_steps=shift)
         except Exception:
-            continue
-        min_len = min(i1 - i0, len(shifted))
-        wet[i0:i0 + min_len] += shifted[:min_len] * 0.4
+            return np.zeros_like(seg)
+
+    wet += ola_blocks(audio, 2 * seg_len, _detune) * 0.4
 
     peak = np.max(np.abs(wet))
     if peak > 1.0:

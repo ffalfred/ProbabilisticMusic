@@ -1,5 +1,4 @@
 import os
-import random
 import tempfile
 import subprocess
 import numpy as np
@@ -9,7 +8,7 @@ import soundfile as sf
 def _resolve(val, default=0):
     """Resolve a fixed / range / gaussian parameter to a concrete float."""
     if isinstance(val, list) and len(val) == 2:
-        return float(random.uniform(val[0], val[1]))
+        return float(np.random.uniform(val[0], val[1]))
     if isinstance(val, dict):
         dist = val.get('distribution', '')
         if dist == 'gaussian':
@@ -257,20 +256,13 @@ def _reverb(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     pre_delay   = int(np.clip(_resolve(fx.get('pre_delay', 0), 0), 0, 500))
     wet         = _resolve(fx.get('wet', 0.5), 0.5)
 
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
-
     # sox reverb syntax (positional, all required if you want pre_delay):
     #   reverb [-w] reverberance damping room_scale stereo_depth pre_delay wet_gain
     # `-w` makes sox output ONLY the wet signal (no dry mixed in). Stereo
     # depth is hardcoded to 100 (full); wet_gain is 0 dB (we apply our own
     # blend via _wet_dry_mix).
-    args = ['sox', tmp_in, tmp_out, 'reverb', '-w',
-            str(reverberance), str(damping), str(room_scale), '100',
-            str(pre_delay), '0']
-    subprocess.run(args, check=True, capture_output=True)
-
-    wet_only = _read_and_clean(tmp_in, tmp_out)
+    wet_only = _sox(clip, sr, ['reverb', '-w', str(reverberance), str(damping),
+                               str(room_scale), '100', str(pre_delay), '0'])
     return _wet_dry_mix(clip, wet_only, wet, mode="replace")
 
 
@@ -284,11 +276,7 @@ def _overdrive(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     tone = int(np.clip(_resolve(fx.get('tone', fx.get('colour', 20)), 20), 0, 100))
     wet  = _resolve(fx.get('wet', 1.0), 1.0)
 
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
-    subprocess.run(['sox', tmp_in, tmp_out, 'overdrive', str(gain), str(tone)],
-                   check=True, capture_output=True)
-    distorted = _read_and_clean(tmp_in, tmp_out)
+    distorted = _sox(clip, sr, ['overdrive', str(gain), str(tone)], linear=False)
     # 'replace' mode: at wet=1 the signal IS the distorted version (loudness
     # matched to dry, so no volume jump). At wet=0 it's pure dry. Drop wet
     # for parallel distortion blends.
@@ -302,20 +290,17 @@ def _flanger(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     feedback = np.clip(_resolve(fx.get('feedback', 80), 80), -95, 95)
     wet      = _resolve(fx.get('wet', 0.7), 0.7)
 
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
     # sox flanger args: delay depth regen width speed shape phase interp
     # regen (-95..95) = feedback %, width 71 = sox default, phase 25 = sox default
-    subprocess.run([
-        'sox', tmp_in, tmp_out, 'flanger',
+    flanged = _sox(clip, sr, [
+        'flanger',
         str(round(delay, 2)),
         str(round(depth, 2)),
         str(round(feedback, 0)),
         '71',
         str(round(speed, 2)),
-        'sine', '25', 'linear'
-    ], check=True, capture_output=True)
-    flanged = _read_and_clean(tmp_in, tmp_out)
+        'sine', '25', 'linear',
+    ])
     # 'replace' mode: at wet=1 you hear pure flanged signal at dry loudness
     # (source replaced by the modulated version).
     return _wet_dry_mix(clip, flanged, wet, mode="replace")
@@ -327,11 +312,7 @@ def _pitch(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
         cents = int(np.clip(_resolve(semitones, 0) * 100, -2400, 2400))
     else:
         cents = int(np.clip(_resolve(fx.get('cents', 0), 0), -2400, 2400))
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
-    subprocess.run(['sox', tmp_in, tmp_out, 'pitch', str(cents)],
-                   check=True, capture_output=True)
-    return _read_and_clean(tmp_in, tmp_out)
+    return _sox(clip, sr, ['pitch', str(cents)])
 
 
 def _compress(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
@@ -342,13 +323,8 @@ def _compress(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     makeup     = np.clip(_resolve(fx.get('makeup_db', 0),  0),    -20,   40)
     above_out  = threshold + (0 - threshold) / ratio
     transfer   = f"6:-80,-80,{threshold},{threshold},0,{above_out:.1f}"
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
-    subprocess.run([
-        'sox', tmp_in, tmp_out, 'compand',
-        f"{attack:.4f},{release:.4f}", transfer, str(round(makeup, 1))
-    ], check=True, capture_output=True)
-    return _read_and_clean(tmp_in, tmp_out)
+    return _sox(clip, sr, ['compand', f"{attack:.4f},{release:.4f}", transfer,
+                           str(round(makeup, 1))], linear=False)
 
 
 def _eq(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
@@ -360,25 +336,15 @@ def _eq(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
             freq = np.clip(_resolve(band.get('freq', 1000), 1000), 20, sr / 2 - 1)
             gain = np.clip(_resolve(band.get('gain', 0), 0), -40, 40)
             q    = max(0.1, _resolve(band.get('q', 1.0), 1.0))
-            tmp_in, tmp_out = _tmp_paths()
-            sf.write(tmp_in, result, sr)
-            subprocess.run([
-                'sox', tmp_in, tmp_out, 'equalizer',
-                str(round(freq, 1)), f"{round(q, 2)}q", str(round(gain, 1))
-            ], check=True, capture_output=True)
-            result = _read_and_clean(tmp_in, tmp_out)
+            result = _sox(result, sr, ['equalizer', str(round(freq, 1)),
+                                       f"{round(q, 2)}q", str(round(gain, 1))])
         return result
 
     freq = np.clip(_resolve(fx.get('freq_hz', fx.get('freq', 1000)), 1000), 20, sr / 2 - 1)
     gain = np.clip(_resolve(fx.get('gain_db', fx.get('gain', 0)), 0), -40, 40)
     q    = max(0.1, _resolve(fx.get('q', 1.0), 1.0))
-    tmp_in, tmp_out = _tmp_paths()
-    sf.write(tmp_in, clip, sr)
-    subprocess.run([
-        'sox', tmp_in, tmp_out, 'equalizer',
-        str(round(freq, 1)), f"{round(q, 2)}q", str(round(gain, 1))
-    ], check=True, capture_output=True)
-    return _read_and_clean(tmp_in, tmp_out)
+    return _sox(clip, sr, ['equalizer', str(round(freq, 1)),
+                           f"{round(q, 2)}q", str(round(gain, 1))])
 
 
 # ── New FX ───────────────────────────────────────────────────────────────────
@@ -540,20 +506,30 @@ def _overtones(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _tmp_paths() -> tuple:
+def _sox(clip: np.ndarray, sr: int, effect: list, linear: bool = True) -> np.ndarray:
+    """Run one SoX effect on `clip` and return the (mono) result.
+
+    Audio goes to and from SoX as 32-bit float: 16-bit temp files make SoX
+    add random dither, so the same seed gave different output. SoX still
+    clips at ±1, and pre-normalisation mixes often exceed that, so for
+    linear effects the signal is scaled down for headroom and back up
+    afterwards. Level-dependent effects (overdrive, compand) pass
+    linear=False and see the signal at its real level.
+    """
+    peak = float(np.max(np.abs(clip))) if len(clip) else 0.0
+    gain = peak / 0.25 if linear and peak > 0.25 else 1.0
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
         tmp_in = f.name
     tmp_out = tmp_in.replace('.wav', '_out.wav')
-    return tmp_in, tmp_out
-
-
-def _read_and_clean(tmp_in: str, tmp_out: str) -> np.ndarray:
-    result, _ = sf.read(tmp_out, dtype='float32')
+    try:
+        sf.write(tmp_in, clip / gain, sr, subtype='FLOAT')
+        subprocess.run(['sox', tmp_in, '-e', 'floating-point', '-b', '32', tmp_out, *effect],
+                       check=True, capture_output=True)
+        result, _ = sf.read(tmp_out, dtype='float32')
+    finally:
+        for p in (tmp_in, tmp_out):
+            try: os.remove(p)
+            except OSError: pass
     if result.ndim == 2:
         result = result.mean(axis=1)
-    try:
-        os.remove(tmp_in)
-        os.remove(tmp_out)
-    except OSError:
-        pass
-    return result
+    return (result * gain).astype(np.float32)

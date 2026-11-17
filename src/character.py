@@ -379,7 +379,7 @@ def rw_character_at(t: float,
         return dict(_RW_DEFAULT)
     weights = [w / total_w for w in weights]
 
-    chars = [_get_rw_char(g['character'], user_chars) for g in active]
+    chars = [_get_rw_char(g.get('character', 'rw_free'), user_chars) for g in active]
 
     if len(active) == 1:
         return chars[0]
@@ -392,10 +392,13 @@ def rw_character_at(t: float,
         'mixture_p':      0.0,
         'mixture_scale':  0.0,
     }
+    def _dim(vec, i, default):
+        return float(vec[i]) if vec is not None and i < len(vec) else default
+
     for w, c in zip(weights, chars):
         for i in range(D):
-            blended['step_size'][i] += w * c['step_size'][i]
-            blended['drift'][i]     += w * c['drift'][i]
+            blended['step_size'][i] += w * _dim(c.get('step_size'), i, _RW_DEFAULT['step_size'][i])
+            blended['drift'][i]     += w * _dim(c.get('drift'), i, 0.0)
         for k in _RW_SCALAR_KEYS:
             blended[k] += w * c.get(k, _RW_DEFAULT.get(k, 0.0))
 

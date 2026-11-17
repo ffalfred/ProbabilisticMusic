@@ -1,5 +1,7 @@
 """Wagner: Leitmotif — onset-segmented motifs, each transposed and optionally time-stretched + repeated."""
 import numpy as np
+from plugins import plugin_rng
+from src.dsp import fade_edges
 
 NAME     = "Wagner: Leitmotif"
 GROUP    = "morphogenics"
@@ -22,7 +24,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     dw           = float(params.get("dry_wet", 80)) / 100.0
 
     audio   = clip.astype(np.float32)
-    rng     = np.random.default_rng()
+    rng     = plugin_rng()
     onsets  = librosa.onset.onset_detect(y=audio, sr=sr, units="samples")
 
     if len(onsets) < 1:
@@ -43,12 +45,20 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         n_steps = float(rng.uniform(-trans_range, trans_range))
         stretch = float(rng.choice(_STRETCH_CHOICES))
 
+        # Process with surrounding context, then cut the motif back out, so the
+        # shifter's edge artefacts don't land inside it.
+        c0, c1 = max(0, i0 - 2048), min(len(audio), i1 + 2048)
         try:
-            transformed = librosa.effects.pitch_shift(seg, sr=sr, n_steps=n_steps)
+            transformed = librosa.effects.pitch_shift(audio[c0:c1], sr=sr, n_steps=n_steps)
             if abs(stretch - 1.0) > 0.01:
                 transformed = librosa.effects.time_stretch(transformed, rate=stretch)
+            else:
+                stretch = 1.0
+            transformed = transformed[int((i0 - c0) / stretch):int((i1 - c0) / stretch)]
         except Exception:
             transformed = seg
+        # Short fades so motif and tile boundaries don't click.
+        transformed = fade_edges(transformed, int(0.005 * sr))
 
         # Tile and truncate to segment boundary
         seg_len = i1 - i0
@@ -60,6 +70,6 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         if len(tiled) < seg_len:
             tiled = np.pad(tiled, (0, seg_len - len(tiled)))
 
-        wet[i0:i1] += tiled
+        wet[i0:i1] += fade_edges(tiled, int(0.005 * sr))  # truncation may cut mid-tile
 
     return (audio * (1.0 - dw) + wet * dw).astype(np.float32)

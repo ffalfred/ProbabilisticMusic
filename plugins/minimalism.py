@@ -1,5 +1,6 @@
 """Desyatnikov: Minimalism — every Nth onset segment displaced by a sharp quote interval (polystylistic)."""
 import numpy as np
+from src.dsp import splice
 
 NAME     = "Desyatnikov: Minimalism"
 GROUP    = "morphogenics"
@@ -33,17 +34,18 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
             continue
         i0 = int(boundaries[i])
         i1 = int(boundaries[i + 1])
-        seg = audio[i0:i1]
-        if len(seg) < 32:
+        if i1 - i0 < 32:
             continue
+        # Shift with surrounding context so the shifter's edge artefacts fall
+        # outside the segment, then crossfade the quote in and out.
+        c0, c1 = max(0, i0 - 2048), min(len(audio), i1 + 2048)
         try:
-            shifted = librosa.effects.pitch_shift(seg, sr=sr, n_steps=float(interval))
+            shifted = librosa.effects.pitch_shift(audio[c0:c1], sr=sr, n_steps=float(interval))
         except Exception:
             continue
-        if len(shifted) > len(seg):
-            shifted = shifted[:len(seg)]
-        elif len(shifted) < len(seg):
-            shifted = np.pad(shifted, (0, len(seg) - len(shifted)))
-        wet[i0:i1] = shifted
+        shifted = shifted[i0 - c0:i1 - c0]
+        if len(shifted) < i1 - i0:
+            shifted = np.pad(shifted, (0, i1 - i0 - len(shifted)))
+        splice(wet, i0, shifted, int(0.01 * sr))
 
     return (audio * (1.0 - dw) + wet * dw).astype(np.float32)

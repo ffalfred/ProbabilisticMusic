@@ -3,7 +3,7 @@ import sys
 import argparse
 import yaml
 
-from src.parser        import load_score
+from src.parser        import load_score, seed_everything
 from src.sample_engine import build_bank
 from src.scheduler     import get_events
 from src.renderer      import render
@@ -55,6 +55,8 @@ if __name__ == '__main__':
 
     config = _load_config()
     engine = config.get('engine', 'v1')
+    seed   = seed_everything(config)
+    print(f"seed {seed}")
 
     score             = load_score(args.score)
     score['base_track'] = args.input

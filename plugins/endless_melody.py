@@ -1,5 +1,6 @@
 """Wagner: Endless Melody — smooth crossfades + chromatic passing tones at motif boundaries."""
 import numpy as np
+from plugins import plugin_rng
 
 NAME     = "Wagner: Endless Melody"
 GROUP    = "morphogenics"
@@ -28,7 +29,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         return audio
 
     wet = audio.copy()
-    rng = np.random.default_rng()
+    rng = plugin_rng()
 
     for i in range(1, len(onsets)):
         b = int(onsets[i])  # boundary sample

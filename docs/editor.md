@@ -41,6 +41,10 @@ You should see something like:
 
 Leave the terminal open while you use the editor. To stop the editor, press `Ctrl+C` in the terminal.
 
+> The server only answers the editor page itself: other websites and other programs on your machine can't use it to read your files. Open the editor at `localhost` or `127.0.0.1`; other addresses are refused.
+>
+> Options: `OPUS_PORT=5001 python server.py` uses another port. `OPUS_DEBUG=1 python server.py` turns on Flask's debug mode. Only use that while developing, because its error pages include a Python console.
+
 ---
 
 ## Workspaces

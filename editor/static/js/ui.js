@@ -41,19 +41,47 @@ function row(label, inputHTML, hint) {
 }
 
 // ─── Probabilistic param widgets ──────────────────────────────────────────────
+// Existing values may be a number, a [lo, hi] range, a {distribution:"gaussian",
+// mean, std} object, or another distribution object the widget can't edit.
+// The latter is kept verbatim ("keep" mode) unless the user switches mode.
+const _paramKeep = {};   // id → original non-editable value
+
 function paramWidget(id, label, defaultVal, step, min, hint) {
   const minAttr = min != null ? `min="${min}"` : "";
   const hintHtml = hint ? `<span style="font-size:9px;color:#444;margin-left:2px;">${hint}</span>` : "";
+  delete _paramKeep[id];
+  let mode = "fixed", inputs;
+  const v = defaultVal;
+  if (Array.isArray(v) && v.length === 2 && v.every(x => typeof x === "number")) {
+    mode = "range";
+    inputs = `<input id="${id}-lo" type="number" value="${v[0]}" step="0.05" style="flex:1;" placeholder="min" />
+              <span style="color:#444;align-self:center;">–</span>
+              <input id="${id}-hi" type="number" value="${v[1]}" step="0.05" style="flex:1;" placeholder="max" />`;
+  } else if (v && typeof v === "object" && !Array.isArray(v) && v.distribution === "gaussian"
+             && typeof v.mean === "number" && typeof v.std === "number") {
+    mode = "gauss";
+    inputs = `<input id="${id}-mean" type="number" value="${v.mean}" step="0.05" style="flex:1;" placeholder="mean" />
+              <span style="color:#444;align-self:center;">±</span>
+              <input id="${id}-std"  type="number" value="${v.std}"  step="0.01" min="0" style="flex:1;" placeholder="std" />`;
+  } else if (v != null && typeof v === "object") {
+    mode = "keep";
+    _paramKeep[id] = v;
+    inputs = `<input type="text" value="${escapeHtml(JSON.stringify(v))}" readonly style="flex:1;color:#666;" title="kept as-is — pick another mode to replace" />`;
+  } else {
+    inputs = `<input id="${id}-v" type="number" value="${escapeHtml(v)}" step="${step}" ${minAttr} style="flex:1;" />`;
+  }
+  const sel = m => (m === mode ? " selected" : "");
   return `<div class="popup-row">
     <label>${label}</label>
     <select id="${id}-mode" onchange="updateParamWidget('${id}')"
       style="width:80px;flex:none;font-size:11px;background:#1a1a1a;border:1px solid #333;color:#888;font-family:inherit;">
-      <option value="fixed">= fixed</option>
-      <option value="range">↔ range</option>
-      <option value="gauss">~ gauss</option>
+      ${mode === "keep" ? `<option value="keep" selected>… keep</option>` : ""}
+      <option value="fixed"${sel("fixed")}>= fixed</option>
+      <option value="range"${sel("range")}>↔ range</option>
+      <option value="gauss"${sel("gauss")}>~ gauss</option>
     </select>
     <span id="${id}-inputs" style="display:flex;gap:4px;flex:1;">
-      <input id="${id}-v" type="number" value="${defaultVal}" step="${step}" ${minAttr} style="flex:1;" />
+      ${inputs}
     </span>${hintHtml}
   </div>`;
 }
@@ -61,9 +89,15 @@ function paramWidget(id, label, defaultVal, step, min, hint) {
 function updateParamWidget(id) {
   const mode = document.getElementById(id + "-mode").value;
   const el   = document.getElementById(id + "-inputs");
-  const prev = document.getElementById(id + "-v");
-  const val  = prev ? parseFloat(prev.value) : 1;
-  if (mode === "fixed") {
+  // Seed the new mode from whatever the current inputs hold
+  const num  = sid => parseFloat((document.getElementById(id + sid) || {}).value);
+  let val = num("-v");
+  if (isNaN(val)) val = num("-mean");
+  if (isNaN(val)) { const lo = num("-lo"), hi = num("-hi"); if (!isNaN(lo) && !isNaN(hi)) val = (lo + hi) / 2; }
+  if (isNaN(val)) val = 1;
+  if (mode === "keep") {
+    el.innerHTML = `<input type="text" value="${escapeHtml(JSON.stringify(_paramKeep[id]))}" readonly style="flex:1;color:#666;" />`;
+  } else if (mode === "fixed") {
     el.innerHTML = `<input id="${id}-v" type="number" value="${val}" step="0.1" style="flex:1;" />`;
   } else if (mode === "range") {
     const lo = (val * 0.75).toFixed(2), hi = (val * 1.25).toFixed(2);
@@ -79,6 +113,7 @@ function updateParamWidget(id) {
 
 function collectParam(id) {
   const mode = document.getElementById(id + "-mode").value;
+  if (mode === "keep") return _paramKeep[id];
   if (mode === "range") {
     return [parseFloat(document.getElementById(id + "-lo").value),
             parseFloat(document.getElementById(id + "-hi").value)];
@@ -346,9 +381,11 @@ function _addFxToChain(scope) {
 // ─── Sample popup ─────────────────────────────────────────────────────────────
 async function openSamplePopup(t1, t2) {
   const trackOpts = state.tracks.length > 1
-    ? state.tracks.map((tk, i) => `<option value="${i}">${i}: ${tk.name}</option>`).join('')
+    ? state.tracks.map((tk, i) => `<option value="${i}">${i}: ${escapeHtml(tk.name)}</option>`).join('')
     : '<option value="0">0: base</option>';
-  const html = row("name", `<input id="p-name" type="text" value="s${Object.keys(state.samples).length + 1}" />`)
+  let n = Object.keys(state.samples).length + 1;
+  while (state.samples["s" + n]) n++;   // default name must not collide after deletions
+  const html = row("name", `<input id="p-name" type="text" value="s${n}" />`)
     + (state.tracks.length > 1 ? row("track", `<select id="p-track">${trackOpts}</select>`) : "")
     + row("fade in",  `<input id="p-fi" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + row("fade out", `<input id="p-fo" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
@@ -356,8 +393,9 @@ async function openSamplePopup(t1, t2) {
   const res = await showPopup("[ Sample ] — define range", html);
   if (!res) return;
   const name = document.getElementById("p-name").value.trim() || ("s" + Date.now());
-  const fi = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fi").value) || 5) / 100));
-  const fo = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fo").value) || 5) / 100));
+  if (state.samples[name]) { alert(`A sample named "${name}" already exists — choose another name.`); return; }
+  const fi = Math.max(0, Math.min(0.5, _numOr(document.getElementById("p-fi").value, 5) / 100));
+  const fo = Math.max(0, Math.min(0.5, _numOr(document.getElementById("p-fo").value, 5) / 100));
   const trackEl = document.getElementById("p-track");
   const trackIdx = trackEl ? (parseInt(trackEl.value) || 0) : 0;
   const color = nextColor();
@@ -370,7 +408,7 @@ async function openSamplePopup(t1, t2) {
 // ─── Event popup ──────────────────────────────────────────────────────────────
 async function openEventPopup(t) {
   const sampleOptions = Object.keys(state.samples).map(n =>
-    `<option value="${n}">${n}</option>`).join("") || `<option value="">— no samples —</option>`;
+    `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("") || `<option value="">— no samples —</option>`;
   const html = row("sample", `<select id="p-sample">${sampleOptions}</select>`)
     + paramWidget("p-speed",  "speed",   "1.0", "0.1",  "0.01")
     + row("lock pitch", `<input id="p-pitchlock" type="checkbox" /> <span style="font-size:10px;color:#666;">time-stretch without changing pitch</span>`)
@@ -422,12 +460,12 @@ async function openEventPopup(t) {
   const _mixMode = document.getElementById("p-mix-mode")?.value || 'layer';
   const ev = {
     sample,
-    t: parseFloat(document.getElementById("p-t").value) || t,
+    t: _numOr(document.getElementById("p-t").value, t),
     gain_db: collectParam("p-gain"),
     loop:    parseInt(document.getElementById("p-loop").value) || 0,
     reverse: reverseVal,
     mix_mode: _mixMode,
-    ...(_mixMode === 'sidechain' ? { blend: parseFloat(document.getElementById("p-blend")?.value) || 0.5 } : {}),
+    ...(_mixMode === 'sidechain' ? { blend: _numOr(document.getElementById("p-blend")?.value, 0.5) } : {}),
     fx:      collectFxChain()
   };
   const fiRaw = document.getElementById("p-ev-fi").value.trim();
@@ -450,7 +488,7 @@ async function openEventPopup(t) {
 async function editEventAt(i) {
   const ev = state.events[i];
   const sampleOptions = Object.keys(state.samples).map(n =>
-    `<option value="${n}"${n === ev.sample ? " selected" : ""}>${n}</option>`).join("");
+    `<option value="${escapeHtml(n)}"${n === ev.sample ? " selected" : ""}>${escapeHtml(n)}</option>`).join("");
   const speedsVal = ev.speeds ? ev.speeds.join(", ") : "";
   const revDefault = ev.reverse === true ? "yes" : (ev.reverse && ev.reverse.distribution ? "p" : "no");
   const revP = (ev.reverse && ev.reverse.p != null) ? ev.reverse.p : 0.5;
@@ -504,13 +542,13 @@ async function editEventAt(i) {
   const speedsArr = speedsRaw ? speedsRaw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n)) : [];
   const updated = {
     sample,
-    t: parseFloat(document.getElementById("p-t").value) || ev.t,
+    t: _numOr(document.getElementById("p-t").value, ev.t),
     gain_db: collectParam("p-gain"),
     loop:    parseInt(document.getElementById("p-loop").value) || 0,
     reverse: reverseVal,
     mix_mode: document.getElementById("p-mix-mode")?.value || 'layer',
     ...(document.getElementById("p-mix-mode")?.value === 'sidechain'
-        ? { blend: parseFloat(document.getElementById("p-blend")?.value) || 0.5 } : {}),
+        ? { blend: _numOr(document.getElementById("p-blend")?.value, 0.5) } : {}),
     fx:      collectFxChain()
   };
   const fiRaw2 = document.getElementById("p-ev-fi").value.trim();
@@ -534,7 +572,7 @@ async function editSampleAt(name) {
   const s = state.samples[name];
   const fiVal = Math.round((s.fade_in  ?? 0.05) * 100);
   const foVal = Math.round((s.fade_out ?? 0.05) * 100);
-  const html = row("name", `<input id="p-name" type="text" value="${name}" />`)
+  const html = row("name", `<input id="p-name" type="text" value="${escapeHtml(name)}" />`)
     + row("fade in",  `<input id="p-fi" type="number" value="${fiVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + row("fade out", `<input id="p-fo" type="number" value="${foVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + row("from (s)", `<input id="p-s-from" type="number" value="${s.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
@@ -542,8 +580,12 @@ async function editSampleAt(name) {
   const res = await showPopup("✎ Edit Sample", html);
   if (!res) return;
   const newName = document.getElementById("p-name").value.trim() || name;
-  const fi = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fi").value) || 5) / 100));
-  const fo = Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-fo").value) || 5) / 100));
+  if (newName !== name && state.samples[newName]) {
+    alert(`A sample named "${newName}" already exists — rename refused.`);
+    return;
+  }
+  const fi = Math.max(0, Math.min(0.5, _numOr(document.getElementById("p-fi").value, 5) / 100));
+  const fo = Math.max(0, Math.min(0.5, _numOr(document.getElementById("p-fo").value, 5) / 100));
   const newFrom = parseFloat(document.getElementById("p-s-from").value);
   const newTo   = parseFloat(document.getElementById("p-s-to").value);
   pushHistory();
@@ -553,6 +595,7 @@ async function editSampleAt(name) {
   if (newName !== name) {
     delete state.samples[name];
     state.events.forEach(ev => { if (ev.sample === name) ev.sample = newName; });
+    if (state.duckKey.key === name) state.duckKey.key = newName;
   }
   state.samples[newName] = updated;
   updateScoreInfo(); draw();
@@ -591,7 +634,7 @@ async function editTempoAt(i) {
 // ─── Edit phrase (slur) ───────────────────────────────────────────────────────
 async function editPhraseAt(i) {
   const ph = state.phrases[i];
-  const html = row("label",    `<input id="p-phrase-label" type="text" value="${ph.label || ''}" />`)
+  const html = row("label",    `<input id="p-phrase-label" type="text" value="${escapeHtml(ph.label || '')}" />`)
     + row("gain dB",  `<input id="p-ph-gain"  type="number" value="${ph.gain_db ?? 0}"   step="0.5" style="width:60px;">`, "-20–20")
     + row("fade in",  `<input id="p-ph-fi"    type="number" value="${Math.round((ph.fade_in  ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
     + row("fade out", `<input id="p-ph-fo"    type="number" value="${Math.round((ph.fade_out ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
@@ -847,8 +890,8 @@ async function openNoteRelPopup(type, t1, t2) {
   const entry = { type, from: t1, label: document.getElementById("p-nr-label").value.trim() || undefined };
   if (!isPoint) entry.to = t2;
   if (type === "glissando") {
-    entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
-    entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
+    entry.from_pitch = _numOr(document.getElementById("p-nr-fp").value, 0);
+    entry.to_pitch   = _numOr(document.getElementById("p-nr-tp").value, 2);
   }
   _collectFreqTarget(entry);
   state.noteRel.push(entry);
@@ -925,10 +968,10 @@ async function editNoteRelAt(i) {
   const nr = state.noteRel[i];
   const isPoint = !nr.to || Math.abs((nr.to || nr.from) - nr.from) < 0.01;
   const label = nr.type === "glissando" ? "⟿ Glissando" : "⁑ Arpeggiate Chord";
-  const html = row("label", `<input id="p-nr-label" type="text" value="${nr.label || ''}" placeholder="optional label" />`)
+  const html = row("label", `<input id="p-nr-label" type="text" value="${escapeHtml(nr.label || '')}" placeholder="optional label" />`)
     + (nr.type === "glissando"
-        ? row("from pitch", `<input id="p-nr-fp" type="number" value="${nr.from_pitch || 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
-          + row("to pitch", `<input id="p-nr-tp" type="number" value="${nr.to_pitch || 2}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+        ? row("from pitch", `<input id="p-nr-fp" type="number" value="${nr.from_pitch ?? 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
+          + row("to pitch", `<input id="p-nr-tp" type="number" value="${nr.to_pitch ?? 2}" min="-24" max="24" step="0.5" style="width:60px;"> st`, "-24 – +24")
         : "")
     + _freqTargetRow(nr)
     + row("from (s)", `<input id="p-nr-from" type="number" value="${nr.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
@@ -943,8 +986,8 @@ async function editNoteRelAt(i) {
     label: document.getElementById("p-nr-label").value.trim() || undefined };
   if (!isPoint) entry.to = isNaN(newTo) ? nr.to : newTo;
   if (nr.type === "glissando") {
-    entry.from_pitch = parseFloat(document.getElementById("p-nr-fp").value) || 0;
-    entry.to_pitch   = parseFloat(document.getElementById("p-nr-tp").value) || 2;
+    entry.from_pitch = _numOr(document.getElementById("p-nr-fp").value, 0);
+    entry.to_pitch   = _numOr(document.getElementById("p-nr-tp").value, 2);
   }
   _collectFreqTarget(entry);
   state.noteRel[i] = entry;
@@ -962,7 +1005,7 @@ async function editArticulationAt(i) {
   const fermataRow = (ar.type === 'fermata')
     ? row("tail (s)", `<input id="p-art-hold" type="number" value="${ar.hold_s ?? 2}" min="0.1" max="10" step="0.1" style="width:60px;">`)
     : '';
-  const html = row("label", `<input id="p-art-label" type="text" value="${ar.label || ''}" placeholder="optional label" />`)
+  const html = row("label", `<input id="p-art-label" type="text" value="${escapeHtml(ar.label || '')}" placeholder="optional label" />`)
     + silenceRow + fermataRow
     + _freqTargetRow(ar)
     + (isRange
@@ -1011,11 +1054,18 @@ function _muteHist(type, i) {
   _autoReRender();
 }
 
+// Re-render after an edit: if a rendered mix is playing, restart it from the
+// same score position with the new render; otherwise just drop the stale buffer.
 function _autoReRender() {
   const mode = (document.getElementById("play-mode-select") || {}).value || "source";
   if (mode === "source" || mode === "raw") return;
+  const wasPlaying = typeof isMixPlaying === 'function' && isMixPlaying();
+  if (wasPlaying) { state.currentTime = realToScore(mixCurrentTime()); stopMix(); }
   if (typeof clearMixBuf === 'function') clearMixBuf();
-  if (typeof togglePlay === 'function') togglePlay();
+  if (!wasPlaying) return;
+  if      (mode === "mix")    renderAndPlay();
+  else if (mode === "score")  renderScoreAndPlay();
+  else if (mode === "interp") renderInterpAndPlay();
 }
 
 function _delHist(type, i) {
@@ -1129,12 +1179,37 @@ document.addEventListener('DOMContentLoaded', () => {
 // ─── Undo / Redo ──────────────────────────────────────────────────────────────
 const redoStack = [];
 
+// Waveform peaks are kept out of history snapshots (large, never edited) and
+// restored by file path from this cache, filled whenever a snapshot is taken.
+const _trackWaveforms = {};
+
+function _snapshotTracks() {
+  return (state.tracks || []).map(tk => {
+    const { waveform, ...rest } = tk;
+    if (waveform && tk.path) _trackWaveforms[tk.path] = waveform;
+    return rest;
+  });
+}
+
 function _snapshotState() {
-  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix });
+  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix,
+    tracks: _snapshotTracks(),
+    golems: (typeof interpState !== 'undefined') ? interpState.golems : undefined });
 }
 
 function _applySnapshot(snap) {
   const s = JSON.parse(snap);
+  if (s.tracks) {
+    state.tracks = s.tracks.map(tk => ({ ...tk, waveform: _trackWaveforms[tk.path] || [] }));
+    // Track rows and per-track UI state are keyed by index; rebuild them.
+    if (typeof _trackRows !== 'undefined') _trackRows = [];
+    if (typeof _autoLaneOpen !== 'undefined') Object.keys(_autoLaneOpen).forEach(k => delete _autoLaneOpen[k]);
+    if (typeof _trackTool !== 'undefined') Object.keys(_trackTool).forEach(k => delete _trackTool[k]);
+  }
+  if (s.golems && typeof interpState !== 'undefined') {
+    interpState.golems = s.golems;
+    if (typeof _selectedGolemIdx !== 'undefined') _selectedGolemIdx = null;
+  }
   state.samples = s.samples;
   state.dynamics = s.dynamics;
   state.events = s.events;
@@ -1150,27 +1225,46 @@ function _applySnapshot(snap) {
   _updateBaseFxLabel();
 }
 
-function pushHistory() {
-  state.history.push(_snapshotState());
+// Record the current state before an edit. Drags pass the snapshot taken when
+// they started, so a whole drag is one undo step (and a plain click is none).
+function pushHistory(snap) {
+  state.history.push(snap || _snapshotState());
   if (state.history.length > 50) state.history.shift();
   redoStack.length = 0;
 }
 
-document.getElementById("undo-btn").addEventListener("click", () => {
+// Loading a score, interpretation or new audio starts a new document: undo
+// must not reach back into the previous one.
+function clearHistory() {
+  state.history.length = 0;
+  redoStack.length = 0;
+}
+
+function _afterHistoryRestore() {
+  updateScoreInfo();
+  draw();
+  if (typeof renderTracksPanel === 'function') renderTracksPanel();
+  if (typeof syncSourcePlayback === 'function') syncSourcePlayback();
+  if (typeof _renderGolemCards === 'function') _renderGolemCards();
+  if (typeof drawGolemTimeline === 'function') drawGolemTimeline();
+}
+
+function undo() {
   if (!state.history.length) return;
   redoStack.push(_snapshotState());
   _applySnapshot(state.history.pop());
-  updateScoreInfo();
-  draw();
-});
+  _afterHistoryRestore();
+}
 
-document.getElementById("redo-btn").addEventListener("click", () => {
+function redo() {
   if (!redoStack.length) return;
   state.history.push(_snapshotState());
   _applySnapshot(redoStack.pop());
-  updateScoreInfo();
-  draw();
-});
+  _afterHistoryRestore();
+}
+
+document.getElementById("undo-btn").addEventListener("click", undo);
+document.getElementById("redo-btn").addEventListener("click", redo);
 
 // ─── Score info panel (History) ───────────────────────────────────────────────
 const infoCollapsed = {};
@@ -1197,7 +1291,8 @@ function updateScoreInfo() {
     if (sNames.length === 0) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     for (const n of sNames) {
       const s = state.samples[n];
-      html += `<div class="info-item info-clickable" onclick="editSampleAt('${n.replace(/'/g,"\\'")}')"><span style="color:${s.color}">[${n}]</span> ${s.from.toFixed(2)}s → ${s.to.toFixed(2)}s</div>`;
+      // Name passed via data- attribute so quotes/markup in it can't break out
+      html += `<div class="info-item info-clickable" data-name="${escapeHtml(n)}" onclick="editSampleAt(this.dataset.name)"><span style="color:${s.color}">[${escapeHtml(n)}]</span> ${s.from.toFixed(2)}s → ${s.to.toFixed(2)}s</div>`;
     }
   }
 
@@ -1219,11 +1314,12 @@ function updateScoreInfo() {
     if (!state.events.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     state.events.forEach((ev, i) => {
       const col = (state.samples[ev.sample] || {}).color || "#aaa";
-      let line = `✎ <span style="color:${col}">${ev.sample}</span> @${ev.t.toFixed(2)}s`;
-      line += ` spd:${ev.speed ?? (ev.speeds ? "[…]" : "?")} db:${ev.gain_db}`;
+      let line = `✎ <span style="color:${col}">${escapeHtml(ev.sample)}</span> @${ev.t.toFixed(2)}s`;
+      const _pv = v => escapeHtml(v != null && typeof v === "object" ? JSON.stringify(v) : v);
+      line += ` spd:${ev.speed != null ? _pv(ev.speed) : (ev.speeds ? "[…]" : "?")} db:${_pv(ev.gain_db)}`;
       if (ev.loop) line += " loop";
       if (ev.reverse) line += " rev";
-      if (ev.fx && ev.fx.length > 0) line += ` fx:${ev.fx.map(f => f.type).join("+")}`;
+      if (ev.fx && ev.fx.length > 0) line += ` fx:${escapeHtml(ev.fx.map(f => f.type).join("+"))}`;
       html += _ha(`editEventAt(${i})`, 'event', 'event', i, line, !!ev.muted);
     });
   }
@@ -1238,12 +1334,12 @@ function updateScoreInfo() {
       if (d.t !== undefined) {
         const dm0 = d.mark || d.marking || '?';
         html += _ha(`openMarkEditPopup(${i})`, 'dynamic', 'dynamic', i,
-          `<span style="color:${DYNAMIC_COLORS[dm0]}">${dm0}</span> @${d.t.toFixed(2)}s`, !!d.muted);
+          `<span style="color:${DYNAMIC_COLORS[dm0]}">${escapeHtml(dm0)}</span> @${d.t.toFixed(2)}s`, !!d.muted);
       } else {
         const dm0 = d.mark || d.marking || '?';
         const col = dm0 === "crescendo" ? "#337755" : "#775533";
         html += _ha(`openRangeEditPopup(${i})`, 'dynamic', 'dynamic', i,
-          `<span style="color:${col}">${dm0}</span> ${d.from.toFixed(2)}s → ${d.to.toFixed(2)}s`, !!d.muted);
+          `<span style="color:${col}">${escapeHtml(dm0)}</span> ${d.from.toFixed(2)}s → ${d.to.toFixed(2)}s`, !!d.muted);
       }
     });
   }
@@ -1255,7 +1351,7 @@ function updateScoreInfo() {
     state.tempo.forEach((tp, i) => {
       const col = tp.mark === "accelerando" ? "#aa7722" : "#227799";
       html += _ha(`editTempoAt(${i})`, 'tempo', 'tempo', i,
-        `<span style="color:${col}">${tp.mark}</span> ×${JSON.stringify(tp.factor)} ${tp.from.toFixed(2)}s → ${tp.to.toFixed(2)}s`, !!tp.muted);
+        `<span style="color:${col}">${escapeHtml(tp.mark)}</span> ×${escapeHtml(JSON.stringify(tp.factor))} ${tp.from.toFixed(2)}s → ${tp.to.toFixed(2)}s`, !!tp.muted);
     });
   }
 
@@ -1265,7 +1361,7 @@ function updateScoreInfo() {
     if (!state.fxRanges.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     state.fxRanges.forEach((fz, i) => {
       html += _ha(`editFxZoneAt(${i})`, 'fxzone', 'fxzone', i,
-        `<span style="color:#8844cc">${fz.fx.map(f => f.type).join("+")}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s`, !!fz.muted);
+        `<span style="color:#8844cc">${escapeHtml(fz.fx.map(f => f.type).join("+"))}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s`, !!fz.muted);
     });
   }
 
@@ -1280,7 +1376,7 @@ function updateScoreInfo() {
       if (ph.fade_out) extras.push(`fo:${(ph.fade_out*100).toFixed(0)}%`);
       if (ph.tempo_factor && Math.abs(ph.tempo_factor - 1.0) > 0.001) extras.push(`×${ph.tempo_factor}`);
       html += _ha(`editPhraseAt(${i})`, 'phrase', 'phrase', i,
-        `<span style="color:#8a6abf">${ph.label}</span> ${ph.from.toFixed(2)}s → ${ph.to.toFixed(2)}s${extras.length ? ' <span style="color:#666;font-size:10px;">' + extras.join(' ') + '</span>' : ''}`, !!ph.muted);
+        `<span style="color:#8a6abf">${escapeHtml(ph.label)}</span> ${ph.from.toFixed(2)}s → ${ph.to.toFixed(2)}s${extras.length ? ' <span style="color:#666;font-size:10px;">' + extras.join(' ') + '</span>' : ''}`, !!ph.muted);
     });
   }
 
@@ -1293,7 +1389,7 @@ function updateScoreInfo() {
       const col = NR_COLORS[nr.type] || "#aaa";
       const range = nr.to ? `${nr.from.toFixed(2)}s → ${nr.to.toFixed(2)}s` : `@${nr.from.toFixed(2)}s`;
       html += _ha(`editNoteRelAt(${i})`, null, 'noteRel', i,
-        `<span style="color:${col}">${nr.type}</span> ${range}${nr.label ? ' <span style="color:#666;font-size:10px;">' + nr.label + '</span>' : ''}`, !!nr.muted);
+        `<span style="color:${col}">${escapeHtml(nr.type)}</span> ${range}${nr.label ? ' <span style="color:#666;font-size:10px;">' + escapeHtml(nr.label) + '</span>' : ''}`, !!nr.muted);
     });
   }
 
@@ -1306,7 +1402,7 @@ function updateScoreInfo() {
       const col = ART_COLORS[ar.type] || "#aaa";
       const pos = ar.t !== undefined ? `@${ar.t.toFixed(2)}s` : `${ar.from.toFixed(2)}s → ${ar.to.toFixed(2)}s`;
       html += _ha(`editArticulationAt(${i})`, null, 'articulation', i,
-        `<span style="color:${col}">${ar.type}</span> ${pos}${ar.label ? ' <span style="color:#666;font-size:10px;">' + ar.label + '</span>' : ''}`, !!ar.muted);
+        `<span style="color:${col}">${escapeHtml(ar.type)}</span> ${pos}${ar.label ? ' <span style="color:#666;font-size:10px;">' + escapeHtml(ar.label) + '</span>' : ''}`, !!ar.muted);
     });
   }
 
@@ -1314,10 +1410,13 @@ function updateScoreInfo() {
   html += _sh("sidechain", `sidechain / mix`);
   if (!infoCollapsed["sidechain"]) {
     const scInputStyle = `background:#1a1a1a;border:1px solid #333;color:#aaa;font-family:inherit;font-size:11px;`;
-    const keyOpts = sNames.map(n => `<option value="${n}"${state.duckKey.key===n?" selected":""}>${n}</option>`).join("") || `<option value="">—</option>`;
+    // The dropdown shows the first sample when the key is unset/stale — keep state in sync with it
+    if (sNames.length && !state.samples[state.duckKey.key]) state.duckKey.key = sNames[0];
+    else if (!sNames.length) state.duckKey.key = "";
+    const keyOpts = sNames.map(n => `<option value="${escapeHtml(n)}"${state.duckKey.key===n?" selected":""}>${escapeHtml(n)}</option>`).join("") || `<option value="">—</option>`;
     html += `<div class="info-item" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:2px 0;">
       <input type="checkbox" id="sc-db-on"${state.duckBase.enabled?" checked":""}
-        onchange="state.duckBase.enabled=this.checked;scUpdate();" title="duck base: reduce base audio when events play">
+        onchange="state.duckBase.enabled=this.checked;" title="duck base: reduce base audio when events play">
       <span style="color:#7ab;min-width:68px;">duck base</span>
       dB:<input id="sc-db-amt" type="number" value="${state.duckBase.amount_db}" step="1" style="width:38px;${scInputStyle}" onchange="state.duckBase.amount_db=+this.value;">
       atk:<input id="sc-db-atk" type="number" value="${state.duckBase.attack}" step="0.005" min="0.001" style="width:44px;${scInputStyle}" onchange="state.duckBase.attack=+this.value;">
@@ -1325,7 +1424,7 @@ function updateScoreInfo() {
     </div>`;
     html += `<div class="info-item" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:2px 0;">
       <input type="checkbox" id="sc-dk-on"${state.duckKey.enabled?" checked":""}
-        onchange="state.duckKey.enabled=this.checked;scUpdate();" title="duck key: one sample ducks entire mix (pump effect)">
+        onchange="state.duckKey.enabled=this.checked;" title="duck key: one sample ducks entire mix (pump effect)">
       <span style="color:#7ab;min-width:68px;">duck key</span>
       key:<select id="sc-dk-key" style="width:54px;${scInputStyle}" onchange="state.duckKey.key=this.value;">${keyOpts}</select>
       dB:<input id="sc-dk-amt" type="number" value="${state.duckKey.amount_db}" step="1" style="width:38px;${scInputStyle}" onchange="state.duckKey.amount_db=+this.value;">
@@ -1334,7 +1433,7 @@ function updateScoreInfo() {
     </div>`;
     html += `<div class="info-item" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding:2px 0;">
       <input type="checkbox" id="sc-am-on"${state.autoMix.enabled?" checked":""}
-        onchange="state.autoMix.enabled=this.checked;scUpdate();" title="auto-mix: reduce gain when events overlap">
+        onchange="state.autoMix.enabled=this.checked;" title="auto-mix: reduce gain when events overlap">
       <span style="color:#7ab;min-width:68px;">auto-mix</span>
       mode:<select id="sc-am-mode" style="width:54px;${scInputStyle}" onchange="state.autoMix.mode=this.value;">
         <option value="sqrt"${state.autoMix.mode==="sqrt"?" selected":""}>sqrt</option>
@@ -1346,5 +1445,4 @@ function updateScoreInfo() {
   el.innerHTML = html;
 }
 
-function scUpdate() { /* state already updated inline; just a hook for future use */ }
 

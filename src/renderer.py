@@ -108,17 +108,19 @@ def _remap_events(events: list, tempo_map: list) -> list:
     return out
 
 
-def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = None,
-           wav_path: str = None):
-    score = _apply_phrase_tempo(score)
+def render_mix(score: dict, bank: dict, events: list, sr: int,
+               base: np.ndarray = None) -> tuple:
+    """Render events over the base and return (normalised mix, tempo_map).
 
+    Shared by the CLI renderer and the editor server so every route produces
+    the same audio. Expects phrase tempos already merged (_apply_phrase_tempo).
+    """
     # 1. Mix everything in SCORE TIME — no tempo warping anywhere inside mix_events.
     mix = mix_events(events, bank, sr, score, base)
 
     # 2. Stretch the rendered mix through tempo ranges. Length may grow/shrink.
     #    Returns a score→real tempo map used to remap everything else.
     mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
-    score['_tempo_map'] = tempo_map
 
     # 3. FX applied AFTER stretch, in real time, so reverb tails don't get
     #    phase-vocoded and seam discontinuities are avoided.
@@ -126,29 +128,38 @@ def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = No
     mix = apply_global_fx(mix, sr, score.get('fx_global', []))
 
     # 4. Envelopes: positions authored in score time → remap to real time.
+    #    With golems active the golem's gain dimension carries the dynamics,
+    #    but phrase gain/fades still apply.
     _golem_active = bool(score.get('_state_trace')) and bool(score.get('golems'))
     if not _golem_active:
         dynamics = score.get('dynamics', [])
         if dynamics:
-            env = build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map))
-            mix *= env
+            mix *= build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map))
 
-        phrases = score.get('phrases', [])
-        if phrases:
-            mix *= build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map))
+    phrases = score.get('phrases', [])
+    if phrases:
+        mix *= build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map))
 
     # duck_key: a specific sample ducks the entire mix
     dk = score.get('duck_key')
-    if dk and dk.get('enabled') and dk.get('key') and events:
+    sounding = [e for e in events if not e.get('muted')]
+    if dk and dk.get('enabled') and dk.get('key') and sounding:
         mix *= build_duck_envelope(
-            len(mix), sr, _remap_events(events, tempo_map),
+            len(mix), sr, _remap_events(sounding, tempo_map),
             trigger_fn=lambda ev: ev.get('sample') == dk['key'],
             amount_db=dk.get('amount_db', -10.0),
             attack=dk.get('attack', 0.01),
             release=dk.get('release', 0.3),
         )
 
-    mix = normalise(mix)
+    return normalise(mix), tempo_map
+
+
+def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = None,
+           wav_path: str = None):
+    score = _apply_phrase_tempo(score)
+    mix, tempo_map = render_mix(score, bank, events, sr, base)
+    score['_tempo_map'] = tempo_map
     os.makedirs('output', exist_ok=True)
 
     # When using tracks: list, fall back to the first track path for video detection.

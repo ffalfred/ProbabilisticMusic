@@ -4,7 +4,6 @@ import base64
 import tempfile
 import subprocess
 import json
-import queue
 import threading
 import time as _time
 
@@ -18,10 +17,10 @@ _BETA_DIR = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(_BETA_DIR))
 from src.sample_engine import build_bank
 from src.scheduler     import get_events
-from src.mixer         import mix_events, normalise, _stretch_mix_by_tempo
-from src.envelope      import build_dynamics_envelope, build_duck_envelope, build_phrase_envelope
-from src.renderer      import _apply_phrase_tempo, _remap_dynamics, _remap_phrases, _remap_events, _neutralise_score
-from src.fx            import apply_section_fx, apply_global_fx
+from src.parser        import resolve_score, seed_everything
+from src.mixer         import normalise
+from src.renderer      import _apply_phrase_tempo, _neutralise_score, render_mix
+from src.character     import DIM_NAMES
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
@@ -64,6 +63,30 @@ def _write_audio(path: str, mix, sr: int, fmt: str = 'wav24'):
     return path
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+
+
+# ─── Local-only access ───────────────────────────────────────────────────────
+# Routes here read and write arbitrary paths on purpose (the editor opens
+# audio from anywhere), so the server must only answer the editor's own page:
+#  - Host must be local: blocks DNS-rebinding, where a website points its own
+#    domain at 127.0.0.1 to reach this server.
+#  - No cross-origin requests: browsers label them via Sec-Fetch-Site / Origin,
+#    so another website — or another app on a different localhost port —
+#    can't load files (e.g. <img src=…/image?path=…>) or call the API.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+
+
+@app.before_request
+def _local_only():
+    host = (request.host or "").rsplit(":", 1)[0].lower()
+    if host not in _LOCAL_HOSTS:
+        return jsonify({"error": "forbidden: non-local Host"}), 403
+    if request.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+        return jsonify({"error": "forbidden: cross-origin request"}), 403
+    origin = request.headers.get("Origin")
+    if origin and origin != f"{request.scheme}://{request.host}":
+        return jsonify({"error": "forbidden: cross-origin request"}), 403
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCORES_DIR = os.path.join(BASE_DIR, "..", "scores")
@@ -215,17 +238,14 @@ def preview():
             return jsonify({"error": f"Score not found: {score_path}"}), 404
         with open(score_path) as f:
             score = yaml.safe_load(f) or {}
-        # Normalize dynamics: YAML uses 'marking', backend uses 'mark'
-        for d in score.get('dynamics', []):
-            if 'marking' in d and 'mark' not in d:
-                d['mark'] = d.pop('marking')
         # Auto-derive audio path from score if not given
         if not path:
             path = score.get("base_track", "")
 
-    # Merge interpretation block (golems + v2config + mix_dims)
+    # Merge interpretation block (golems + v2config + mix_dims). An explicit
+    # golems list — even an empty one — replaces the golems saved in the score.
     interp = data.get("interp", {})
-    if interp.get("golems"):
+    if "golems" in interp:
         score["golems"] = interp["golems"]
     mix_dims = data.get("score", {}).get("mix_dims") or interp.get("mix_dims")
     if mix_dims:
@@ -242,18 +262,16 @@ def preview():
         return jsonify({"error": f"File not found: {path}"}), 404
 
     try:
+        seed = seed_everything(config)
+        resolve_score(score)
         score["base_track"] = path
         score = _apply_phrase_tempo(score)
         bank, sr, base = build_bank(score)
 
         global _last_preview_trace
-        print(f"[preview-diag] engine={config.get('engine')} seed={config.get('seed')} v2_seed={(config.get('v2') or {}).get('seed')} golems={len(score.get('golems', []))} mix_dims={score.get('mix_dims')}")
         if config.get("engine") == "v2":
             from src.interpreter import interpret
             events, _state_trace = interpret(score, config, return_trace=True)
-            import hashlib, json as _json
-            _h = hashlib.md5(_json.dumps([s.get('mu') for s in _state_trace[:20]], sort_keys=True).encode()).hexdigest()[:8]
-            print(f"[preview-trace-hash] first20={_h} len={len(_state_trace)} last_t={_state_trace[-1]['t']:.2f}")
             score['_state_trace'] = _state_trace
             _last_preview_trace = _state_trace  # save for /get_last_trace
         else:
@@ -263,45 +281,18 @@ def preview():
         # Performance-neutral mode: strip all expressive timing from the
         # score + events so the output follows the raw score grid. Must
         # happen AFTER the interpreter runs (so the Kalman state_trace is
-        # preserved for visualisation) but BEFORE mix_events (so timing
+        # preserved for visualisation) but BEFORE mixing (so timing
         # offsets don't get applied).
         if bool(data.get("performance_neutral", False)):
             score, events = _neutralise_score(score, events)
 
-        # 1. Mix in score time
-        mix = mix_events(events, bank, sr, score, base)
-
-        # 2. Stretch by tempo ranges (length may change). Returns score→real map.
-        mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
-
-        # 3. FX after stretch, in real time
-        mix = apply_section_fx(mix, sr, score.get('fx_sections', []))
-        mix = apply_global_fx(mix, sr, score.get('fx_global', []))
-
-        # 4. Envelopes (remap score-time positions → real time)
-        _golem_active = bool(score.get('_state_trace')) and bool(score.get('golems'))
-        if not _golem_active:
-            dynamics = score.get('dynamics', [])
-            if dynamics:
-                mix *= build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map))
-            phrases = score.get('phrases', [])
-            if phrases:
-                mix *= build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map))
-        dk = score.get('duck_key')
-        if dk and dk.get('enabled') and dk.get('key') and events:
-            mix *= build_duck_envelope(
-                len(mix), sr, _remap_events(events, tempo_map),
-                trigger_fn=lambda ev: ev.get('sample') == dk['key'],
-                amount_db=dk.get('amount_db', -10.0),
-                attack=dk.get('attack', 0.01),
-                release=dk.get('release', 0.3),
-            )
-        mix = normalise(mix)
+        mix, tempo_map = render_mix(score, bank, events, sr, base)
         sf.write(PREVIEW_TMP, mix, sr)
         return jsonify({
             "url": f"/preview_audio?v={int(_time.time())}",
             "tempo_map": tempo_map,
             "duration_real": float(len(mix) / sr),
+            "seed": seed,
         })
     except Exception as e:
         import traceback
@@ -341,22 +332,14 @@ _concerto_wire_format = 'png'
 # box that's 4, leaving plenty for Chrome. Browser can override per-render
 # via the `decode_threads` field on /concerto_start.
 _concerto_decode_threads = max(2, (os.cpu_count() or 4) // 4)
-# Lock around _concerto_buf / _concerto_next / queue ENQUEUES — handlers hold
-# it only briefly to coordinate ordering. The actual blocking write to
-# ffmpeg's stdin happens on a dedicated writer thread, so a stalled ffmpeg
-# (back-pressure) can no longer freeze request handlers or jam the server.
+# Lock around _concerto_buf / _concerto_next and the ffmpeg process handle —
+# held only briefly. Never held during a blocking stdin.write.
 _concerto_lock      = threading.Lock()
-_concerto_write_lock = threading.Lock()  # serialises stdin.write across threads
-# Writer-thread machinery: handlers enqueue raw frame bytes; the writer
-# thread blocks on ffmpeg.stdin.write() alone. A bounded queue gives the
-# handlers natural back-pressure (they wait briefly then return 503 if the
-# encoder is severely behind, and the browser retries).
-_CONCERTO_QUEUE_MAX = 64        # up to ~64 frames (~ 1s of 60fps) queued
-_CONCERTO_ENQUEUE_TIMEOUT = 20  # seconds a handler will wait to enqueue
-_CONCERTO_QUEUE_SENTINEL = None # pushed on segment finish to stop writer
-_concerto_queue         = None  # queue.Queue  (per-segment, reset on start)
-_concerto_writer_thread = None  # threading.Thread (joined on finish)
-_concerto_writer_err    = None  # first exception from writer, surfaced on finish
+# Serialises "take the next in-order frames + write them to ffmpeg" across
+# request threads. The browser keeps several batch uploads in flight; without
+# this, two handlers could each take a run of frames and interleave writes.
+_concerto_write_lock = threading.Lock()
+_concerto_seg_path  = None  # segment file the current ffmpeg is writing
 
 # Two quality presets (from Toke's ffmpeg research)
 # 4 presets optimised for BrightSign gallery playback
@@ -473,41 +456,21 @@ _CONCERTO_PRESETS = {
     },
 }
 
-def _concerto_writer_loop(proc, q):
-    """Pull raw frame bytes from `q` and write them to `proc.stdin` in order.
-
-    Runs on a dedicated thread per segment. `q` items are either `bytes`
-    (frame data) or `_CONCERTO_QUEUE_SENTINEL` (flush + exit). Any write
-    error (BrokenPipeError when ffmpeg dies, for instance) stores itself
-    in the module-level `_concerto_writer_err` so /concerto_finish_segment
-    can surface it to the browser.
-    """
-    global _concerto_writer_err
-    try:
-        while True:
-            chunk = q.get()
-            if chunk is _CONCERTO_QUEUE_SENTINEL:
-                break
-            try:
-                proc.stdin.write(chunk)
-            except BrokenPipeError:
-                # ffmpeg died or was killed; drain remaining items and exit
-                # so /concerto_frames handlers stop blocking on full queue.
-                _concerto_writer_err = 'ffmpeg pipe broken (encoder died)'
-                while True:
-                    try:
-                        item = q.get_nowait()
-                        if item is _CONCERTO_QUEUE_SENTINEL:
-                            break
-                    except queue.Empty:
-                        break
-                return
-    except Exception as e:
-        _concerto_writer_err = f'writer thread: {e}'
+def _discard_current_segment():
+    """Delete the segment file the killed/failed ffmpeg was writing, so a
+    later resume doesn't treat a truncated segment as complete."""
+    global _concerto_seg_path
+    if _concerto_seg_path and os.path.exists(_concerto_seg_path):
+        try: os.remove(_concerto_seg_path)
+        except OSError: pass
+    if _concerto_seg_path in _concerto_segments:
+        _concerto_segments.remove(_concerto_seg_path)
+    _concerto_seg_path = None
 
 
 def _kill_concerto_ffmpeg():
-    """Kill any active ffmpeg subprocess and clear the global.
+    """Kill any active ffmpeg subprocess, discard its partial segment, and
+    clear the global. Safe to call when nothing is running.
 
     Caller must hold _concerto_lock.
     """
@@ -522,6 +485,7 @@ def _kill_concerto_ffmpeg():
     except Exception: pass
     try: proc.wait(timeout=5)
     except Exception: pass
+    _discard_current_segment()
 
 
 @app.route("/concerto_start", methods=["POST"])
@@ -547,11 +511,10 @@ def concerto_start():
 
     # Defensive unblock: if a previous run's ffmpeg is still alive AND a
     # /concerto_frames thread is stuck on `stdin.write()` (because the OS
-    # pipe is full and ffmpeg is slow), that thread holds _concerto_lock
-    # and we'd hang here forever. SIGKILLing the process closes the pipe,
-    # which unblocks the stuck write with BrokenPipeError, releases the
-    # lock, and lets us proceed. Safe to do without the lock — kill is
-    # idempotent and we'll re-check / clean up properly inside.
+    # pipe is full and ffmpeg is slow), SIGKILLing the process closes the
+    # pipe, which unblocks the stuck write with BrokenPipeError. Safe to do
+    # without the lock — kill is idempotent and we'll re-check / clean up
+    # properly inside.
     if seg_index == 0 and _concerto_ffmpeg is not None:
         try: _concerto_ffmpeg.kill()
         except Exception: pass
@@ -734,6 +697,8 @@ def concerto_start():
             return jsonify({"error": f"ffmpeg exited immediately (rc={rc}): {tail}"}), 500
 
         _concerto_ffmpeg = proc
+        global _concerto_seg_path
+        _concerto_seg_path = seg_path
 
         # Enlarge the pipe buffer so ffmpeg has breathing room before
         # stdin.write blocks. Default is 64KB (< 1 raw 4K frame).
@@ -755,8 +720,6 @@ def concerto_start():
         # Track segment for later concat (avoid duplicates if the browser retries)
         if seg_path not in _concerto_segments:
             _concerto_segments.append(seg_path)
-        if seg_path not in _concerto_segments:
-            _concerto_segments.append(seg_path)
         return jsonify({"ok": True, "segment_index": seg_index})
 
 
@@ -767,8 +730,9 @@ def concerto_finish_segment():
     Keeps overall encode state (output path, preset, segments list) intact
     so the next /concerto_start call can spawn the next segment.
     """
-    global _concerto_ffmpeg
-    with _concerto_lock:
+    global _concerto_ffmpeg, _concerto_seg_path
+    # Wait for any in-flight frame write before closing ffmpeg's stdin.
+    with _concerto_write_lock, _concerto_lock:
         proc = _concerto_ffmpeg
         if proc is None:
             seg_count = len(_concerto_segments)
@@ -785,13 +749,20 @@ def concerto_finish_segment():
     try:
         seg_stderr = proc.stderr.read() if proc.stderr else b''
         proc.wait(timeout=300)
-        if seg_stderr:
-            tail = seg_stderr.decode('utf-8', errors='replace')[-300:]
+        tail = seg_stderr.decode('utf-8', errors='replace')[-300:] if seg_stderr else ''
+        if proc.returncode != 0:
+            with _concerto_lock:
+                _discard_current_segment()
+            return jsonify({"error": f"ffmpeg failed on segment (rc={proc.returncode}): {tail}"}), 500
+        if tail:
             print(f"[concerto seg {len(_concerto_segments) - 1} stderr]", tail)
+        _concerto_seg_path = None  # complete — keep it for resume
         return jsonify({"ok": True, "segments_done": len(_concerto_segments)})
     except Exception as e:
         try: proc.kill()
         except Exception: pass
+        with _concerto_lock:
+            _discard_current_segment()
         return jsonify({"error": str(e)}), 500
 
 
@@ -799,18 +770,17 @@ def concerto_finish_segment():
 def concerto_cancel():
     """Abort an in-progress concerto encode.
 
-    Called by the browser when the user clicks Cancel. Kills the current
-    ffmpeg subprocess + writer thread, clears per-encode state, and deletes
-    any already-produced segment files so they don't sit on disk.
+    Called by the browser on Cancel and on any error. Kills the current
+    ffmpeg subprocess, deletes the segment it was writing (it is incomplete),
+    and clears per-encode state. Completed segments stay on disk so the
+    render can be resumed.
 
     Safe to call even when no encode is in progress (returns ok=true).
     """
     global _concerto_out, _concerto_video_tmp, _concerto_preset, _concerto_segments
     with _concerto_lock:
         _kill_concerto_ffmpeg()
-        # Keep segment files on disk so the render can be resumed.
-        # Only delete the pre-mux tmp file (not segments).
-        # Also clean the pre-mux tmp file if it exists
+        # Clean the pre-mux tmp file if it exists
         if _concerto_video_tmp and os.path.exists(_concerto_video_tmp):
             try: os.remove(_concerto_video_tmp)
             except OSError: pass
@@ -821,67 +791,13 @@ def concerto_cancel():
     return jsonify({"ok": True, "cancelled": True})
 
 
-def _enqueue_chunks_after_lock(chunks):
-    """Put each chunk onto the writer queue with a bounded wait.
-
-    Called OUTSIDE `_concerto_lock` so a slow encoder (back-pressure) can't
-    block other request handlers that just want to enqueue their own frames.
-    Returns (ok, error_message_or_None). If the queue is persistently full
-    we surface 503 so the browser can retry rather than the request
-    hanging indefinitely.
-    """
-    q = _concerto_queue
-    if q is None:
-        return False, "writer queue disappeared"
-    for chunk in chunks:
-        try:
-            q.put(chunk, timeout=_CONCERTO_ENQUEUE_TIMEOUT)
-        except queue.Full:
-            return False, f"encoder is severely behind (queue full for {_CONCERTO_ENQUEUE_TIMEOUT}s)"
-        if _concerto_writer_err:
-            return False, _concerto_writer_err
-    return True, None
-
-
-@app.route("/concerto_frame", methods=["POST"])
-def concerto_frame():
-    """Single-frame upload (legacy path; the browser uses /concerto_frames)."""
-    global _concerto_next, _concerto_buf
-    if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
-        return jsonify({"error": "No active concerto render"}), 400
-    frame_blob = request.files.get('frame')
-    if not frame_blob:
-        return jsonify({"error": "No frame data"}), 400
-    try:
-        idx_form = request.form.get('index')
-        raw      = frame_blob.read()
-        chunks = []
-        with _concerto_lock:
-            if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
-                return jsonify({"error": "No active concerto render"}), 400
-            idx = int(idx_form) if idx_form is not None else _concerto_next
-            _concerto_buf[idx] = raw
-            while _concerto_next in _concerto_buf:
-                chunks.append(_concerto_buf.pop(_concerto_next))
-                _concerto_next += 1
-            proc = _concerto_ffmpeg
-            buf_lag = len(_concerto_buf)
-        t0 = _time.time()
-        for chunk in chunks:
-            proc.stdin.write(chunk)
-        write_ms = (_time.time() - t0) * 1000
-        return jsonify({"ok": True, "write_ms": round(write_ms, 1), "lag": buf_lag})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/concerto_frames", methods=["POST"])
 def concerto_frames():
     """Batch frame upload — multiple frames packed in one request.
 
-    Reorder buffer is managed under _concerto_lock; the actual
-    stdin.write happens OUTSIDE the lock so ffmpeg back-pressure
-    (blocking write on a full pipe) doesn't deadlock other handlers.
+    Frames go into a reorder buffer under _concerto_lock. Taking the next
+    in-order run and writing it to ffmpeg happen together under
+    _concerto_write_lock, so concurrent batches can't interleave their writes.
     """
     global _concerto_next, _concerto_buf, _concerto_ffmpeg
     if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
@@ -906,23 +822,24 @@ def concerto_frames():
             lengths = [fsize] * count
 
         chunks = []
-        with _concerto_lock:
-            if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
-                return jsonify({"error": "No active concerto render"}), 400
-            start_idx = int(start_idx_form) if start_idx_form is not None else _concerto_next
-            offset = 0
-            for i, length in enumerate(lengths):
-                _concerto_buf[start_idx + i] = raw_all[offset : offset + length]
-                offset += length
-            while _concerto_next in _concerto_buf:
-                chunks.append(_concerto_buf.pop(_concerto_next))
-                _concerto_next += 1
-            proc = _concerto_ffmpeg  # snapshot under lock
-            buf_lag = len(_concerto_buf)  # frames waiting out of order
-        t0 = _time.time()
-        for chunk in chunks:
-            proc.stdin.write(chunk)
-        write_ms = (_time.time() - t0) * 1000
+        with _concerto_write_lock:
+            with _concerto_lock:
+                if not _concerto_ffmpeg or _concerto_ffmpeg.stdin.closed:
+                    return jsonify({"error": "No active concerto render"}), 400
+                start_idx = int(start_idx_form) if start_idx_form is not None else _concerto_next
+                offset = 0
+                for i, length in enumerate(lengths):
+                    _concerto_buf[start_idx + i] = raw_all[offset : offset + length]
+                    offset += length
+                while _concerto_next in _concerto_buf:
+                    chunks.append(_concerto_buf.pop(_concerto_next))
+                    _concerto_next += 1
+                proc = _concerto_ffmpeg  # snapshot under lock
+                buf_lag = len(_concerto_buf)  # frames waiting out of order
+            t0 = _time.time()
+            for chunk in chunks:
+                proc.stdin.write(chunk)
+            write_ms = (_time.time() - t0) * 1000
         return jsonify({"ok": True, "write_ms": round(write_ms, 1), "lag": buf_lag})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1043,7 +960,9 @@ def concerto_finish():
             ]
             subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
 
-        # Clean up temps: stitched video tmp, segment files, and saved trace
+        # Clean up temps: stitched video tmp and segment files. The render
+        # metadata (<base>.trace.json) is kept: later meta/viz passes of the
+        # same download may still need it to resume.
         if os.path.exists(_concerto_video_tmp):
             try: os.remove(_concerto_video_tmp)
             except OSError: pass
@@ -1051,9 +970,9 @@ def concerto_finish():
             if os.path.exists(seg):
                 try: os.remove(seg)
                 except OSError: pass
-        trace_tmp = _concerto_out + '.trace.json'
-        if os.path.exists(trace_tmp):
-            try: os.remove(trace_tmp)
+        legacy_trace = _concerto_out + '.trace.json'
+        if os.path.exists(legacy_trace):
+            try: os.remove(legacy_trace)
             except OSError: pass
 
         path = _concerto_out
@@ -1134,41 +1053,44 @@ def concerto_check_segments():
     out_path = (data.get('out_path') or '').strip()
     if not out_path:
         return jsonify({"existing": []})
-    out_path = os.path.abspath(out_path)
-    # Try common extensions
-    base, _ = os.path.splitext(out_path)
-    existing = []
-    for ext in ('.mp4', '.mkv', '.mov'):
-        for i in range(0, 9999):
-            seg = base + ext + f'.seg_{i:04d}.mkv'
-            if os.path.exists(seg) and os.path.getsize(seg) > 0:
-                existing.append(i)
-            elif existing and i > max(existing) + 10:
-                break
-        if existing:
-            break
-    return jsonify({"existing": existing})
+    base, _ = os.path.splitext(os.path.abspath(out_path))
+    # Segments are named <base>[_meta|_<viz>]<preset ext>.seg_NNNN.mkv; the
+    # preset decides the extension, and the meta/viz passes add a suffix.
+    import glob, re
+    existing = set()
+    for seg in glob.glob(glob.escape(base) + '*.seg_*.mkv'):
+        m = re.search(r'\.seg_(\d{4})\.mkv$', seg)
+        if m and os.path.getsize(seg) > 0:
+            existing.add(int(m.group(1)))
+    return jsonify({"existing": sorted(existing)})
+
+
+def _trace_file(out_path: str) -> str:
+    """Saved-render metadata lives next to the output, independent of the
+    preset extension: <base>.trace.json."""
+    return os.path.splitext(os.path.abspath(out_path))[0] + '.trace.json'
 
 
 @app.route("/concerto_save_trace", methods=["POST"])
 def concerto_save_trace():
-    """Persist the current trace + audio path alongside the segment files.
+    """Persist what a resume needs to reproduce this render exactly.
 
-    Called by the browser after /preview during a fresh concerto download.
-    On resume, /concerto_load_trace reads it back so the viz panels match.
+    Called by the browser right after /preview on a fresh concerto download,
+    with the main `out_path`. Stores the render seed, tempo map, real
+    duration and the last preview trace (null in composer mode). Any extra
+    keys in the request body are stored too and returned by load.
     """
-    if not _concerto_out:
-        return jsonify({"error": "No active concerto encode"}), 400
-    if _last_preview_trace is None:
-        return jsonify({"error": "No trace data to save"}), 400
-    trace_path = _concerto_out + '.trace.json'
+    data = request.get_json() or {}
+    out_path = (data.get('out_path') or _concerto_out or '').strip()
+    if not out_path:
+        return jsonify({"error": "out_path required"}), 400
+    trace_path = _trace_file(out_path)
     try:
-        import json
+        payload = {k: v for k, v in data.items() if k != 'out_path'}
+        payload["trace"] = _last_preview_trace
+        os.makedirs(os.path.dirname(trace_path), exist_ok=True)
         with open(trace_path, 'w') as f:
-            json.dump({
-                "trace": _last_preview_trace,
-                "duration_real": request.get_json().get("duration_real", 0),
-            }, f)
+            json.dump(payload, f)
         return jsonify({"ok": True, "path": trace_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1176,24 +1098,22 @@ def concerto_save_trace():
 
 @app.route("/concerto_load_trace", methods=["POST"])
 def concerto_load_trace():
-    """Load a previously saved trace from disk for resume."""
+    """Load the metadata saved by /concerto_save_trace for resume."""
     data = request.get_json()
     out_path = (data.get('out_path') or '').strip()
     if not out_path:
         return jsonify({"error": "No out_path provided"}), 400
-    out_path = os.path.abspath(out_path)
-    base, _ = os.path.splitext(out_path)
-    # Try with the preset extension
+    base, _ = os.path.splitext(os.path.abspath(out_path))
+    # Current naming first, then the older <base><ext>.trace.json files.
     trace_path = None
-    for ext in ('.mp4', '.mkv', '.mov'):
-        candidate = base + ext + '.trace.json'
+    for candidate in [_trace_file(out_path)] + [base + ext + '.trace.json'
+                                                for ext in ('.mp4', '.mkv', '.mov', '.ts')]:
         if os.path.exists(candidate):
             trace_path = candidate
             break
     if not trace_path:
         return jsonify({"error": "No saved trace found"}), 404
     try:
-        import json
         with open(trace_path) as f:
             data = json.load(f)
         return jsonify(data)
@@ -1207,7 +1127,9 @@ def save_preview_audio():
 
     Used by the concerto popup's 'Audio' output checkbox. The audio has
     already been rendered by /preview (with performance_neutral applied
-    if the user ticked that) so here we just copy the file.
+    if the user ticked that). Optionally pads silence at the start
+    (lead_in) and end (lead_out) so the WAV matches a video that has
+    matching lead-in/lead-out — the muxed result will stay in sync.
     """
     data = request.get_json() or {}
     out_path = (data.get('out_path') or '').strip()
@@ -1216,13 +1138,34 @@ def save_preview_audio():
     if not os.path.exists(PREVIEW_TMP):
         return jsonify({"error": "No preview rendered yet — call /preview first"}), 404
     try:
+        lead_in   = max(0.0, float(data.get('lead_in', 0) or 0))
+        lead_out  = max(0.0, float(data.get('lead_out', 0) or 0))
+        # Optional range in real (rendered-audio) time, as for /concerto_start.
+        time_from = max(0.0, float(data.get('time_from', 0) or 0))
+        time_to   = max(0.0, float(data.get('time_to', 0) or 0))
         out_path = os.path.abspath(out_path)
         # Force .wav extension
         base, _ = os.path.splitext(out_path)
         out_path = base + '.wav'
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        import shutil
-        shutil.copyfile(PREVIEW_TMP, out_path)
+        info = sf.info(PREVIEW_TMP)
+        if lead_in <= 0 and lead_out <= 0 and time_from <= 0 and time_to <= 0:
+            # Nothing to trim or pad — fast path: just copy the file.
+            import shutil
+            shutil.copyfile(PREVIEW_TMP, out_path)
+        else:
+            audio, sr_in = sf.read(PREVIEW_TMP, dtype='float32', always_2d=True)
+            i0 = min(len(audio), int(round(time_from * sr_in)))
+            i1 = min(len(audio), int(round(time_to * sr_in))) if time_to > time_from else len(audio)
+            ch = audio.shape[1]
+            padded = np.concatenate([
+                np.zeros((int(round(lead_in * sr_in)), ch), dtype=np.float32),
+                audio[i0:i1],
+                np.zeros((int(round(lead_out * sr_in)), ch), dtype=np.float32),
+            ])
+            if ch == 1:
+                padded = padded[:, 0]
+            sf.write(out_path, padded, sr_in, subtype=info.subtype)  # keep source bit depth
         return jsonify({"path": out_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1240,18 +1183,19 @@ def export_interp_wav():
     try:
         with open(score_path) as f:
             score = yaml.safe_load(f) or {}
-        for d in score.get('dynamics', []):
-            if 'marking' in d and 'mark' not in d:
-                d['mark'] = d.pop('marking')
         if not path:
             path = score.get("base_track", "")
         if not path or not os.path.exists(path):
             return jsonify({"error": "Audio file path required/not found"}), 404
 
         interp = data.get("interp", {})
-        if interp.get("golems"):
+        if "golems" in interp:
             score["golems"] = interp["golems"]
+        if interp.get("mix_dims"):
+            score["mix_dims"] = interp["mix_dims"]
         config = _load_server_config(interp.get("v2config"))
+        seed_everything(config)
+        resolve_score(score)
         score["base_track"] = path
         score = _apply_phrase_tempo(score)
         bank, sr, base = build_bank(score)
@@ -1264,23 +1208,15 @@ def export_interp_wav():
 
         if export_mode == "raw":
             # Raw base — no events, no golem
-            mix = base.copy() if base is not None else np.zeros(sr, dtype=np.float32)
-        elif export_mode == "score_only":
-            # Events + golem, no base (events_only mix mode)
-            score['mix_mode'] = 'events_only'
-            events, _state_trace = interpret(score, config, return_trace=True)
-            score['_state_trace'] = _state_trace
-            mix = mix_events(events, bank, sr, score, base)
+            mix = normalise(base.copy() if base is not None else np.zeros(sr, dtype=np.float32))
         else:
-            # Full interpreter render (base + events + golem)
+            # Same render path as /preview. score_only drops the base track:
+            # events + golem over silence of the same length.
             events, _state_trace = interpret(score, config, return_trace=True)
             score['_state_trace'] = _state_trace
-            mix = mix_events(events, bank, sr, score, base)
-
-        # Apply tempo stretch so interpreter export matches preview behavior
-        if export_mode != "raw":
-            mix, _tm = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
-        mix = normalise(mix)
+            if export_mode == "score_only" and base is not None:
+                base = np.zeros_like(base)
+            mix, _tm = render_mix(score, bank, events, sr, base)
 
         # Time range trim
         if time_to > time_from and time_from >= 0:
@@ -1406,8 +1342,11 @@ def export_mp4():
             "-f", "rawvideo", "-pix_fmt", "rgb24",
             "-s", f"{out_w}x{out_h}", "-r", str(fps),
             "-i", "pipe:0",
-            "-i", audio_path,
+            # Input-side seek on the audio only: the piped video already
+            # starts at score_start. (As an output option -ss also cut the
+            # first score_start seconds off the video.)
             "-ss", str(score_start), "-t", str(dur),
+            "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest",
@@ -1543,6 +1482,7 @@ def save_interpretation():
         "score_path": data.get("score_path", ""),
         "golems": data.get("golems", []),
         "v2config": data.get("v2config", {}),
+        "mix_dims": data.get("mix_dims", ["gain_db"]),
     }
     with open(out_path, "w") as f:
         yaml.dump(payload, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -1574,20 +1514,17 @@ def trace():
     try:
         with open(score_path) as f:
             score = yaml.safe_load(f) or {}
-        if interp.get("golems"):
+        if "golems" in interp:
             score["golems"] = interp["golems"]
 
         config = _load_server_config(data.get("_config") or interp.get("v2config"))
         config["engine"] = "v2"
-        print(f"[trace-diag] seed={config.get('seed')} v2_seed={(config.get('v2') or {}).get('seed')} golems={len(score.get('golems', []))}")
-
+        seed_everything(config)
+        resolve_score(score)
         score = _apply_phrase_tempo(score)
 
         from src.interpreter import interpret
         _, trace_data = interpret(score, config, return_trace=True)
-        import hashlib, json as _json
-        _h = hashlib.md5(_json.dumps([s.get('mu') for s in trace_data[:20]], sort_keys=True).encode()).hexdigest()[:8]
-        print(f"[trace-trace-hash] first20={_h} len={len(trace_data)} last_t={trace_data[-1]['t']:.2f}")
 
         total_dur = max((e["t"] for e in trace_data), default=1.0)
 
@@ -1602,7 +1539,7 @@ def trace():
         return jsonify({
             "trace":      trace_data,
             "total_dur":  total_dur,
-            "dimensions": ["gain_db", "brightness", "timing_offset_ms", "attack_shape", "reverb_wet"],
+            "dimensions": list(DIM_NAMES),
             "markings":   markings,
             "effective_seed": (config.get("v2") or {}).get("_effective_seed"),
         })
@@ -1623,12 +1560,13 @@ def multitrace():
     try:
         with open(score_path) as f:
             score = yaml.safe_load(f) or {}
-        if interp.get("golems"):
+        if "golems" in interp:
             score["golems"] = interp["golems"]
 
         base_config = _load_server_config(data.get("_config") or interp.get("v2config"))
         base_config["engine"] = "v2"
         score = _apply_phrase_tempo(score)
+        resolve_score(score)
 
         from src.interpreter import interpret
 
@@ -1638,8 +1576,10 @@ def multitrace():
         total_dur = 1.0
 
         for seed in range(n_walks):
+            # v2.seed takes priority over seed, so set it there; copy the v2
+            # dict so walks don't share state.
             cfg = dict(base_config)
-            cfg["seed"] = seed
+            cfg["v2"] = {**(base_config.get("v2") or {}), "seed": seed}
             _, trace_data = interpret(score, cfg, return_trace=True)
             walks.append(trace_data)
             if trace_data:
@@ -1654,7 +1594,7 @@ def multitrace():
         return jsonify({
             "walks":      walks,
             "total_dur":  total_dur,
-            "dimensions": ["gain_db", "brightness", "timing_offset_ms", "attack_shape", "reverb_wet"],
+            "dimensions": list(DIM_NAMES),
             "markings":   markings,
         })
     except Exception as e:
@@ -1768,4 +1708,9 @@ def list_plugins():
 if __name__ == "__main__":
     # threaded=True so concurrent batch uploads during a concerto encode don't
     # serialise behind each other while one ffmpeg write is briefly blocked.
-    app.run(port=5000, debug=True, use_reloader=False, threaded=True)
+    # Bound to 127.0.0.1 only. The Werkzeug debugger (an interactive Python
+    # console on error pages) is opt-in: OPUS_DEBUG=1 python server.py
+    app.run(host="127.0.0.1",
+            port=int(os.environ.get("OPUS_PORT", 5000)),
+            debug=os.environ.get("OPUS_DEBUG") == "1",
+            use_reloader=False, threaded=True)

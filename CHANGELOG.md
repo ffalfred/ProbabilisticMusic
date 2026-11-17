@@ -9,6 +9,44 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 
 ---
 
+## [Unreleased]
+
+### Fixed — engine
+- Multi-track scores loaded only the last track (indentation bug in `build_bank`); samples now slice from the right track.
+- Simultaneous events (chords) were collapsed to one by the V2 interpreter.
+- Random score values (`[lo, hi]`, `{distribution: …}`) were never resolved in the editor, so Mix crashed or always reversed; the editor now resolves them like the CLI.
+- `seed` now reproduces the whole render: score randomness, golem performance and plugins all draw from it. `/preview` returns the seed it used.
+- `filter_cutoff` is in Hz everywhere (it was Hz in the state but treated as 0–1 by the mixer, pinning the filter at 18 kHz).
+- Full-band `note_rel` glissandi re-pitch events only; band-limited ones act on the mix only (previously the mix pass was a silent no-op, and banded glissandi shifted events twice).
+- Brightness modulation hard-clipped the whole mix before normalisation.
+- Phrase gain/fades were dropped when golems were active.
+- Muted events no longer trigger `duck_base` / `duck_key` / auto-mix.
+- `skew_normal` sampling crashed; random-walk golems with 5-dim vectors or 5×5 correlations (older UIs) crashed.
+- SoX effects (reverb, EQ, pitch, flanger, …) went through 16-bit temp files: SoX added random dither (breaking reproducibility) and anything above full scale was hard-clipped. They now use 32-bit float with headroom.
+- Crackle at segment seams in the Glissando, Aleatoric, Textural, Minimalism and Leitmotif plugins and in band-limited glissandi (overlap-add with context instead of butted blocks).
+- Spectral Freeze advanced phase at 1/512 of the natural rate.
+- Undertones no longer saturates the dry signal.
+
+### Fixed — editor and export
+- Composer Mix used the Kalman engine; it now renders with v1 like the concerto export.
+- `/export_interp_wav` now matches `/preview` (section/global FX, dynamics, phrases, duck_key); `score_only` really drops the base.
+- An empty golem list in the Interpreter now overrides golems saved in the score.
+- Concerto: frames could be written out of order with concurrent uploads; resume reused truncated segments, missed `.ts` outputs and could splice two different performances — resume now re-renders from the saved seed; meta video no longer gets audio; audio export honours the time range; viz timelines use score time consistently.
+- Undo/redo now covers tracks (add/remove, mute, gain, FX, FX regions, automation, stems) and golems (add, update, delete, move/resize). A drag is one undo step. Loading a score, interpretation or audio starts a fresh undo history.
+- Concerto: the time range is in score time (as on the timeline) and is converted through the tempo map; leaving the end at the score's end renders to the end of the audio. Lead-out frames scroll the score on linearly with the visualisations held at their final state, instead of continuing tempo-mapped playback.
+- Many UI fixes: distribution settings, Global Settings panel, random-walk dimensions, Cancel in golem popups, zero values replaced by defaults, track removal, undo/redo shortcuts, Conductor tab error, stale playback buffer, Web Audio automation preview, and HTML escaping of user-supplied names.
+
+### Security
+- The editor server only answers its own page: it listens on 127.0.0.1, rejects non-local `Host` headers (DNS rebinding) and cross-origin requests (other websites or localhost ports reading files through it). The Werkzeug debugger is off unless `OPUS_DEBUG=1`; the port can be set with `OPUS_PORT`.
+
+### Removed
+- Unused code: ~250 lines of mixer helpers, the concerto writer-thread and worker paths, the legacy `/concerto_frame` route.
+
+### Added
+- `tests/` — regression tests (`python -m unittest discover -s tests`).
+
+---
+
 ## [0.4.0] — Golems
 
 ### Changed

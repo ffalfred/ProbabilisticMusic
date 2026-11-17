@@ -3,18 +3,45 @@
 // Depends on: kalman-trace.js (DIM_COLORS, DIM_RANGES, _hexToRgb, _lastTraceData)
 
 var _activeViz   = 1;
-var _vizCurrentT = -1;  // score-time cursor, == audio time (-1 = show full trace)
+// Cursor in SCORE time (same clock as trace[].t), -1 = show full trace.
+// Real-time clocks (mixCurrentTime(), rendered-audio positions) must be
+// converted with realToScore() before being stored here.
+var _vizCurrentT = -1;
 var _vizFixedSize = false;  // when true, skip auto-resize (concerto mode)
 
+// Single playback animation loop: at most one rAF is pending at a time,
+// and the loop always reads the most recent data passed to updateVizPanel
+// (so dropdown / dimension changes don't stack extra loops).
+var _vizLoopRaf  = null;
+var _vizLoopData = null;
+
+function _vizScheduleLoop() {
+  if (_vizLoopRaf != null) return;
+  _vizLoopRaf = requestAnimationFrame(() => {
+    _vizLoopRaf = null;
+    updateVizPanel(_vizLoopData);
+  });
+}
+
 function updateVizPanel(data) {
+  _vizLoopData = data;
   const playing = (typeof isMixPlaying === 'function') && isMixPlaying();
+  // While a concerto view/download is running it owns _vizCurrentT and the
+  // source canvases — just keep the loop alive so the editor resumes after.
+  const concertoOwns = (typeof _concertoDownloading !== 'undefined' && _concertoDownloading)
+                    || (typeof _concertoActive !== 'undefined' && _concertoActive);
+  if (concertoOwns) {
+    if (playing) _vizScheduleLoop();
+    return;
+  }
   if (playing) {
-    // mixCurrentTime() returns position in the audio buffer.
-    // The audio buffer is the rendered score, so audio time == score time.
-    _vizCurrentT = mixCurrentTime();
+    // mixCurrentTime() is REAL time in the rendered (tempo-stretched)
+    // audio; the trace is in score time, so convert.
+    const rt = mixCurrentTime();
+    _vizCurrentT = (typeof realToScore === 'function') ? realToScore(rt) : rt;
     // Also animate bottom-panel timeline cursor
     if (typeof drawKalmanTrace === 'function' && data) drawKalmanTrace(data);
-    requestAnimationFrame(() => updateVizPanel(data));
+    _vizScheduleLoop();
   } else {
     if (_vizCurrentT >= 0) {
       // Final redraw of the bottom canvas to clear the cursor line
@@ -22,14 +49,19 @@ function updateVizPanel(data) {
     }
     _vizCurrentT = -1;
   }
+  _renderVizPanelCanvas(data);
+}
 
+// Draw the active viz into viz-panel-canvas (no timing / loop logic).
+// Also used by the live concerto 'combined' view each tick.
+function _renderVizPanelCanvas(data) {
   const canvas = document.getElementById('viz-panel-canvas');
   if (!canvas) return;
   if (!_vizFixedSize) {
     const r  = canvas.getBoundingClientRect();
     const rW = Math.round(r.width  || canvas.clientWidth  || 220);
     const rH = Math.round(r.height || canvas.clientHeight || 400);
-    if (rH < 10) { requestAnimationFrame(() => updateVizPanel(data)); return; }
+    if (rH < 10) { _vizScheduleLoop(); return; }
     canvas.width  = rW;
     canvas.height = rH;
   }
@@ -84,7 +116,7 @@ function updateVizPanel(data) {
 }
 
 // ─── Viz 1: Marginal Gaussians ────────────────────────────────────────────────
-function _drawMarginalGaussians(ctx, W, H, data, renderState) {
+function _drawMarginalGaussians(ctx, W, H, data) {
   const D    = DIM_NAMES.length;
   const rowH = H / D;
   if (rowH < 15 || W < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
@@ -272,7 +304,7 @@ function _drawInnovationTrace(ctx, W, H, data) {
 }
 
 // ─── Viz 4: AR(2) Phase Portrait ──────────────────────────────────────────────
-function _drawPhasePortrait(ctx, W, H, data, renderState, overrideDx, overrideDy) {
+function _drawPhasePortrait(ctx, W, H, data, overrideDx, overrideDy) {
   if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
   const dx  = (overrideDx != null) ? overrideDx
@@ -322,7 +354,7 @@ function _drawPhasePortrait(ctx, W, H, data, renderState, overrideDx, overrideDy
 }
 
 // ─── Viz 5: State Trajectory 2D ───────────────────────────────────────────────
-function _drawStateTrajectory(ctx, W, H, data, renderState) {
+function _drawStateTrajectory(ctx, W, H, data) {
   if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
   const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
@@ -635,7 +667,7 @@ function _drawInnovationEnergy(ctx, W, H, data) {
 }
 
 // ─── Viz 10: Sample Scatter vs Posterior ─────────────────────────────────────
-function _drawSampleScatter(ctx, W, H, data, renderState) {
+function _drawSampleScatter(ctx, W, H, data) {
   if (W < 50 || H < 50) { if (ctx) { ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, W, H); } return; }
   const trace = data.trace;
   const dx  = (typeof _concertoDimX !== 'undefined' && _concertoGreyscaleMode) ? _concertoDimX : parseInt(document.getElementById('viz-dim-x')?.value ?? '0');
@@ -1164,7 +1196,7 @@ function _drawTimeCursor(ctx, t, totalDur, W, H) {
   if (_vizCurrentT < 0) return;
   const x = (t / (totalDur || 1)) * W;
   ctx.save();
-  ctx.strokeStyle = 'rgba(255,240,100,0.7)';
+  ctx.strokeStyle = _concertoGreyscaleMode ? 'rgba(255,255,255,0.7)' : 'rgba(255,240,100,0.7)';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 3]);
   ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();

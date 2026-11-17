@@ -1,5 +1,6 @@
 """Xenakis: GENDY — Weibull-distributed amplitude envelope with abrupt mathematically-derived cuts."""
 import numpy as np
+from plugins import plugin_rng
 
 NAME     = "Xenakis: GENDY"
 GROUP    = "morphogenics"
@@ -21,7 +22,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     grain_len = max(32, int(grain_ms * sr / 1000))
     n_grains  = max(1, (len(audio) + grain_len - 1) // grain_len)
 
-    rng     = np.random.default_rng()
+    rng     = plugin_rng()
     weights = rng.weibull(shape, n_grains)
     w_max   = float(np.max(weights)) if np.max(weights) > 0 else 1.0
     weights = (weights / w_max).astype(np.float32)

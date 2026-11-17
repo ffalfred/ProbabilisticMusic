@@ -55,6 +55,8 @@ var _stemsCollapsed = false;
 var _userTracksCollapsed = false;
 var _trackTool = {};  // { trackIndex: 'auto' | 'fxr' } — active tool per track
 var _fxrDragStart = -1;  // FXr mode: drag start time
+var _autoDragSnap = null;  // history snapshot taken when an automation drag starts
+var _autoDragOrig = null;  // the track's automation (JSON) at drag start
 
 // Track row DOM references — keyed by track index, persisted across updates
 var _trackRows = [];  // [{row, waveCvs, autoCvs, autoWrap, autoCtrl, controls}]
@@ -108,7 +110,7 @@ function _createTrackRow(i) {
   autoCvs.style.cssText = "display:block;height:100px;background:#0d0d0d;cursor:crosshair;";
   autoWrap.appendChild(autoCvs);
   row.appendChild(autoWrap);
-  _wireAutoEvents(autoCvs, i);
+  _wireAutoEvents(autoCvs);
 
   var autoCtrl = document.createElement("div");
   autoCtrl.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:1px 4px;display:none;";
@@ -119,10 +121,14 @@ function _createTrackRow(i) {
   var clrBtn = document.createElement("button");
   clrBtn.style.cssText = "font-size:9px;color:#a66;padding:1px 4px;background:none;border:1px solid #533;border-radius:2px;cursor:pointer;";
   clrBtn.textContent = "clear";
-  (function(idx) { clrBtn.addEventListener("click", function() {
+  // Look the index up at click time — it changes when earlier tracks are removed
+  clrBtn.addEventListener("click", function() {
+    var idx = parseInt(row.dataset.trackIdx, 10);
+    if (!state.tracks[idx]) return;
+    pushHistory();
     state.tracks[idx].automation = [];
     _updateTrackRow(idx);
-  }); })(i);
+  });
   autoCtrl.appendChild(clrBtn);
   row.appendChild(autoCtrl);
 
@@ -155,6 +161,7 @@ function _updateTrackRow(i) {
   var mute = document.createElement("input");
   mute.type = "checkbox"; mute.checked = !tk.muted; mute.title = "mute/unmute";
   (function(idx) { mute.addEventListener("change", function() {
+    pushHistory();
     state.tracks[idx].muted = !this.checked;
     if (typeof syncSourcePlayback === "function") syncSourcePlayback();
     _updateTrackRow(idx);
@@ -165,7 +172,10 @@ function _updateTrackRow(i) {
   var dbIn = document.createElement("input");
   dbIn.type = "number"; dbIn.value = tk.gain_db; dbIn.step = "1";
   dbIn.style.cssText = "width:44px;font-size:11px;background:#111;color:#ccc;border:1px solid #333;padding:1px 3px;";
-  (function(idx) { dbIn.addEventListener("change", function() { state.tracks[idx].gain_db = parseFloat(this.value) || 0; }); })(i);
+  (function(idx) { dbIn.addEventListener("change", function() {
+    pushHistory();
+    state.tracks[idx].gain_db = _numOr(this.value, 0);
+  }); })(i);
   ctrl.appendChild(dbIn);
 
   var fxBtn = document.createElement("button");
@@ -322,8 +332,13 @@ function renderTracksPanel() {
 }
 
 // ─── Waveform lane events — dispatch based on active tool ────────────────────
-function _wireAutoEvents(cvs, idx) {
+// The track index is read from cvs.dataset.autoTidx at event time (kept current
+// by _removeTrack), not captured when the row is created.
+function _wireAutoEvents(cvs) {
+  function curIdx() { return parseInt(cvs.dataset.autoTidx, 10); }
   cvs.addEventListener("mousedown", function(e) {
+    var idx = curIdx();
+    if (!state.tracks[idx]) return;
     var tool = _trackTool[idx] || '';
     if (e.button === 2) {
       e.preventDefault();
@@ -342,7 +357,12 @@ function _wireAutoEvents(cvs, idx) {
     }
     if (tool === 'auto') {
       var pt = _autoEditorHitTest(cvs, e, idx);
-      if (pt >= 0) { _autoEditorDrag = pt; _autoEditorTrack = idx; }
+      if (pt >= 0) {
+        _autoEditorDrag = pt; _autoEditorTrack = idx;
+        // One undo step per drag, recorded on release only if the point moved
+        _autoDragSnap = _snapshotState();
+        _autoDragOrig = JSON.stringify(state.tracks[idx].automation);
+      }
       else { _autoEditorAdd(cvs, e, idx); }
     } else if (tool === 'fxr') {
       var c2 = _autoEditorCoords(cvs, e, idx);
@@ -350,6 +370,7 @@ function _wireAutoEvents(cvs, idx) {
     }
   });
   cvs.addEventListener("mousemove", function(e) {
+    var idx = curIdx();
     var tool = _trackTool[idx] || '';
     if (tool === 'auto') {
       if (_autoEditorDrag < 0 || _autoEditorTrack !== idx) return;
@@ -357,9 +378,12 @@ function _wireAutoEvents(cvs, idx) {
     }
   });
   cvs.addEventListener("mouseup", function(e) {
+    var idx = curIdx();
+    if (!state.tracks[idx]) return;
     var tool = _trackTool[idx] || '';
     if (tool === 'auto') {
       _autoEditorDrag = -1;
+      _autoEditorCommitDrag(idx);
     } else if (tool === 'fxr' && _fxrDragStart >= 0) {
       var c = _autoEditorCoords(cvs, e, idx);
       var t1 = Math.min(_fxrDragStart, c.t);
@@ -370,7 +394,10 @@ function _wireAutoEvents(cvs, idx) {
       }
     }
   });
-  cvs.addEventListener("mouseleave", function() { _autoEditorDrag = -1; _fxrDragStart = -1; });
+  cvs.addEventListener("mouseleave", function() {
+    if (_autoEditorDrag >= 0) _autoEditorCommitDrag(curIdx());
+    _autoEditorDrag = -1; _fxrDragStart = -1;
+  });
   cvs.addEventListener("contextmenu", function(e) { e.preventDefault(); });
 }
 
@@ -395,6 +422,7 @@ async function _loadAndAddTrack(path) {
     var data = await res.json();
     if (data.error) { alert("Failed to load track: " + data.error); return; }
     var name = path.split("/").pop().replace(/\.[^.]+$/, "") || "track";
+    pushHistory();
     state.tracks.push({
       name: name, path: path, gain_db: 0, muted: false,
       from: 0, to: data.duration || state.duration || 0,
@@ -408,6 +436,7 @@ async function _loadAndAddTrack(path) {
 
 function _removeTrack(i) {
   if (i <= 0) return;
+  pushHistory();
   // Remove the DOM row
   if (_trackRows[i] && _trackRows[i].row.parentElement) {
     _trackRows[i].row.parentElement.removeChild(_trackRows[i].row);
@@ -420,6 +449,21 @@ function _removeTrack(i) {
     _trackRows[j].autoCvs.dataset.autoTidx = j;
     _trackRows[j].row.dataset.trackIdx = j;
   }
+  // Shift per-track UI state keyed by index down past the removed track
+  function shiftKeys(obj) {
+    var out = {};
+    Object.keys(obj).forEach(function(k) {
+      var n = parseInt(k, 10);
+      if (n < i) out[n] = obj[k];
+      else if (n > i) out[n - 1] = obj[k];
+    });
+    Object.keys(obj).forEach(function(k) { delete obj[k]; });
+    Object.assign(obj, out);
+  }
+  shiftKeys(_autoLaneOpen);
+  shiftKeys(_trackTool);
+  if (_autoEditorTrack === i) { _autoEditorTrack = -1; _autoEditorDrag = -1; }
+  else if (_autoEditorTrack > i) _autoEditorTrack--;
   // Update labels
   for (var j = 0; j < _trackRows.length; j++) _updateTrackRow(j);
   if (typeof syncSourcePlayback === "function") syncSourcePlayback();
@@ -473,15 +517,22 @@ async function _openTrackFxRegionAtRange(trackIdx, t1, t2) {
   if (!tk) return;
   if (!tk.fx_regions) tk.fx_regions = [];
 
-  var res = await showPopup("New FX Region \u2014 " + tk.name,
+  var res = await showPopup("New FX Region \u2014 " + escapeHtml(tk.name),
     _fxRegionPopupHTML(t1, t2, null),
     function() { _initFxChain([]); });
   if (!res) return;
   var entry = _collectFxRegionFromPopup();
   if (!entry) return;
+  pushHistory();
   tk.fx_regions.push(entry);
   tk.fx_regions.sort(function(a, b) { return a.from - b.from; });
-  _updateTrackRow(trackIdx);
+  _updateTrackObj(tk);
+}
+
+// Redraw a track's row by object identity (its index may have changed while a popup was open)
+function _updateTrackObj(tk) {
+  var idx = state.tracks.indexOf(tk);
+  if (idx >= 0) _updateTrackRow(idx);
 }
 
 // Edit existing FX region (from right-click on region overlay)
@@ -493,82 +544,34 @@ async function _editTrackFxRegion(trackIdx, regionIdx) {
   var html = _fxRegionPopupHTML(r.from, r.to, r)
     + '<div style="margin-top:6px;"><button type="button" id="p-fxr-delete" style="font-size:10px;color:#f66;padding:2px 6px;">Delete this region</button></div>';
 
-  var popupPromise = showPopup("Edit FX Region \u2014 " + tk.name, html,
-    function() { _initFxChain(r.fx || []); });
-
-  requestAnimationFrame(function() {
+  // "Delete this region" sets a flag and closes the popup via OK
+  var deleteRequested = false;
+  var popupPromise = showPopup("Edit FX Region \u2014 " + escapeHtml(tk.name), html, function() {
+    _initFxChain(r.fx || []);
     var delBtn = document.getElementById("p-fxr-delete");
     if (delBtn) delBtn.addEventListener("click", function() {
-      document.getElementById("p-fxr-from").value = "DELETE";
+      deleteRequested = true;
+      document.getElementById("popup-confirm").click();
     });
   });
 
   var res = await popupPromise;
   if (!res) return;
 
-  if (document.getElementById("p-fxr-from").value === "DELETE") {
-    tk.fx_regions.splice(regionIdx, 1);
+  var ri = tk.fx_regions.indexOf(r);   // by identity, in case the list changed
+  if (ri < 0) return;
+  if (deleteRequested) {
+    pushHistory();
+    tk.fx_regions.splice(ri, 1);
   } else {
     var entry = _collectFxRegionFromPopup();
     if (entry) {
-      tk.fx_regions[regionIdx] = entry;
+      pushHistory();
+      tk.fx_regions[ri] = entry;
       tk.fx_regions.sort(function(a, b) { return a.from - b.from; });
     }
   }
-  _updateTrackRow(trackIdx);
-}
-
-async function _openTrackFxRegionPopup(trackIdx) {
-  var tk = state.tracks[trackIdx];
-  if (!tk) return;
-  if (!tk.fx_regions) tk.fx_regions = [];
-  var tFrom = tk.from || 0;
-  var tTo   = tk.to || state.duration || 1;
-
-  // Build list of existing regions
-  var listHtml = tk.fx_regions.map(function(r, j) {
-    var fxStr = r.fx.map(function(f) { return f.type; }).join("+");
-    return '<div style="display:flex;gap:4px;align-items:center;font-size:11px;margin:2px 0;">'
-      + '<span style="color:#8844cc;">\u25A0</span>'
-      + '<span style="color:#aaa;">' + r.from.toFixed(2) + 's \u2192 ' + r.to.toFixed(2) + 's</span>'
-      + '<span style="color:#ccc;">' + fxStr + '</span>'
-      + '<button onclick="document.getElementById(\'p-fxr-del\').value=\'' + j + '\'" style="font-size:9px;padding:0 3px;color:#a66;border:1px solid #533;background:none;cursor:pointer;">\u00D7</button>'
-      + '</div>';
-  }).join('') || '<div style="font-size:10px;color:#444;">No FX regions yet</div>';
-
-  var html = '<div style="max-height:120px;overflow-y:auto;">' + listHtml + '</div>'
-    + '<input type="hidden" id="p-fxr-del" value="-1">'
-    + '<div style="margin-top:6px;border-top:1px solid #222;padding-top:6px;">'
-    + '<div style="font-size:10px;color:#666;margin-bottom:4px;">Add new FX region:</div>'
-    + '<div class="popup-row"><label>from (s)</label><input id="p-fxr-from" type="number" value="' + tFrom.toFixed(2) + '" step="0.01" min="0" style="flex:none;width:80px;"></div>'
-    + '<div class="popup-row"><label>to (s)</label><input id="p-fxr-to" type="number" value="' + tTo.toFixed(2) + '" step="0.01" min="0" style="flex:none;width:80px;"></div>'
-    + '<div><label style="font-size:10px;color:#666;">FX chain:</label>'
-    + '<div id="p-fx-chain"></div>'
-    + '<div style="display:flex;gap:4px;margin-top:4px;">'
-    + '<button type="button" onclick="_addFxToChain(\'classic\')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>'
-    + '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>'
-    + '</div></div></div>';
-
-  var res = await showPopup("FX Regions \u2014 " + tk.name, html, function() { _initFxChain([]); });
-  if (!res) return;
-
-  // Handle delete
-  var delIdx = document.getElementById("p-fxr-del").value;
-  if (delIdx !== "-1") {
-    var di = parseInt(delIdx);
-    if (!isNaN(di) && di < tk.fx_regions.length) tk.fx_regions.splice(di, 1);
-  }
-
-  // Handle add
-  var newFx = collectFxChain();
-  if (newFx.length) {
-    var from = parseFloat(document.getElementById("p-fxr-from").value) || tFrom;
-    var to   = parseFloat(document.getElementById("p-fxr-to").value) || tTo;
-    tk.fx_regions.push({ from: from, to: to, fx: newFx });
-    tk.fx_regions.sort(function(a, b) { return a.from - b.from; });
-  }
-
-  _updateTrackRow(trackIdx);
+  _updateTrackObj(tk);
 }
 
 // ─── Automation editor ───────────────────────────────────────────────────────
@@ -599,6 +602,7 @@ function _autoEditorHitTest(cvs, e, trackIdx) {
 function _autoEditorAdd(cvs, e, trackIdx) {
   var tk = state.tracks[trackIdx];
   var c = _autoEditorCoords(cvs, e, trackIdx);
+  pushHistory();
   if (!tk.automation) tk.automation = [];
   tk.automation.push({ t: c.t, db: c.db });
   tk.automation.sort(function(a, b) { return a.t - b.t; });
@@ -617,8 +621,17 @@ function _autoEditorMove(cvs, e, trackIdx, ptIdx) {
 function _autoEditorDelete(cvs, e, trackIdx) {
   var pt = _autoEditorHitTest(cvs, e, trackIdx);
   if (pt < 0) return;
+  pushHistory();
   state.tracks[trackIdx].automation.splice(pt, 1);
   _updateTrackRow(trackIdx);
+}
+
+// End of an automation drag: record one undo step if the point actually moved.
+function _autoEditorCommitDrag(trackIdx) {
+  var snap = _autoDragSnap, orig = _autoDragOrig;
+  _autoDragSnap = _autoDragOrig = null;
+  var tk = state.tracks[trackIdx];
+  if (snap && tk && JSON.stringify(tk.automation) !== orig) pushHistory(snap);
 }
 
 function _autoEditorRedraw(cvs, trackIdx) {
@@ -703,15 +716,17 @@ function _autoEditorRedraw(cvs, trackIdx) {
 async function openTrackFxPopup(i) {
   var tk = state.tracks[i];
   if (!tk) return;
-  var html = '<div style="margin-bottom:4px;"><label style="font-size:10px;color:#666;">FX chain for "' + tk.name + '":</label>'
+  var html = '<div style="margin-bottom:4px;"><label style="font-size:10px;color:#666;">FX chain for "' + escapeHtml(tk.name) + '":</label>'
     + '<div id="p-fx-chain"></div>'
     + '<div style="display:flex;gap:4px;margin-top:4px;">'
     + '<button type="button" onclick="_addFxToChain(\'classic\')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>'
     + '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>'
     + '</div></div>'
     + (tk.fx && tk.fx.length ? '<button type="button" onclick="_initFxChain([])" style="font-size:10px;padding:2px 6px;color:#f66;">Clear all FX</button>' : '');
-  var res = await showPopup("FX \u2014 " + tk.name, html, function() { _initFxChain(tk.fx || []); });
+  var res = await showPopup("FX \u2014 " + escapeHtml(tk.name), html, function() { _initFxChain(tk.fx || []); });
   if (!res) return;
-  state.tracks[i].fx = collectFxChain();
-  _updateTrackRow(i);
+  var fx = collectFxChain();
+  pushHistory();
+  tk.fx = fx;
+  _updateTrackObj(tk);
 }

@@ -520,13 +520,13 @@
                   <span class="ge-sec-desc">step size, drift direction, pull-back strength</span>
                 </div>
                 <div id="ge-sec-g" class="ge-coll-body" style="display:none;">
-                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Step size (vol · bright · timing · attack · reverb)</div>
+                  <div style="font-size:9px;color:#444;margin:3px 0 2px;">Step size (vol · bright · timing · attack · release — other dims keep preset/default)</div>
                   <div style="display:flex;gap:3px;margin-bottom:4px;">
                     <input id="ge-rw-step-0" type="number" value="1.5"  step="0.1"   min="0" title="volume"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-step-1" type="number" value="0.05" step="0.005" min="0" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-step-2" type="number" value="20.0" step="1"     min="0" title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-step-3" type="number" value="0.05" step="0.005" min="0" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="ge-rw-step-4" type="number" value="0.05" step="0.005" min="0" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-step-4" type="number" value="0.05" step="0.005" min="0" title="release"    style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div style="font-size:9px;color:#444;margin:3px 0 2px;">Drift per dimension</div>
                   <div style="display:flex;gap:3px;margin-bottom:4px;">
@@ -534,7 +534,7 @@
                     <input id="ge-rw-drift-1" type="number" value="0.0" step="0.005" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-drift-2" type="number" value="0.0" step="0.5"   title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-drift-3" type="number" value="0.0" step="0.005" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="ge-rw-drift-4" type="number" value="0.0" step="0.005" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-drift-4" type="number" value="0.0" step="0.005" title="release"    style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div style="font-size:9px;color:#444;margin:3px 0 2px;">Pull-back per dimension (0=free)</div>
                   <div style="display:flex;gap:3px;margin-bottom:4px;">
@@ -542,7 +542,7 @@
                     <input id="ge-rw-mr-1" type="number" value="0.0" step="0.01" min="0" max="1" title="brightness" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-mr-2" type="number" value="0.0" step="0.01" min="0" max="1" title="timing"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="ge-rw-mr-3" type="number" value="0.0" step="0.01" min="0" max="1" title="attack"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="ge-rw-mr-4" type="number" value="0.0" step="0.01" min="0" max="1" title="reverb"     style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="ge-rw-mr-4" type="number" value="0.0" step="0.01" min="0" max="1" title="release"    style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div class="ge-vec-row">
                     <label title="Mean reversion resting level (default: 0)">MR target</label>
@@ -716,7 +716,7 @@
                       <input id="cc-a1d-1" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="brightness" style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                       <input id="cc-a1d-2" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="timing"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                       <input id="cc-a1d-3" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="attack"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                      <input id="cc-a1d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="reverb"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a1d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="release"    style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                     </div>
                   </div>
                   <div style="cursor:pointer;margin-bottom:2px;display:flex;align-items:center;gap:3px;" onclick="toggleBarContent('cc-a2dims-body','cc-a2dims-chev')">
@@ -728,7 +728,7 @@
                       <input id="cc-a2d-1" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="brightness" style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                       <input id="cc-a2d-2" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="timing"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                       <input id="cc-a2d-3" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="attack"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                      <input id="cc-a2d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="reverb"     style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                      <input id="cc-a2d-4" type="number" value="" placeholder="—" step="0.05" min="0" max="1" title="release"    style="width:36px;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                     </div>
                   </div>
                   <div style="display:flex;gap:5px;margin-bottom:3px;align-items:center;">
@@ -759,21 +759,21 @@
                     <input id="cc-step-1"  type="number" value="0.05" step="0.005" min="0" title="bright step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-step-2"  type="number" value="20"   step="1"     min="0" title="timing step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-step-3"  type="number" value="0.05" step="0.005" min="0" title="attack step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="cc-step-4"  type="number" value="0.05" step="0.005" min="0" title="reverb step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-step-4"  type="number" value="0.05" step="0.005" min="0" title="release step" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div style="display:flex;gap:3px;margin-bottom:3px;">
                     <input id="cc-drift-0" type="number" value="0" step="0.05"  title="vol drift"   style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
                     <input id="cc-drift-1" type="number" value="0" step="0.005" title="bright drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-drift-2" type="number" value="0" step="0.5"   title="timing drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-drift-3" type="number" value="0" step="0.005" title="attack drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="cc-drift-4" type="number" value="0" step="0.005" title="reverb drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-drift-4" type="number" value="0" step="0.005" title="release drift" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div style="display:flex;gap:3px;margin-bottom:3px;">
                     <input id="cc-mr-0" type="number" value="0" step="0.01" min="0" max="1" title="vol mr"   style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c8922a;padding:2px 3px;font-size:10px;" />
                     <input id="cc-mr-1" type="number" value="0" step="0.01" min="0" max="1" title="bright mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac8c8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-mr-2" type="number" value="0" step="0.01" min="0" max="1" title="timing mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#c82ac8;padding:2px 3px;font-size:10px;" />
                     <input id="cc-mr-3" type="number" value="0" step="0.01" min="0" max="1" title="attack mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#2ac85a;padding:2px 3px;font-size:10px;" />
-                    <input id="cc-mr-4" type="number" value="0" step="0.01" min="0" max="1" title="reverb mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
+                    <input id="cc-mr-4" type="number" value="0" step="0.01" min="0" max="1" title="release mr" style="flex:1;background:#1a1a1a;border:1px solid #2a2a2a;color:#8a2ac8;padding:2px 3px;font-size:10px;" />
                   </div>
                   <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px;">
                     <label style="font-size:9px;color:#444;white-space:nowrap;">Boundary</label>

@@ -36,16 +36,36 @@ def _resolve(val):
     raise ValueError(f"unknown distribution: '{dist}'")
 
 
-def load_score(path: str) -> dict:
-    with open(path, 'r') as f:
-        score = yaml.safe_load(f)
+def seed_everything(config: dict) -> int:
+    """Seed every random source used by a render and return the seed.
 
-    assert 'samples' in score, "score must define samples"
-    assert 'events'  in score, "score must define events"
+    The seed comes from config['v2']['seed'], then config['seed']; if neither
+    is set a fresh one is drawn. It is written back to config['v2']['seed'] so
+    the interpreter uses the same value, and the caller can report it.
+    """
+    import random
+    v2 = config.get('v2')
+    if not isinstance(v2, dict):
+        v2 = config['v2'] = {}
+    seed = v2.get('seed', config.get('seed'))
+    if seed is None:
+        seed = int(np.random.SeedSequence().entropy & 0x7FFFFFFF)
+    seed = int(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    v2['seed'] = seed
+    return seed
 
+
+def resolve_score(score: dict) -> dict:
+    """Resolve probabilistic event parameters in place and normalise markings.
+
+    After this, event values are concrete. Call it once per render, after
+    seed_everything(), so the same seed draws the same values.
+    """
     # resolve probabilistic parameters in events (everything except t and sample)
     _skip_event = {'t', 'sample', 'fx', 'speeds'}
-    for event in score['events']:
+    for event in score.get('events', []):
         for key in list(event.keys()):
             if key not in _skip_event:
                 event[key] = _resolve(event[key])
@@ -60,6 +80,17 @@ def load_score(path: str) -> dict:
     for d in score.get('dynamics', []):
         if 'marking' in d and 'mark' not in d:
             d['mark'] = d.pop('marking')
+    return score
+
+
+def load_score(path: str) -> dict:
+    with open(path, 'r') as f:
+        score = yaml.safe_load(f)
+
+    assert 'samples' in score, "score must define samples"
+    assert 'events'  in score, "score must define events"
+
+    resolve_score(score)
 
     # validate dynamics markings
     valid_range_marks = {'crescendo', 'decrescendo'}

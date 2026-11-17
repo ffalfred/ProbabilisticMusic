@@ -1,5 +1,6 @@
 """Xenakis: Stochastic Cloud — dense probabilistically generated sine-burst clusters."""
 import numpy as np
+from plugins import plugin_rng
 
 NAME     = "Xenakis: Stochastic Cloud"
 GROUP    = "morphogenics"
@@ -25,7 +26,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     dur       = len(audio) / sr
     n_grains  = max(1, int(density * dur))
     grain_len = max(32, int(grain_ms * sr / 1000))
-    rng       = np.random.default_rng()
+    rng       = plugin_rng()
 
     # Use log-uniform frequency distribution (equal density per octave)
     log_low  = np.log(max(low_hz, 1.0))

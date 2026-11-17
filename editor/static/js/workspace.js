@@ -122,8 +122,8 @@ function _switchWorkspace(target) {
     if (interpTopbar)    interpTopbar.style.display    = 'none';
     if (mid)             mid.style.display             = 'none';
     if (conductor)       conductor.style.display       = '';
-    if (tbpComposer)     tbpComposer.style.display     = 'none';
-    if (tbpInterp)       tbpInterp.style.display       = 'none';
+    if (interpBottombar) interpBottombar.style.display = 'none';
+    if (golemWrap)       golemWrap.style.display        = 'none';
   }
 
   document.dispatchEvent(new CustomEvent('workspace:activated', { detail: target }));

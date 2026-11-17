@@ -119,7 +119,7 @@ async function fetchAndDrawTrace() {
 var _traceFixedSize = false;   // when true, skip auto-resize (concerto mode)
 var _concertoMaxT  = Infinity; // progressive reveal: only draw trace up to this time
 
-function drawKalmanTrace(data, renderState) {
+function drawKalmanTrace(data) {
   const wrap   = document.getElementById('kalman-trace-wrap');
   const canvas = document.getElementById('kalman-trace-canvas');
   if (!wrap || !canvas || !data || !data.trace || !data.trace.length) return;
@@ -256,11 +256,17 @@ function drawKalmanTrace(data, renderState) {
     ctx.fillText(DIM_LABELS[d], cx + 10, cy + 7);
   });
 
-  // Playback cursor (yellow dashed) — active during audio playback
+  // Concerto export renders must not contain editor UI (hover tooltip,
+  // live playback cursor); the live concerto view hides the hover too.
+  var _exporting = (typeof _concertoDownloading !== 'undefined' && _concertoDownloading);
+  var _uiHidden  = _exporting || (typeof _concertoActive !== 'undefined' && _concertoActive);
+
+  // Playback cursor (yellow dashed) — active during audio playback.
+  // Trace .t is SCORE time; mixCurrentTime() is real (rendered audio) time.
   var cursorT = -1;
-  if (typeof isMixPlaying === 'function' && isMixPlaying()
+  if (!_exporting && typeof isMixPlaying === 'function' && isMixPlaying()
       && typeof mixCurrentTime === 'function') {
-    cursorT = mixCurrentTime();
+    cursorT = (typeof realToScore === 'function') ? realToScore(mixCurrentTime()) : mixCurrentTime();
   }
   if (cursorT >= 0 && cursorT <= totalDur) {
     var x = padL + ((cursorT - t0) / totalDur) * plotW;
@@ -273,7 +279,7 @@ function drawKalmanTrace(data, renderState) {
   }
 
   // Hover cursor (cyan solid) + tooltip — tracks mouse position
-  if (_hoverX >= padL && _hoverX <= W - padR) {
+  if (!_uiHidden && _hoverX >= padL && _hoverX <= W - padR) {
     var frac = (_hoverX - padL) / plotW;
     var tHover = t0 + frac * totalDur;
 

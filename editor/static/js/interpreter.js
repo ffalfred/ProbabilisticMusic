@@ -15,10 +15,11 @@ async function _loadInterpScore() {
     if (data.error) { statusEl.textContent = 'error: ' + data.error; return; }
     const sc = data.score;
     interpState.scorePath = path;
-    if (sc.golems && sc.golems.length) {
-      interpState.golems = sc.golems;
-      _renderGolemListCol();
-    }
+    // Golems belong to the score — a score without golems resets them
+    interpState.golems = (sc.golems && sc.golems.length) ? sc.golems : [];
+    _selectedGolemIdx = null;
+    clearHistory();
+    _renderGolemCards();
     // Auto-fill audio path from score base_track
     const bt = sc.base_track || (sc.tracks && sc.tracks[0] && sc.tracks[0].path) || '';
     const audioEl = document.getElementById('interp-audio-path');
@@ -120,6 +121,23 @@ function _estimateScoreDuration(sc) {
 }
 
 // ─── Preview ──────────────────────────────────────────────────────────────────
+// Copy UI-only settings (seed box, Global Settings panel) into interpState.v2config
+// so every request that sends v2config carries them.
+function _syncInterpConfigFromUI() {
+  const seedEl = document.getElementById('interp-seed');
+  if (seedEl && seedEl.value.trim() !== '' && !isNaN(parseInt(seedEl.value)))
+    interpState.v2config.seed = parseInt(seedEl.value);
+  else
+    interpState.v2config.seed = null;
+  if (typeof _syncGlobalSettings === 'function') _syncGlobalSettings();
+}
+
+// Store the score→real tempo map returned by /preview (mirrors renderAndPlay)
+function _storeTempoMap(data) {
+  state.tempoMap     = Array.isArray(data.tempo_map) ? data.tempo_map : [];
+  state.durationReal = data.duration_real || 0;
+}
+
 async function renderScoreAndPlay() {
   const audioPathEl = document.getElementById('interp-audio-path');
   const audioPath   = (audioPathEl && audioPathEl.value.trim()) || state.filePath;
@@ -130,6 +148,7 @@ async function renderScoreAndPlay() {
   if (btn) btn.disabled = true;
   _setPlayBtn('⏳ rendering…');
   try {
+    const renderKey = _mixRenderKey('score');
     const body = {
       path:       audioPath,
       score_path: interpState.scorePath,
@@ -139,13 +158,15 @@ async function renderScoreAndPlay() {
     const data = await res.json();
     if (gen !== _renderGen) return;   // cancelled by stop or newer render
     if (data.error) { _setPlayStatus('error: ' + (data.detail || data.error)); return; }
+    _storeTempoMap(data);
     const audioRes = await fetch(data.url);
     if (!audioRes.ok) throw new Error(`Audio fetch failed (${audioRes.status})`);
     const ab  = await audioRes.arrayBuffer();
     if (gen !== _renderGen) return;   // cancelled while decoding
     const buf = await _getMixCtx().decodeAudioData(ab);
     _setPlayStatus('');
-    await playMixBuffer(buf, state.currentTime);
+    await playMixBuffer(buf, scoreToReal(state.currentTime || 0));
+    _mixBufKey = renderKey;
   } catch(e) { if (gen === _renderGen) _setPlayStatus('failed: ' + e); }
   finally { if (btn) btn.disabled = false; if (!_mixPlaying) _setPlayBtn('▶ Play'); }
 }
@@ -160,6 +181,8 @@ async function renderInterpAndPlay() {
   if (btn) btn.disabled = true;
   _setPlayBtn('⏳ rendering…');
   try {
+    _syncInterpConfigFromUI();
+    const renderKey = _mixRenderKey('interp');
     const body = {
       path:       audioPath,
       score_path: interpState.scorePath,
@@ -173,15 +196,25 @@ async function renderInterpAndPlay() {
     const data = await res.json();
     if (gen !== _renderGen) return;   // cancelled by stop or newer render
     if (data.error) { _setPlayStatus('error: ' + (data.detail || data.error)); return; }
+    _storeTempoMap(data);
     const audioRes = await fetch(data.url);
     if (!audioRes.ok) throw new Error(`Audio fetch failed (${audioRes.status})`);
     const ab  = await audioRes.arrayBuffer();
     if (gen !== _renderGen) return;   // cancelled while decoding
     const buf = await _getMixCtx().decodeAudioData(ab);
     _setPlayStatus('');
-    await playMixBuffer(buf, state.currentTime || 0);
+    await playMixBuffer(buf, scoreToReal(state.currentTime || 0));
+    _mixBufKey = renderKey;
     // Fetch trace after audio starts — updateVizPanel self-animates while isMixPlaying()
-    if (typeof fetchAndDrawTrace === 'function') fetchAndDrawTrace();
+    if (typeof fetchAndDrawTrace === 'function') {
+      fetchAndDrawTrace().then(() => {
+        // The trace echoes its effective seed into the seed box; that alone
+        // shouldn't invalidate the buffer we just rendered.
+        const now   = _mixRenderKey('interp');
+        const strip = k => { const o = JSON.parse(k); delete o.seed; return JSON.stringify(o); };
+        if (_mixBuf === buf && _mixBufKey === renderKey && strip(now) === strip(renderKey)) _mixBufKey = now;
+      });
+    }
   } catch(e) { if (gen === _renderGen) _setPlayStatus('failed: ' + e); }
   finally { if (btn) btn.disabled = false; if (!_mixPlaying) _setPlayBtn('▶ Play'); }
 }
@@ -192,6 +225,7 @@ async function saveInterp() {
   const statusEl = document.getElementById('interp-save-status');
   statusEl.textContent = 'saving…';
   try {
+    _syncInterpConfigFromUI();
     const res  = await fetch('/save_interpretation', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -199,6 +233,7 @@ async function saveInterp() {
         score_path: interpState.scorePath,
         golems:     interpState.golems,
         v2config:   interpState.v2config,
+        mix_dims:   interpState.mix_dims,
       })
     });
     const data = await res.json();
@@ -227,12 +262,17 @@ async function loadInterp() {
       document.getElementById('interp-score-path').value = interp.score_path;
       document.getElementById('interp-score-status').textContent = interp.score_path.split('/').pop();
     }
-    if (interp.golems) interpState.golems = interp.golems;
+    if (interp.golems) { interpState.golems = interp.golems; _selectedGolemIdx = null; clearHistory(); }
     if (interp.v2config) {
       Object.assign(interpState.v2config, interp.v2config);
       _setInput('interp-seed', interp.v2config.seed != null ? interp.v2config.seed : '');
+      if (typeof _populateGlobalSettings === 'function') _populateGlobalSettings();
     }
-    _renderGolemListCol();
+    if (Array.isArray(interp.mix_dims)) {
+      interpState.mix_dims = interp.mix_dims;
+      document.querySelectorAll('.mix-dim-cb').forEach(cb => { cb.checked = interp.mix_dims.includes(cb.dataset.dim); });
+    }
+    _renderGolemCards();
     drawGolemTimeline();
     statusEl.textContent = 'loaded ← ' + path.split('/').slice(-2).join('/');
     setTimeout(() => { statusEl.textContent = ''; }, 4000);
@@ -265,7 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const tpInput = document.getElementById('interp-timbral-pull');
   if (tpInput) tpInput.addEventListener('change', () => {
     if (!interpState.v2config.v2) interpState.v2config.v2 = {};
-    interpState.v2config.v2.timbral_pull = parseFloat(tpInput.value) || 0.25;
+    interpState.v2config.v2.timbral_pull = _numOr(tpInput.value, 0.25);
   });
 
   // Export interpreter audio → output/ dir on disk
@@ -322,7 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>`;
     // showPopup renders the HTML into the DOM, then returns a promise.
     // We need to wire the Browse button BEFORE awaiting, so use a microtask.
-    const popupPromise = showPopup('Export WAV — ' + nameVal, html);
+    const popupPromise = showPopup('Export WAV — ' + escapeHtml(nameVal), html);
 
     // Wire browse button inside the popup (now in DOM)
     requestAnimationFrame(() => {
@@ -351,6 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
     exportWavBtn.disabled = true;
     setSaveStatus('rendering WAV…');
     try {
+      _syncInterpConfigFromUI();
       const body = {
         path: audioPath,
         score_path: interpState.scorePath,
@@ -434,7 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Initial render
-  _renderGolemListCol();
+  _renderGolemCards();
   _refreshPresets('kalman');
   drawGolemTimeline();
   loadCustomChars();

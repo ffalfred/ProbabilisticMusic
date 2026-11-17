@@ -55,10 +55,10 @@ def build_bank(score: dict) -> tuple[dict, int, np.ndarray]:
             if sr is None:
                 sr = file_sr
             # Apply per-track FX before mixing
-        fx_list = tk.get('fx', [])
-        if fx_list:
-            audio = apply_fx(audio, sr, fx_list)
-        tracks_audio.append(audio)
+            fx_list = tk.get('fx', [])
+            if fx_list:
+                audio = apply_fx(audio, sr, fx_list)
+            tracks_audio.append(audio)
 
         # Place each track at its correct timeline position (from_t offset)
         track_data = []

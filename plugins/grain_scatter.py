@@ -1,5 +1,6 @@
 """Xenakis: Granular Cloud — stochastic granular synthesis with pitch/time randomization."""
 import numpy as np
+from plugins import plugin_rng
 
 NAME     = "Xenakis: Grain Scatter"
 GROUP    = "morphogenics"
@@ -26,7 +27,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     audio     = clip.astype(np.float32)
     grain_len = max(64, int(grain_ms * sr / 1000))
     n_grains  = max(1, len(audio) // grain_len)
-    rng       = np.random.default_rng()
+    rng       = plugin_rng()
 
     grain_indices = list(range(n_grains))
     n_shuffle = int(n_grains * shuffle)

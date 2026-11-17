@@ -1,5 +1,7 @@
 """Penderecki: Aleatoric — controlled random pitch displacement per segment (Devil's Staircase style)."""
 import numpy as np
+from plugins import plugin_rng
+from src.dsp import ola_blocks
 
 NAME     = "Penderecki: Aleatoric"
 GROUP    = "morphogenics"
@@ -18,26 +20,20 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     dw     = float(params.get("dry_wet", 80)) / 100.0
 
     audio   = clip.astype(np.float32)
-    wet     = np.zeros_like(audio)
-    rng     = np.random.default_rng()
-    seg_len = max(sr // 4, 1024)  # ~250 ms segments
-    n_segs  = max(1, (len(audio) + seg_len - 1) // seg_len)
+    rng     = plugin_rng()
+    seg_len = max(sr // 4, 1024)  # a new random detune every ~250 ms
 
-    for s in range(n_segs):
-        i0  = s * seg_len
-        i1  = min(i0 + seg_len, len(audio))
-        seg = audio[i0:i1]
+    def _detune(k, seg):
         shift = float(rng.uniform(-detune, detune))
         if abs(shift) < 0.02:
-            wet[i0:i1] += seg
-            continue
+            return seg
         try:
-            shifted = librosa.effects.pitch_shift(seg, sr=sr, n_steps=shift)
+            return librosa.effects.pitch_shift(seg, sr=sr, n_steps=shift)
         except Exception:
-            wet[i0:i1] += seg
-            continue
-        min_len = min(i1 - i0, len(shifted))
-        wet[i0:i0 + min_len] += shifted[:min_len]
+            return seg
+
+    # Overlapping windowed segments, so detune changes crossfade instead of clicking.
+    wet = ola_blocks(audio, 2 * seg_len, _detune)
 
     peak = np.max(np.abs(wet))
     if peak > 1.0:

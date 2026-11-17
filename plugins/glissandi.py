@@ -1,5 +1,6 @@
 """Desyatnikov: Glissandi — portamento slides at a random subset of onset boundaries."""
 import numpy as np
+from plugins import plugin_rng
 
 NAME     = "Desyatnikov: Glissandi"
 GROUP    = "morphogenics"
@@ -28,7 +29,7 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     if len(onsets) < 1:
         return audio
 
-    rng        = np.random.default_rng()
+    rng        = plugin_rng()
     n_selected = max(1, int(len(onsets) * density))
     selected   = rng.choice(onsets, size=min(n_selected, len(onsets)), replace=False)
 
@@ -42,17 +43,27 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
             continue
 
         # Slide from +port_st down to 0 (glide into the note)
-        n_sub = 5
-        sub_len = len(seg) // n_sub
+        # More sub-steps = smoother pitch transitions (less audible stepping).
+        # 75% overlap = stronger crossfade = no audible boundaries.
+        n_sub = 11
+        sub_len = max(16, len(seg) // (n_sub // 4 + 1))
         if sub_len < 8:
             continue
 
+        # Overlap-add the pitch-shifted sub-segments with 75% overlap so the
+        # boundaries crossfade smoothly. This eliminates the phase
+        # discontinuities that caused crackling between adjacent pitch steps.
         slide_out = np.zeros(len(seg), dtype=np.float32)
+        weight    = np.zeros(len(seg), dtype=np.float32)
+        hop = max(1, sub_len // 4)
+        win_len = sub_len
         for k in range(n_sub):
             t = k / max(n_sub - 1, 1)
             st = port_st * (1.0 - t)  # slide from port_st → 0
-            s0 = k * sub_len
-            s1 = s0 + sub_len if k < n_sub - 1 else len(seg)
+            s0 = k * hop
+            s1 = min(s0 + win_len, len(seg))
+            if s1 - s0 < 16:
+                continue
             sub = seg[s0:s1]
             try:
                 shifted = librosa.effects.pitch_shift(sub, sr=sr, n_steps=float(st))
@@ -62,7 +73,12 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
                 shifted = shifted[:len(sub)]
             elif len(shifted) < len(sub):
                 shifted = np.pad(shifted, (0, len(sub) - len(shifted)))
-            slide_out[s0:s1] = shifted
+            win = np.hanning(len(shifted)).astype(np.float32)
+            slide_out[s0:s1] += shifted * win
+            weight[s0:s1]    += win
+        # Normalize overlap-add by accumulated window weight (avoid /0).
+        weight = np.maximum(weight, 1e-6)
+        slide_out /= weight
 
         env = np.hanning(len(slide_out)).astype(np.float32)
         wet[i0:i1] += slide_out * env * 0.5  # additive blend

@@ -1,5 +1,6 @@
 """Penderecki: Glissando — linear pitch slides spanning each segment."""
 import numpy as np
+from src.dsp import ola_blocks
 
 NAME     = "Penderecki: Glissando"
 GROUP    = "morphogenics"
@@ -20,44 +21,21 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     dw          = float(params.get("dry_wet", 80)) / 100.0
 
     audio   = clip.astype(np.float32)
-    wet     = np.zeros_like(audio)
-    seg_len = max(1024, int(0.2 * sr))  # ~200 ms segments
-    n_segs  = max(1, (len(audio) + seg_len - 1) // seg_len)
+    seg_len = max(1024, int(0.2 * sr))  # one sweep every ~200 ms
+    sub_len = seg_len // n_steps
 
-    # Pitch sweep: linearly from -gliss_range/2 → +gliss_range/2 over n_steps subframes
+    # Pitch sweep: linearly from -gliss_range/2 → +gliss_range/2 over n_steps
+    # sub-steps, repeating every segment.
     shifts = np.linspace(-gliss_range / 2, gliss_range / 2, n_steps)
 
-    for s in range(n_segs):
-        i0  = s * seg_len
-        i1  = min(i0 + seg_len, len(audio))
-        seg = audio[i0:i1]
+    def _step(k, sub):
+        st = float(shifts[k % n_steps])
+        try:
+            return librosa.effects.pitch_shift(sub, sr=sr, n_steps=st)
+        except Exception:
+            return sub
 
-        sub_len = len(seg) // n_steps
-        if sub_len < 32:
-            wet[i0:i1] += seg
-            continue
-
-        pieces = []
-        for si, st in enumerate(shifts):
-            s0  = si * sub_len
-            s1  = s0 + sub_len if si < n_steps - 1 else len(seg)
-            sub = seg[s0:s1]
-            if len(sub) < 8:
-                pieces.append(sub)
-                continue
-            try:
-                shifted_sub = librosa.effects.pitch_shift(sub, sr=sr, n_steps=float(st))
-            except Exception:
-                shifted_sub = sub
-            shifted_sub = shifted_sub[:len(sub)]
-            if len(shifted_sub) < len(sub):
-                shifted_sub = np.pad(shifted_sub, (0, len(sub) - len(shifted_sub)))
-            pieces.append(shifted_sub)
-
-        result = np.concatenate(pieces)
-        result = result[:len(seg)]
-        if len(result) < len(seg):
-            result = np.pad(result, (0, len(seg) - len(result)))
-        wet[i0:i1] += result
+    # Overlapping windows crossfade adjacent steps (butted steps crackle).
+    wet = ola_blocks(audio, 2 * sub_len, _step)
 
     return (audio * (1.0 - dw) + wet * dw).astype(np.float32)

@@ -138,6 +138,10 @@ score2Canvas.addEventListener("dblclick", () => {
 });
 
 new ResizeObserver(() => {
+  // Concerto view/download upsizes score2Canvas to the output resolution —
+  // don't shrink it back when fullscreen changes the layout.
+  if ((typeof _concertoActive !== 'undefined' && _concertoActive) ||
+      (typeof _concertoDownloading !== 'undefined' && _concertoDownloading)) return;
   if (document.getElementById("score2-container").classList.contains("visible")) {
     resizeScore2Canvas();
   }

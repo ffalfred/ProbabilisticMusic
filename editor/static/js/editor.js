@@ -66,6 +66,7 @@ async function loadFile() {
     state.currentTime = 0;
     state.filePath = path;
     state.tracks = [{ name: "base", path, gain_db: 0, muted: false, waveform: data.waveform }];
+    clearHistory();
     renderTracksPanel();
     resetFZ();
     waveView.zoom = 1; waveView.scrollT = 0;
@@ -429,18 +430,6 @@ frameCanvas.addEventListener("dblclick", () => {
   }
 });
 
-frameCanvas.addEventListener("contextmenu", e => {
-  e.preventDefault();
-  const x = frameMouseX(e);
-  const waveX = (x / frameCanvas.width) * canvas.width;
-  const cr = canvas.getBoundingClientRect();
-  canvas.dispatchEvent(new MouseEvent("contextmenu", {
-    clientX: cr.left + waveX,
-    clientY: cr.top + canvas.height / 2,
-    bubbles: true, cancelable: true
-  }));
-});
-
 // ─── Shared proximity detection (waveX = waveform canvas pixel coordinate) ────
 function _findNearest(waveX) {
   const PX_THRESH = 12;
@@ -530,10 +519,20 @@ function _editBest(best) {
 // ─── Delete dispatcher ────────────────────────────────────────────────────────
 function _deleteBest(best) {
   if (!best) return;
+  if (best.type === "sample") {
+    // Events referencing a deleted sample make the backend fail (KeyError) —
+    // delete them together, after confirmation.
+    const refs = state.events.filter(ev => ev.sample === best.name).length;
+    if (refs && !confirm(`Sample "${best.name}" is used by ${refs} event(s). Delete the sample and those events?`)) return;
+  }
   pushHistory();
   if (best.type === "event")         state.events.splice(best.i, 1);
   else if (best.type === "dynamic")  state.dynamics.splice(best.i, 1);
-  else if (best.type === "sample")   delete state.samples[best.name];
+  else if (best.type === "sample") {
+    delete state.samples[best.name];
+    state.events = state.events.filter(ev => ev.sample !== best.name);
+    if (state.duckKey.key === best.name) state.duckKey.key = "";
+  }
   else if (best.type === "tempo")    state.tempo.splice(best.i, 1);
   else if (best.type === "fxzone")   state.fxRanges.splice(best.i, 1);
   else if (best.type === "phrase")   state.phrases.splice(best.i, 1);
@@ -580,10 +579,10 @@ document.addEventListener("keydown", e => {
     document.getElementById("tool-pointer")?.click();
   } else if ((e.key === "z" || e.key === "Z") && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
-    if (typeof undo === "function") undo();
+    undo();   // ui.js
   } else if ((e.key === "x" || e.key === "X") && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
-    if (typeof redo === "function") redo();
+    redo();   // ui.js
   }
 });
 
@@ -598,6 +597,9 @@ canvas.addEventListener("contextmenu", e => {
   _showCtxMenu(e.clientX, e.clientY, best);
 });
 
+// Single frame-canvas handler: map the click to waveform space and show the
+// menu at the actual click position (replaces an older duplicate handler that
+// re-dispatched to the waveform canvas).
 frameCanvas.addEventListener("contextmenu", e => {
   e.preventDefault();
   if (typeof _activeWorkspace !== 'undefined' && _activeWorkspace === 'interpreter') return;

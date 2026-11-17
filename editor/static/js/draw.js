@@ -70,6 +70,11 @@ document.addEventListener('workspace:activated', e => {
 
 // Size the frame canvas whenever its container changes (handles initial layout)
 const frameResizeObserver = new ResizeObserver(() => {
+  // While the concerto view / download owns the source canvases they are
+  // upsized to the output resolution — don't shrink them back to the
+  // container size (entering fullscreen triggers a layout change here).
+  if ((typeof _concertoActive !== 'undefined' && _concertoActive) ||
+      (typeof _concertoDownloading !== 'undefined' && _concertoDownloading)) return;
   const p = frameCanvas.parentElement;
   if (p.offsetWidth > 0) {
     frameCanvas.width  = p.offsetWidth;
@@ -719,7 +724,7 @@ function drawFrameOverlay() {
       frameCtx.setLineDash([]);
       frameCtx.fillStyle = hexAlpha(col, 0.9);
       frameCtx.font = "10px 'Courier New', monospace";
-      frameCtx.fillText(d.mark, x1 + 3, H/2 - 4);
+      frameCtx.fillText(_dmark(d), x1 + 3, H/2 - 4);
     }
   }
 
@@ -793,7 +798,7 @@ function drawFrameOverlay() {
       frameCtx.beginPath(); frameCtx.moveTo(x, 0); frameCtx.lineTo(x, H); frameCtx.stroke();
       frameCtx.fillStyle = hexAlpha(col, 0.95);
       frameCtx.font = "11px 'Courier New', monospace";
-      frameCtx.fillText(d.mark, x + 3, H - 10);
+      frameCtx.fillText(_dmark(d), x + 3, H - 10);
     }
   }
 

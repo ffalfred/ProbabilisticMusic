@@ -34,6 +34,7 @@ from src.envelope    import DYNAMIC_LEVELS
 from src.observation import build_window_obs, lookup_HR, encode_marking
 from src.character   import (character_at, make_AR_matrices,
                               rw_character_at, D, BUILTIN as _KALMAN_BUILTIN,
+                              _RW_DEFAULT,
                               DIM_NAMES, DIM_RANGES as _CHAR_DIM_RANGES,
                               DIM_DEFAULTS as _CHAR_DIM_DEFAULTS)
 
@@ -135,7 +136,7 @@ def _sample_noise(rng, size: int, dist: str, scale,
     elif dist == 'skew_normal':
         try:
             from scipy.stats import skewnorm
-            return skewnorm.rvs(a=skew, loc=0.0, scale=scale, size=size, random_state=rng.bit_generator)
+            return skewnorm.rvs(a=skew, loc=0.0, scale=scale, size=size, random_state=rng)
         except ImportError:
             # Fallback: approximate skew_normal as Gaussian (scipy not available)
             return rng.normal(0.0, scale)
@@ -326,6 +327,15 @@ def _dist_kwargs_from_config(dist_cfg: dict) -> dict:
 
 # ── RW step ───────────────────────────────────────────────────────────────────
 
+def _pad_dims(values, defaults) -> np.ndarray:
+    """Return a D-length float vector: `values` where given, `defaults` beyond."""
+    out = np.array(defaults, dtype=float)
+    if values is not None:
+        v = np.array(values, dtype=float).ravel()[:D]
+        out[:len(v)] = v
+    return out
+
+
 def _rw_step(x_prev: np.ndarray, char: dict, rng, t: float = 0.0,
              omega: float = None) -> np.ndarray:
     """
@@ -336,8 +346,8 @@ def _rw_step(x_prev: np.ndarray, char: dict, rng, t: float = 0.0,
     breath_amp > 0 adds a sinusoidal drift component (period = breath_period).
     omega_step_scale scales step_size by omega_step_scale**omega(t) when omega provided.
     """
-    step  = np.array(char['step_size'], dtype=float)
-    drift = np.array(char.get('drift', [0.0] * D), dtype=float)
+    step  = _pad_dims(char['step_size'], _RW_DEFAULT['step_size'])
+    drift = _pad_dims(char.get('drift'), [0.0] * D)
     dist  = char.get('distribution', 'gaussian')
     dist_cfg = char.get('dist_config', {}) or {}
 
@@ -354,17 +364,8 @@ def _rw_step(x_prev: np.ndarray, char: dict, rng, t: float = 0.0,
         step = step * (float(omega_step_scale) ** float(omega))
 
     # Per-dim mean reversion with optional non-zero target
-    mr_dims = char.get('mr_dims')
-    if mr_dims is not None:
-        mr = np.array(mr_dims, dtype=float)
-    else:
-        mr = np.full(D, float(char.get('mean_reversion', 0.0)))
-
-    mr_target_raw = char.get('mr_target')
-    if mr_target_raw is not None:
-        mr_target = np.array(mr_target_raw, dtype=float)
-    else:
-        mr_target = np.zeros(D)
+    mr = _pad_dims(char.get('mr_dims'), [float(char.get('mean_reversion', 0.0))] * D)
+    mr_target = _pad_dims(char.get('mr_target'), [0.0] * D)
 
     # Build dist kwargs
     dkw = _dist_kwargs_from_config(dist_cfg)
@@ -378,10 +379,16 @@ def _rw_step(x_prev: np.ndarray, char: dict, rng, t: float = 0.0,
     corr = char.get('correlation')
     if corr is not None:
         try:
-            L     = np.linalg.cholesky(np.array(corr, dtype=float))
+            # A smaller matrix (e.g. 5×5 from older UIs) correlates its leading
+            # dims; the remaining dims stay independent.
+            c = np.array(corr, dtype=float)
+            full = np.eye(D)
+            k = min(D, c.shape[0])
+            full[:k, :k] = c[:k, :k]
+            L     = np.linalg.cholesky(full)
             white = _sample_noise(rng, D, dist, np.ones(D), **dkw)
             noise = L @ (white * step)
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, ValueError, IndexError):
             noise = _sample_noise(rng, D, dist, step, **dkw)
     else:
         noise = _sample_noise(rng, D, dist, step, **dkw)
@@ -522,7 +529,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
 
     # Global output clipping method and custom physical limits
     clip_method     = str(v2cfg.get('clip_method', 'hard'))
-    physical_limits = v2cfg.get('physical_limits', None)  # 5×2 list or None
+    physical_limits = v2cfg.get('physical_limits', None)  # D×2 list (shorter = leading dims) or None
 
     # Temporal ω smoothing: alpha=1 means no smoothing
     omega_smooth_alpha = float(v2cfg.get('omega_smooth', 1.0))
@@ -599,7 +606,9 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
     # Build a unified timeline: Kalman steps fire at EVERY marking time,
     # tempo change, phrase boundary, AND at regular intervals (0.5s) so the
     # filter responds continuously and visualizations animate smoothly.
-    _event_by_t = {ev['t']: ev for ev in events}
+    _events_by_t: dict = {}
+    for ev in events:
+        _events_by_t.setdefault(ev['t'], []).append(ev)
     _marking_ts = set(p[0] for p in marking_pairs)
     _extra_ts   = set()
     # Harvest times from every score element that carries temporal info:
@@ -623,7 +632,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
 
     for t in _all_ts:
         is_marking = t in _marking_ts
-        ev         = _event_by_t.get(t)
+        evs        = _events_by_t.get(t, ())
 
         golem_type = _resolve_golem_type(t, golems)
 
@@ -902,13 +911,13 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             _pull_strength = float(obs_w) * 0.45
             X_mu_bar[0] += (_target_db - X_mu_bar[0]) * _pull_strength
 
-            # dims 1/5/6: brightness, reverb_wet, filter_cutoff
+            # dims 1/5/6: brightness, reverb_wet, filter_cutoff (Hz)
             _timbral_pull = float(obs_w) * timbral_pull
             _bright_target = 0.4 + _eff_dyn * 0.25
             X_mu_bar[1] += (_bright_target - X_mu_bar[1]) * _timbral_pull
             _reverb_target = 0.03 + _eff_dyn * 0.17
             X_mu_bar[5] += (_reverb_target - X_mu_bar[5]) * _timbral_pull
-            _cutoff_target = 0.3 + _eff_dyn * 0.6
+            _cutoff_target = (0.3 + _eff_dyn * 0.6) * 20000.0   # 6 kHz (ppp) → 18 kHz
             X_mu_bar[6] += (_cutoff_target - X_mu_bar[6]) * _timbral_pull
 
             y    = build_window_obs(markings_list, m_idx, N)
@@ -984,7 +993,8 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                     'distribution': sample_dist,
                 })
 
-        if ev is not None:
+        # Simultaneous events (chords) share one state sample.
+        for ev in evs:
             enriched.append(_apply_state(ev, x_clipped))
 
     if return_trace:

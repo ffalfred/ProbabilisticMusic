@@ -11,20 +11,32 @@ let _mixPlaying      = false;
 let _mixStartCtxTime = 0;
 let _mixStartOffset  = 0;
 let _renderGen       = 0;      // increments on each new render or stopAll; stale renders self-cancel
+let _mixBufKey       = null;   // signature of the inputs that produced _mixBuf (see _mixRenderKey)
 
 function _getMixCtx() {
   if (!_mixCtx) _mixCtx = new AudioContext();
   return _mixCtx;
 }
 
+// Real-time position in the buffer. Elapsed context time is scaled by the
+// source's playbackRate; _applyPlaybackSpeed re-anchors before a rate change.
 function mixCurrentTime() {
   if (!_mixPlaying) return state.currentTime;
-  return _mixStartOffset + (_getMixCtx().currentTime - _mixStartCtxTime);
+  const rate = _mixSource ? _mixSource.playbackRate.value : 1;
+  return _mixStartOffset + (_getMixCtx().currentTime - _mixStartCtxTime) * rate;
+}
+
+// Re-anchor the start offset/time so a playbackRate change doesn't jump the cursor.
+function _reanchorMix() {
+  if (!_mixPlaying) return;
+  _mixStartOffset  = mixCurrentTime();
+  _mixStartCtxTime = _getMixCtx().currentTime;
 }
 
 function isMixPlaying() { return _mixPlaying; }
 function clearMixBuf()  {
   _mixBuf = null;
+  _mixBufKey = null;
   // Tempo map belongs to a specific rendered buffer; clear it alongside the buffer.
   if (typeof state !== 'undefined') { state.tempoMap = []; state.durationReal = 0; }
 }
@@ -56,6 +68,9 @@ async function playMixBuffer(buf, offset) {
   src.playbackRate.value = _getPlaybackSpeed();
   src.connect(ctx.destination);
 
+  // A different buffer invalidates the cache signature; renderers set
+  // _mixBufKey again right after this call.
+  if (buf !== _mixBuf) _mixBufKey = null;
   _mixBuf          = buf;
   _mixSource       = src;
   _mixStartCtxTime = ctx.currentTime;
@@ -66,7 +81,7 @@ async function playMixBuffer(buf, offset) {
   src.onended = () => {
     _mixPlaying = false;
     // Real-time position at end of playback → convert back to score time.
-    const realEnd = _mixStartOffset + (ctx.currentTime - _mixStartCtxTime) * src.playbackRate.value;
+    const realEnd = Math.min(buf.duration, _mixStartOffset + (ctx.currentTime - _mixStartCtxTime) * src.playbackRate.value);
     state.currentTime = (typeof realToScore === 'function') ? realToScore(realEnd) : realEnd;
     try { src.disconnect(); } catch(_) {}
     if (typeof _setPlayBtn === 'function') _setPlayBtn("▶ Play");

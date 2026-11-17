@@ -6,231 +6,9 @@ from src.fx       import apply_fx, _band_split
 from src.pitch    import resolve_event_pitch, apply_pitch_shift, apply_noterel_to_mix
 
 
-def _apply_brightness(clip: np.ndarray, sr: int, brightness: float) -> np.ndarray:
-    """High-shelf EQ at ~4 kHz. brightness=0.5 → flat, 0 → -8 dB, 1 → +8 dB."""
-    gain_db = (brightness - 0.5) * 16.0
-    if abs(gain_db) < 0.25:
-        return clip
-    nyq = sr / 2.0
-    fc  = min(4000.0 / nyq, 0.95)
-    sos = butter(2, fc, btype='high', output='sos')
-    hf  = sosfilt(sos, clip).astype(np.float32)
-    # Add scaled HF component to original (high-shelf approximation)
-    linear_delta = 10 ** (gain_db / 20.0) - 1.0
-    return np.clip(clip + hf * linear_delta, -1.0, 1.0).astype(np.float32)
-
-
-def _apply_stereo_width(clip: np.ndarray, width: float) -> np.ndarray:
-    """Adjust stereo width. width=0.5 → no change, 0 → mono, 1 → widened.
-
-    For mono signals (1D), this is a no-op. For stereo, uses M/S decomposition.
-    For mono signals with width > 0.5, adds a subtle decorrelated side signal.
-    """
-    if clip.ndim == 1:
-        # Mono — can't do M/S, but if width > 0.5 we can add subtle noise-decorrelation
-        # (actual stereo conversion happens at final render stage, not here)
-        return clip
-    # Stereo: M/S processing
-    mid  = (clip[:, 0] + clip[:, 1]) * 0.5
-    side = (clip[:, 0] - clip[:, 1]) * 0.5
-    # width: 0 → pure mid, 0.5 → original, 1 → boosted side
-    side_gain = width * 2.0  # 0→0, 0.5→1.0, 1→2.0
-    out = np.column_stack([mid + side * side_gain,
-                           mid - side * side_gain])
-    return np.clip(out, -1.0, 1.0).astype(np.float32)
-
-
-# ─── Phase B: within-note LFO modulation ──────────────────────────────────────
-# These helpers add time-varying modulation across a note's duration so long
-# sustained notes "breathe". Each LFO is seeded per-event for reproducibility.
-
-def _event_seed(event: dict) -> int:
-    """Derive a per-event seed for LFO phase randomization (reproducible renders)."""
-    t = float(event.get('t', 0.0))
-    s = str(event.get('sample', ''))
-    # Simple hash combining t and sample name
-    return (int(t * 1000) * 2654435761 + hash(s)) & 0x7FFFFFFF
-
-
-def _apply_vibrato(clip: np.ndarray, sr: int, depth_cents: float,
-                   rate_hz: float, seed: int = 0) -> np.ndarray:
-    """Sinusoidal pitch modulation using a resampler. Depth in cents, ±depth around 0."""
-    if depth_cents < 0.1 or len(clip) < sr // 10:
-        return clip
-    n = len(clip)
-    t = np.arange(n, dtype=np.float64) / sr
-    rng = np.random.default_rng(seed)
-    phase = rng.uniform(0, 2 * np.pi)
-    # Fractional resample offset per sample: modulated by LFO
-    # ratio = 2^(cents/1200); for small cents, ratio ≈ 1 + cents*ln(2)/1200
-    cents_curve = depth_cents * np.sin(2 * np.pi * rate_hz * t + phase)
-    ratio = np.exp(cents_curve * np.log(2.0) / 1200.0)
-    # Cumulative read position
-    read_pos = np.cumsum(ratio)
-    read_pos -= read_pos[0]  # start at 0
-    # Clamp to valid range
-    read_pos = np.clip(read_pos, 0, n - 1)
-    # Linear interpolation
-    idx_lo = np.floor(read_pos).astype(np.int64)
-    idx_hi = np.minimum(idx_lo + 1, n - 1)
-    frac = read_pos - idx_lo
-    if clip.ndim == 1:
-        return (clip[idx_lo] * (1 - frac) + clip[idx_hi] * frac).astype(np.float32)
-    # Stereo
-    out = np.zeros_like(clip)
-    for ch in range(clip.shape[1]):
-        out[:, ch] = clip[idx_lo, ch] * (1 - frac) + clip[idx_hi, ch] * frac
-    return out.astype(np.float32)
-
-
-def _apply_timbral_breath(clip: np.ndarray, sr: int, depth: float,
-                          rate_hz: float, seed: int = 0) -> np.ndarray:
-    """Slow gentle brightness modulation — LFO on high-shelf EQ.
-    depth ∈ [0, 1], rate_hz typically 0.2–1.5 Hz."""
-    if depth < 0.02 or len(clip) < sr // 10:
-        return clip
-    from scipy.signal import butter, sosfilt
-    n = len(clip)
-    t = np.arange(n, dtype=np.float64) / sr
-    rng = np.random.default_rng(seed ^ 0x9E3779B9)
-    phase = rng.uniform(0, 2 * np.pi)
-    # LFO modulates a high-shelf gain between (1-depth*8dB) and (1+depth*8dB)
-    nyq = sr / 2.0
-    fc = min(3500.0 / nyq, 0.95)
-    sos = butter(2, fc, btype='high', output='sos')
-    hf = sosfilt(sos, clip).astype(np.float32) if clip.ndim == 1 \
-         else np.stack([sosfilt(sos, clip[:, ch]) for ch in range(clip.shape[1])], axis=1).astype(np.float32)
-    gain_db_curve = depth * 8.0 * np.sin(2 * np.pi * rate_hz * t + phase)
-    gain_lin_delta = (10 ** (gain_db_curve / 20.0) - 1.0).astype(np.float32)
-    if clip.ndim == 1:
-        return np.clip(clip + hf * gain_lin_delta, -1.0, 1.0).astype(np.float32)
-    out = clip.copy()
-    for ch in range(clip.shape[1]):
-        out[:, ch] = np.clip(clip[:, ch] + hf[:, ch] * gain_lin_delta, -1.0, 1.0)
-    return out.astype(np.float32)
-
-
-def _apply_reverb_swell(clip: np.ndarray, sr: int, base_wet: float,
-                        swell_depth: float, seed: int = 0) -> np.ndarray:
-    """Amplitude-blend between dry clip and its reverb-tail, swelling across the note.
-    Low-overhead approximation: uses a single offline SoX reverb pass then blends
-    with a time-varying mix curve."""
-    if swell_depth < 0.05 or base_wet < 0.05 or len(clip) < sr // 4:
-        return clip
-    # Generate wet version once
-    try:
-        wet = apply_fx(clip, sr, [{'type': 'reverb', 'room': base_wet}])
-    except Exception:
-        return clip
-    # Align lengths
-    n = min(len(clip), len(wet))
-    dry = clip[:n]
-    wet = wet[:n]
-    # Blend curve: rises over first 60% of note, plateaus, dips slightly at end
-    rng = np.random.default_rng(seed ^ 0x85EBCA6B)
-    t = np.linspace(0, 1, n, dtype=np.float32)
-    # Cosine-eased rise, amplitude = swell_depth * base_wet
-    curve = base_wet * (1.0 + swell_depth * 0.5 * (1.0 - np.cos(np.pi * np.minimum(t * 1.6, 1.0))))
-    curve = np.clip(curve, 0.0, 1.0)
-    # tiny phase jitter for run-to-run variance
-    curve = curve * (1.0 + 0.05 * rng.standard_normal() * swell_depth)
-    if dry.ndim == 1:
-        return (dry * (1.0 - curve) + wet * curve).astype(np.float32)
-    out = np.zeros_like(dry)
-    for ch in range(dry.shape[1]):
-        out[:, ch] = dry[:, ch] * (1.0 - curve) + wet[:, ch] * curve
-    return out.astype(np.float32)
-
-
-# ─── Phase C: continuous state-driven rendering ───────────────────────────────
-# Interpolate the Kalman trace across a note's duration and apply time-varying
-# modulation (filter sweeps, gain envelope) inside the note body.
-
-def _sample_trace_at(trace: list, t: float, dim_key: str = 'sample') -> list:
-    """Linearly interpolate the state vector at time t from the trace.
-    trace: list of dicts with 't' and dim_key (e.g. 'sample' or 'mu').
-    Returns the interpolated state vector (list of floats), or None if no trace."""
-    if not trace:
-        return None
-    n = len(trace)
-    # Binary search for the bracket
-    lo, hi = 0, n - 1
-    if t <= trace[0]['t']:
-        return list(trace[0][dim_key])
-    if t >= trace[hi]['t']:
-        return list(trace[hi][dim_key])
-    while lo < hi - 1:
-        mid = (lo + hi) // 2
-        if trace[mid]['t'] <= t:
-            lo = mid
-        else:
-            hi = mid
-    t0, t1 = trace[lo]['t'], trace[hi]['t']
-    if t1 - t0 < 1e-9:
-        return list(trace[lo][dim_key])
-    frac = (t - t0) / (t1 - t0)
-    v0, v1 = trace[lo][dim_key], trace[hi][dim_key]
-    return [v0[d] + frac * (v1[d] - v0[d]) for d in range(len(v0))]
-
-
-def _apply_time_varying_filter(clip: np.ndarray, sr: int,
-                               cutoffs: list, n_segments: int = 4) -> np.ndarray:
-    """Apply a lowpass filter whose cutoff varies across the clip.
-    cutoffs: list of n_segments+1 cutoff values (Hz) anchoring the curve.
-    Chunks the clip and crossfades segments (50ms overlap)."""
-    from scipy.signal import butter, sosfilt
-    if len(clip) < sr // 10:
-        return clip
-    n = len(clip)
-    seg_len = n // n_segments
-    if seg_len < sr // 20:
-        # Too short to segment; fall back to single-filter pass at mean cutoff
-        mean_cut = float(np.mean(cutoffs))
-        mean_cut = max(20.0, min(mean_cut, sr / 2 - 1))
-        sos = butter(2, mean_cut, btype='low', fs=sr, output='sos')
-        return sosfilt(sos, clip).astype(np.float32)
-    xfade = min(int(0.05 * sr), seg_len // 4)
-    out = np.zeros_like(clip)
-    for i in range(n_segments):
-        s = i * seg_len
-        e = n if i == n_segments - 1 else s + seg_len
-        cut = float(cutoffs[i])
-        cut = max(20.0, min(cut, sr / 2 - 1))
-        sos = butter(2, cut, btype='low', fs=sr, output='sos')
-        seg_filtered = sosfilt(sos, clip).astype(np.float32)
-        if i == 0:
-            out[s:e] = seg_filtered[s:e]
-        else:
-            # Crossfade with previous segment
-            xf_end = min(s + xfade, e)
-            ramp = np.linspace(0, 1, xf_end - s, dtype=np.float32)
-            out[s:xf_end] = out[s:xf_end] * (1 - ramp) + seg_filtered[s:xf_end] * ramp
-            out[xf_end:e] = seg_filtered[xf_end:e]
-    return out
-
-
-def _apply_dynamic_envelope(clip: np.ndarray, dyn_centers: list) -> np.ndarray:
-    """Apply a time-varying gain envelope based on dynamic_center values.
-    dyn_centers: list of dB values spread across the clip, interpolated linearly.
-    Reference level = median of the list (so the envelope centres around 0 dB
-    rather than uniformly attenuating)."""
-    if not dyn_centers or len(clip) < 16:
-        return clip
-    ref = float(np.median(dyn_centers))
-    deltas = np.array(dyn_centers, dtype=np.float32) - ref
-    # Smooth interpolation across clip length
-    n = len(clip)
-    x_anchor = np.linspace(0, n - 1, len(deltas), dtype=np.float32)
-    x_full   = np.arange(n, dtype=np.float32)
-    env_db   = np.interp(x_full, x_anchor, deltas)
-    env_lin  = 10 ** (env_db / 20.0).astype(np.float32)
-    if clip.ndim == 1:
-        return (clip * env_lin).astype(np.float32)
-    out = np.zeros_like(clip)
-    for ch in range(clip.shape[1]):
-        out[:, ch] = clip[:, ch] * env_lin
-    return out
-
+# ─── Golem state → mix modulation ─────────────────────────────────────────────
+# Interpolate the golem trace over the mix timeline and apply time-varying
+# gain, brightness, filter and reverb in a single pass after events are mixed.
 
 def _interp_dim_envelope(trace: list, n: int, sr: int, dim_idx: int) -> np.ndarray:
     """Linear-interp a single state dim across the audio's sample timeline."""
@@ -322,9 +100,10 @@ def _apply_seg_shelf(base: np.ndarray, sr: int, bright_env: np.ndarray,
     db_env = (bright_env - 0.5) * 16.0  # ±8 dB
     lin_delta = (10.0 ** (db_env / 20.0) - 1.0).astype(np.float32)
 
+    # No clipping here: the mix is float and gets normalised at the end.
     if base.ndim == 1:
-        return np.clip(base + hf * lin_delta, -1.0, 1.0).astype(np.float32)
-    return np.clip(base + hf * lin_delta[:, None], -1.0, 1.0).astype(np.float32)
+        return (base + hf * lin_delta).astype(np.float32)
+    return (base + hf * lin_delta[:, None]).astype(np.float32)
 
 
 def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
@@ -369,11 +148,10 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
         bright_env = _interp_dim_envelope(trace, n, sr, 1)
         mix = _apply_seg_shelf(mix, sr, bright_env)
 
-    # dims 6+7: filter_cutoff + filter_resonance — time-varying lowpass
-    # State dim 6 is normalized 0–1; denormalize to Hz and clamp to safe range
+    # dims 6+7: filter_cutoff (Hz) + filter_resonance — time-varying lowpass
     if 'filter_cutoff' in mix_dims:
-        cutoff_env_norm = _interp_dim_envelope(trace, n, sr, 6)
-        cutoff_env = np.clip(cutoff_env_norm * 20000.0, 4000.0, 18000.0).astype(np.float32)
+        cutoff_env = np.clip(_interp_dim_envelope(trace, n, sr, 6),
+                             20.0, 0.45 * sr).astype(np.float32)
         res_env    = _interp_dim_envelope(trace, n, sr, 7)
         mix = _apply_seg_filter(mix, sr, cutoff_env, res_env)
 
@@ -644,72 +422,16 @@ def _apply_speed(clip: np.ndarray, speed: float, sr: int, pitch_lock: bool = Fal
     ).astype(np.float32)
 
 
-def _find_articulation(event_t: float, articulations: list, max_gap: float = 0.5):
-    """Return the first articulation that matches an event at event_t."""
-    for art in articulations:
-        art_t = art.get('t')
-        if art_t is not None and abs(art_t - event_t) <= max_gap:
-            return art
-        from_t = art.get('from')
-        to_t   = art.get('to')
-        if from_t is not None and to_t is not None and from_t <= event_t <= to_t:
-            return art
-    return None
-
-
-def _apply_articulation(clip: np.ndarray, art_type: str, sr: int) -> np.ndarray:
-    """Modify a clip according to the given articulation type."""
-    n = len(clip)
-    if n == 0:
-        return clip
-
-    if art_type == 'staccato':
-        # Shorten to ~30% of original duration with a quick fade-out
-        keep = max(int(sr * 0.02), int(n * 0.30))  # at least 20 ms
-        keep = min(keep, n)
-        clip = clip[:keep].copy()
-        fo = max(1, int(keep * 0.15))
-        clip[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
-
-    elif art_type == 'accent':
-        # Boost attack: ramp 2× → 1× over the first 50 ms
-        atk = min(int(0.05 * sr), n)
-        if atk > 1:
-            env = np.ones(n, dtype=np.float32)
-            env[:atk] = np.linspace(2.0, 1.0, atk, dtype=np.float32)
-            clip = clip * env
-
-    elif art_type == 'fermata':
-        # Hold the last 20% of the clip for an extra duration (smoothly looped)
-        hold_n = min(int(n * 0.20), n)
-        if hold_n > 4:
-            tail   = clip[-hold_n:].copy()
-            # Crossfade loop point
-            fi = max(1, int(hold_n * 0.25))
-            loop_seg = tail.copy()
-            loop_seg[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
-            clip = np.concatenate([clip, loop_seg, loop_seg])
-
-    elif art_type == 'legato':
-        # Smooth connection: replace default short fade-out with a long 500 ms one
-        # so the note rings smoothly into the next without an abrupt cutoff.
-        fo = min(int(0.5 * sr), n)
-        if fo > 1:
-            env = np.ones(n, dtype=np.float32)
-            env[-fo:] = np.linspace(1.0, 0.0, fo, dtype=np.float32)
-            clip = clip * env
-
-    return clip
-
-
 def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.ndarray = None) -> np.ndarray:
     silence_start  = (score or {}).get('silence_start', 0.0)
     samples_spec   = (score or {}).get('samples', {})
     articulations  = (score or {}).get('articulations', [])
     note_rels      = (score or {}).get('note_rel', [])
     _state_trace   = (score or {}).get('_state_trace', None)
+    # Muted events neither sound nor trigger ducking / density scaling.
+    events = [e for e in events if not e.get('muted')]
 
-    mix = base.copy() if base is not None else np.zeros(int((max(e['t'] for e in events) + 30.0) * sr), dtype=np.float32)
+    mix = base.copy() if base is not None else np.zeros(int((max((e['t'] for e in events), default=0.0) + 30.0) * sr), dtype=np.float32)
 
     # --- base fx (applied before events are layered) ---
     base_fx = (score or {}).get('base_fx', [])
@@ -925,6 +647,8 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
             seg[keep + cut_n:] = 0.0
 
         elif art_type == 'accent':
+            # Boost attack: ramp 2× → 1× over the first 50 ms. Values above 1.0
+            # are fine here — the float mix is normalised before writing.
             atk = min(int(0.05 * sr), len(seg))
             if atk > 1:
                 seg[:atk] *= np.linspace(2.0, 1.0, atk, dtype=np.float32)

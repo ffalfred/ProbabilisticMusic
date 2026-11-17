@@ -1,10 +1,20 @@
 import numpy as np
+from src.dsp import ola_blocks
+
+
+def _is_banded(nr: dict) -> bool:
+    return nr.get('freq_from') is not None or nr.get('freq_to') is not None
 
 
 def apply_noterel_to_mix(mix: np.ndarray, sr: int, note_rels: list) -> np.ndarray:
     """Apply glissando pitch-slides and arpeggio roll effects to the full mix.
     Each note_rel may carry optional freq_from / freq_to (Hz) to restrict
-    the effect to a frequency band; the rest of the spectrum passes through."""
+    the effect to a frequency band; the rest of the spectrum passes through.
+
+    A glissando WITHOUT a band only re-pitches events (see resolve_event_pitch),
+    so it is skipped here. A banded glissando slides that band of the whole mix
+    instead, and resolve_event_pitch leaves events alone so they are not
+    shifted twice."""
     import librosa
     from src.fx import _band_split
     chunk_n = max(1, int(0.02 * sr))   # 20 ms chunks for glissando
@@ -17,6 +27,8 @@ def apply_noterel_to_mix(mix: np.ndarray, sr: int, note_rels: list) -> np.ndarra
         i0 = int(t0 * sr)
         i1 = min(int(t1 * sr), len(result))
         if i1 <= i0:
+            continue
+        if nr.get('type') == 'glissando' and not _is_banded(nr):
             continue
 
         # Optional frequency targeting
@@ -37,21 +49,29 @@ def apply_noterel_to_mix(mix: np.ndarray, sr: int, note_rels: list) -> np.ndarra
             if abs(to_p - from_p) < 0.05:
                 continue
             total = len(seg)
-            seg_out = seg.copy()
-            for ci in range(0, total, chunk_n):
-                s = ci
-                e = min(s + chunk_n, total)
-                frac      = ci / max(total - 1, 1)
-                semitones = from_p + frac * (to_p - from_p)
+            win_len = 2 * chunk_n
+
+            # Overlapping windowed chunks, each shifted with surrounding
+            # context, so chunk seams crossfade instead of crackling.
+            def _slide(k, chunk):
+                centre = k * (win_len // 2) + win_len // 2
+                semitones = from_p + min(centre / max(total - 1, 1), 1.0) * (to_p - from_p)
                 if abs(semitones) < 0.05:
-                    continue
-                chunk = seg[s:e].astype(np.float32)
-                pad   = max(0, 2048 - len(chunk))
-                if pad:
-                    chunk = np.pad(chunk, (0, pad))
-                shifted      = librosa.effects.pitch_shift(chunk, sr=sr, n_steps=semitones)
-                seg_out[s:e] = shifted[:e - s]
-            seg = seg_out
+                    return chunk
+                return librosa.effects.pitch_shift(chunk.astype(np.float32), sr=sr,
+                                                   n_steps=semitones)
+
+            processed = ola_blocks(np.asarray(seg, dtype=np.float32), win_len, _slide)
+            # Crossfade processed with original at the boundaries — Hanning
+            # overlap-add zeros the edges, which creates clicks against the
+            # surrounding mix. Fade in/out blends gracefully into the original.
+            xf = min(max(1, int(0.010 * sr)), len(seg) // 4)
+            seg_orig = seg.astype(np.float32).copy()
+            if xf > 1:
+                ramp = np.linspace(0.0, 1.0, xf, dtype=np.float32)
+                processed[:xf]  = seg_orig[:xf]  * (1 - ramp) + processed[:xf]  * ramp
+                processed[-xf:] = seg_orig[-xf:] * ramp[::-1] + processed[-xf:] * (1 - ramp[::-1])
+            seg = processed
 
         elif nr.get('type') == 'arpeggiate':
             total   = len(seg)
@@ -78,9 +98,10 @@ def resolve_event_pitch(event_t: float, base_pitch: float, note_rels: list) -> f
     Checks glissando ranges first — if the event falls inside one, the pitch is
     linearly interpolated between from_pitch and to_pitch across the range.
     Falls back to the event's own `pitch` field (base_pitch) otherwise.
+    Band-limited glissandi are applied to the mix instead and are ignored here.
     """
     for nr in note_rels:
-        if nr.get('type') == 'glissando':
+        if nr.get('type') == 'glissando' and not _is_banded(nr):
             t0 = float(nr['from'])
             t1 = float(nr.get('to', t0))
             if t0 <= event_t <= t1 and t1 > t0:

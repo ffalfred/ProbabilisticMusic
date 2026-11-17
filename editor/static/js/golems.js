@@ -93,13 +93,56 @@ let _geVec = {
   inflatedims: null,
   clipsigmadims: null,
   correlation: null,
+  // full 12-D random-walk vectors {step_size, drift, mr_dims} behind the RW inputs
+  rw: null,
   // distribution config object
   dist_config: {},
 };
 
-// RW default vectors (12D)
+// RW default vectors (12D) — mirror of the backend _RW_DEFAULT
 const _RW_SS_DEF  = [1.5,0.05,20,0.05,0.05,0.05,200,0.05,0.05,0.05,5,1];
 const _RW_ZERO    = [0,0,0,0,0,0,0,0,0,0,0,0];
+
+// Pad/trim a vector to 12 dims, filling missing entries from `def`
+function _pad12(v, def) {
+  const out = def.slice();
+  if (Array.isArray(v)) v.slice(0, out.length).forEach((x, i) => {
+    const n = parseFloat(x);
+    if (!isNaN(n)) out[i] = n;
+  });
+  return out;
+}
+
+// 12×12 identity with the given symmetric off-diagonal entries [[i, j, r], …]
+function _corr12(pairs) {
+  const m = _RW_ZERO.map((_, i) => _RW_ZERO.map((__, j) => (i === j ? 1 : 0)));
+  pairs.forEach(([i, j, r]) => { m[i][j] = r; m[j][i] = r; });
+  return m;
+}
+
+// The RW section only has inputs for some dims (ge-rw-step-0..4 etc). Keep the
+// full 12-D vectors in _geVec.rw so hidden dims keep their preset/golem values.
+function _setRwVectors(ss, dr, mr) {
+  _geVec.rw = {
+    step_size: _pad12(ss, _RW_SS_DEF),
+    drift:     _pad12(dr, _RW_ZERO),
+    mr_dims:   _pad12(mr, _RW_ZERO),
+  };
+  for (let i = 0; i < DIM_NAMES.length; i++) {
+    _setVal(`ge-rw-step-${i}`,  _geVec.rw.step_size[i]);
+    _setVal(`ge-rw-drift-${i}`, _geVec.rw.drift[i]);
+    _setVal(`ge-rw-mr-${i}`,    _geVec.rw.mr_dims[i]);
+  }
+}
+
+// Read a 12-D RW vector: visible inputs override, other dims come from _geVec.rw
+function _readRwVector(kind, prefix) {
+  const base = (_geVec.rw && _geVec.rw[kind]) || (kind === 'step_size' ? _RW_SS_DEF : _RW_ZERO);
+  return base.map((def, i) => {
+    const el = document.getElementById(`${prefix}-${i}`);
+    return el ? _numOr(el.value, def) : def;
+  });
+}
 
 // Dimension colors for 12D state — used by viz-panel.js and kalman-trace.js
 // DIM_NAMES and DIM_LABELS are defined in state.js (loads first)
@@ -119,8 +162,12 @@ function _updateVecDisplay(key, displayId) {
   if (el) el.textContent = _vecStr(_geVec[key]);
 }
 
+// index.html passes ids like 'ge-a1dims'; _geVec keys / display ids drop the prefix
+function _geVecKey(key) { return key.replace(/^ge-/, ''); }
+
 // ─── Vector editor popup (number inputs) ─────────────────────────────────────
 function _editVector(key, title, range, step) {
+  key = _geVecKey(key);
   const vals = _geVec[key] || Array(DIM_NAMES.length).fill(0);
   const [lo, hi] = range || [-Infinity, Infinity];
   const body = DIM_NAMES.map((d, i) =>
@@ -131,7 +178,8 @@ function _editVector(key, title, range, step) {
               style="background:#1a1a1a;border:1px solid #2a2a2a;color:#ccc;padding:2px 5px;font-size:11px;width:80px;" />
      </div>`
   ).join('');
-  showPopup(title, `<div class="vector-editor">${body}</div>`).then(() => {
+  showPopup(title, `<div class="vector-editor">${body}</div>`).then(res => {
+    if (!res) return;   // Cancel
     _geVec[key] = DIM_NAMES.map((_, i) => {
       const v = parseFloat(document.getElementById(`ve-${i}`)?.value);
       return isNaN(v) ? 0 : v;
@@ -142,6 +190,7 @@ function _editVector(key, title, range, step) {
 
 // ─── Binary (0/1 checkbox) vector popup ───────────────────────────────────────
 function _editVectorBinary(key, title) {
+  key = _geVecKey(key);
   const vals = _geVec[key] || Array.from({length: DIM_NAMES.length}, (_, i) => i === 0 ? 1 : 0);
   const body = DIM_NAMES.map((d, i) =>
     `<div class="ve-row">
@@ -150,7 +199,8 @@ function _editVectorBinary(key, title) {
               style="width:18px;height:18px;" />
      </div>`
   ).join('');
-  showPopup(title, `<div class="vector-editor">${body}</div>`).then(() => {
+  showPopup(title, `<div class="vector-editor">${body}</div>`).then(res => {
+    if (!res) return;   // Cancel
     _geVec[key] = DIM_NAMES.map((_, i) =>
       document.getElementById(`ve-${i}`)?.checked ? 1 : 0
     );
@@ -158,7 +208,7 @@ function _editVectorBinary(key, title) {
   });
 }
 
-// ─── 5×5 correlation matrix popup ─────────────────────────────────────────────
+// ─── 12×12 correlation matrix popup ───────────────────────────────────────────
 function _editCorrelation() {
   const vals = _geVec.correlation || null;
   const header = '<tr><th></th>' + DIM_NAMES.map(d => `<th style="font-size:9px;color:#555;">${d.substring(0,5)}</th>`).join('') + '</tr>';
@@ -171,17 +221,18 @@ function _editCorrelation() {
                 ${i===j?'readonly style="width:40px;background:#111;border:1px solid #1a1a1a;color:#444;padding:1px 2px;font-size:10px;"':''}></td>`;
     }).join('') + '</tr>'
   ).join('');
-  showPopup('Correlation matrix (5×5)',
+  showPopup(`Correlation matrix (${DIM_NAMES.length}×${DIM_NAMES.length})`,
     `<p style="font-size:10px;color:#444;margin-bottom:6px;">Off-diagonal values in [-1, 1]. Diagonal is always 1.</p>
      <div style="margin-top:0"><button onclick="_applyCorrelationPreset('none')" style="font-size:9px;padding:1px 5px;margin-right:3px;">Independent</button>
      <button onclick="_applyCorrelationPreset('gain_bright')" style="font-size:9px;padding:1px 5px;margin-right:3px;">Vol↔Bright</button>
      <button onclick="_applyCorrelationPreset('expressive')" style="font-size:9px;padding:1px 5px;margin-right:3px;">Expressive</button>
      <button onclick="_applyCorrelationPreset('temporal')" style="font-size:9px;padding:1px 5px;">Temporal</button></div>
      <table class="matrix-editor" style="margin-top:6px;border-collapse:collapse;"><thead>${header}</thead><tbody>${rows}</tbody></table>`
-  ).then(() => {
+  ).then(res => {
+    if (!res) return;   // Cancel
     const m = DIM_NAMES.map((_, i) => DIM_NAMES.map((__, j) => {
       if (i === j) return 1;
-      return parseFloat(document.getElementById(`me-${i}-${j}`)?.value ?? 0);
+      return _numOr(document.getElementById(`me-${i}-${j}`)?.value, 0);
     }));
     // Check if it's basically identity
     const isIdentity = m.every((row, i) => row.every((v, j) => Math.abs(v - (i===j?1:0)) < 0.001));
@@ -201,9 +252,9 @@ function _applyCorrelationPreset(name) {
   });
 }
 
-// ─── Physical limits matrix popup (5×2) ──────────────────────────────────────
+// ─── Physical limits matrix popup (12×2) ─────────────────────────────────────
 function _editPhysicalLimits() {
-  const DEFAULTS = [[-30,6],[0,1],[-500,500],[0,1],[0,1]];
+  const DEFAULTS = [[-40,6],[0,1],[-50,50],[0,1],[0,1],[0,1],[20,20000],[0,1],[0,1],[0,1],[-50,50],[-30,0]];
   const vals = (interpState.v2config.v2 || {}).physical_limits || null;
   const header = '<tr><th></th><th style="font-size:9px;color:#555;">min</th><th style="font-size:9px;color:#555;">max</th></tr>';
   const rows = DIM_NAMES.map((d, i) =>
@@ -217,9 +268,10 @@ function _editPhysicalLimits() {
   showPopup('Physical limits per dimension',
     `<p style="font-size:10px;color:#444;margin-bottom:6px;">Valid range for each expressive dimension.</p>
      <table class="matrix-editor" style="border-collapse:collapse;"><thead>${header}</thead><tbody>${rows}</tbody></table>`
-  ).then(() => {
+  ).then(res => {
+    if (!res) return;   // Cancel
     const m = DIM_NAMES.map((_, i) => [0,1].map(j =>
-      parseFloat(document.getElementById(`pl-${i}-${j}`)?.value ?? DEFAULTS[i][j])
+      _numOr(document.getElementById(`pl-${i}-${j}`)?.value, DEFAULTS[i][j])
     ));
     if (!interpState.v2config.v2) interpState.v2config.v2 = {};
     interpState.v2config.v2.physical_limits = m;
@@ -260,29 +312,85 @@ function _openSaliencePopup() {
         </div>
       </div>`
     ).join('')}`;
-  showPopup('Salience Weights', body).then(() => {
+  showPopup('Salience Weights', body).then(res => {
+    if (!res) return;   // Cancel
     const vals = {
-      alpha: parseFloat(document.getElementById('sp-alpha')?.value ?? 0.4),
-      beta:  parseFloat(document.getElementById('sp-beta')?.value  ?? 0.3),
-      gamma: parseFloat(document.getElementById('sp-gamma')?.value ?? 0.2),
-      delta: parseFloat(document.getElementById('sp-delta')?.value ?? 0.1),
+      alpha: _numOr(document.getElementById('sp-alpha')?.value, 0.4),
+      beta:  _numOr(document.getElementById('sp-beta')?.value,  0.3),
+      gamma: _numOr(document.getElementById('sp-gamma')?.value, 0.2),
+      delta: _numOr(document.getElementById('sp-delta')?.value, 0.1),
     };
     // Write back to hidden inputs
     document.getElementById('gp-alpha').value     = vals.alpha;
     document.getElementById('gp-beta').value      = vals.beta;
     document.getElementById('gp-gamma-sal').value = vals.gamma;
     document.getElementById('gp-delta').value     = vals.delta;
-    // Update summary display
-    const s = document.getElementById('gp-salience-summary');
-    if (s) s.textContent = `α ${vals.alpha.toFixed(2)}  β ${vals.beta.toFixed(2)}  γ ${vals.gamma.toFixed(2)}  δ ${vals.delta.toFixed(2)}`;
+    _updateSalienceSummary(vals);
+    _syncGlobalSettings();
   });
 }
 
-// ─── Golem list (kept as no-ops — accordion replaces these) ──────────────────
-function _renderGolemListCol() {}
-function _renderInterpGolemRows() {}
+function _updateSalienceSummary(vals) {
+  const s = document.getElementById('gp-salience-summary');
+  if (s) s.textContent = `α ${vals.alpha.toFixed(2)}  β ${vals.beta.toFixed(2)}  γ ${vals.gamma.toFixed(2)}  δ ${vals.delta.toFixed(2)}`;
+}
+
+// ─── Global Settings panel ↔ interpState.v2config.v2 ─────────────────────────
+// Backend keys (src/interpreter.py): salience_alpha/beta/gamma/delta,
+// salience_clamp (bool), omega_smooth (EMA alpha in (0,1], 1 = no smoothing),
+// clip_method ('hard'|'soft'), physical_limits (12×2, set by its popup).
+const _SALIENCE_DEFAULTS = { alpha: 0.4, beta: 0.3, gamma: 0.2, delta: 0.1 };
+const _SALIENCE_IDS      = { alpha: 'gp-alpha', beta: 'gp-beta', gamma: 'gp-gamma-sal', delta: 'gp-delta' };
+
+function _syncGlobalSettings() {
+  if (!interpState.v2config.v2) interpState.v2config.v2 = {};
+  const v2 = interpState.v2config.v2;
+  // Salience weights — only send when they differ from the defaults, so
+  // config.yaml drama_weights still apply otherwise
+  for (const [k, id] of Object.entries(_SALIENCE_IDS)) {
+    const v = parseFloat(document.getElementById(id)?.value);
+    if (!isNaN(v) && Math.abs(v - _SALIENCE_DEFAULTS[k]) > 1e-9) v2['salience_' + k] = v;
+    else delete v2['salience_' + k];
+  }
+  const clampEl = document.getElementById('gp-salience-clamp');
+  if (clampEl) v2.salience_clamp = !!clampEl.checked;
+  // UI: 0 = off, 0.9 = heavy. Backend: out = a*x + (1-a)*prev, a = 1 → off.
+  const sm = parseFloat(document.getElementById('gp-omega-smooth')?.value);
+  if (!isNaN(sm) && sm > 0) v2.omega_smooth = Math.min(1, Math.max(0.01, 1 - sm));
+  else delete v2.omega_smooth;
+  const clipEl = document.getElementById('gp-clip-method');
+  if (clipEl) v2.clip_method = clipEl.value === 'soft' ? 'soft' : 'hard';
+}
+
+// Reverse of _syncGlobalSettings — used after loading an interpretation
+function _populateGlobalSettings() {
+  const v2 = interpState.v2config.v2 || {};
+  const vals = {};
+  for (const [k, id] of Object.entries(_SALIENCE_IDS)) {
+    vals[k] = v2['salience_' + k] != null ? parseFloat(v2['salience_' + k]) : _SALIENCE_DEFAULTS[k];
+    const el = document.getElementById(id);
+    if (el) el.value = vals[k];
+  }
+  _updateSalienceSummary(vals);
+  const clampEl = document.getElementById('gp-salience-clamp');
+  if (clampEl && v2.salience_clamp != null) clampEl.checked = !!v2.salience_clamp;
+  const smEl = document.getElementById('gp-omega-smooth');
+  if (smEl) smEl.value = v2.omega_smooth != null ? +(1 - parseFloat(v2.omega_smooth)).toFixed(2) : 0;
+  const clipEl = document.getElementById('gp-clip-method');
+  if (clipEl && v2.clip_method) clipEl.value = (v2.clip_method === 'soft' || v2.clip_method === 'tanh') ? 'soft' : 'hard';
+  const plEl = document.getElementById('gp-physlimits-display');
+  if (plEl) plEl.textContent = v2.physical_limits ? 'custom' : '—';
+}
 
 // ─── Golem accordion ──────────────────────────────────────────────────────────
+// Legacy name, still called (typeof-guarded) by export.js after a score import
+// replaces interpState.golems — re-render instead of the old no-op.
+function _renderGolemListCol() {
+  _selectedGolemIdx = null;
+  _renderGolemCards();
+  drawGolemTimeline();
+}
+
 function _golemDisplayName(golem, idx) {
   if (golem.name) return golem.name;
   return (golem.character || 'golem') + ' #' + (idx + 1);
@@ -308,7 +416,7 @@ function _renderGolemCards() {
     header.className = 'gc-header';
     header.innerHTML =
       `<span class="gc-dot" style="background:${col}"></span>` +
-      `<span class="gc-name">${name}</span>` +
+      `<span class="gc-name">${escapeHtml(name)}</span>` +
       `<span class="gc-time">${(g.from||0).toFixed(1)}–${(g.to||0).toFixed(1)}s</span>` +
       `<span class="gc-engine">${isRW ? 'RW' : 'K'}</span>`;
     header.addEventListener('click', () => _selectGolem(i));
@@ -369,7 +477,7 @@ function _refreshPresets(engineType) {
   const custom = Object.keys(_customChars[engineType] || {});
   container.innerHTML = [...chars, ...custom].map(name => {
     const col = GOLEM_LABEL_COLORS[name] || '#888';
-    return `<button class="ge-preset-btn" data-preset="${name}" style="color:${col};border-color:${col}33;">${name}</button>`;
+    return `<button class="ge-preset-btn" data-preset="${escapeHtml(name)}" style="color:${col};border-color:${col}33;">${escapeHtml(name)}</button>`;
   }).join('');
   container.querySelectorAll('.ge-preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -430,14 +538,8 @@ function _applyPreset(name, engineType) {
     _updateVecDisplay('fpmask',  'ge-fpmask-display');
     _updateVecDisplay('fpscale', 'ge-fpscale-display');
   } else {
-    const ss = params.step_size || _RW_SS_DEF;
-    const dr = params.drift     || _RW_ZERO;
-    const mr = params.mr_dims   || _RW_ZERO;
-    for (let i = 0; i < DIM_NAMES.length; i++) {
-      _setVal(`ge-rw-step-${i}`,  ss[i]);
-      _setVal(`ge-rw-drift-${i}`, dr[i]);
-      _setVal(`ge-rw-mr-${i}`,    mr[i]);
-    }
+    const mrDef = _RW_ZERO.map(() => parseFloat(params.mean_reversion) || 0);
+    _setRwVectors(params.step_size, params.drift, params.mr_dims || mrDef);
     _setVal('ge-rw-boundary', params.boundary_mode || 'clip');
     // New RW params
     const bpEl = document.getElementById('ge-breath-period');
@@ -453,15 +555,18 @@ function _applyPreset(name, engineType) {
     if (corrEl) corrEl.textContent = _geVec.correlation ? 'custom' : '—';
   }
 
-  if (params.distribution) _setActiveDist(params.distribution);
-  // Dist config from preset (df, bimodal_sep, etc.)
+  // Custom Kalman characters store the family as `sample_dist`
+  const presetDist = params.distribution || params.sample_dist;
+  if (presetDist) _setActiveDist(presetDist);
+  // Dist config from preset (df, bimodal_sep, etc.) — backend key names
   _geVec.dist_config = {};
   if (params.df !== undefined)          _geVec.dist_config.df = params.df;
   if (params.bimodal_sep !== undefined) _geVec.dist_config.bimodal_sep = params.bimodal_sep;
   if (params.beta_a !== undefined)      _geVec.dist_config.beta_a = params.beta_a;
   if (params.beta_b !== undefined)      _geVec.dist_config.beta_b = params.beta_b;
   if (params.mixture_p !== undefined)   _geVec.dist_config.mixture_p = params.mixture_p;
-  if (params.spike_scale !== undefined) _geVec.dist_config.spike_scale = params.spike_scale;
+  const mixScale = params.mixture_scale ?? params.spike_scale;
+  if (mixScale !== undefined)           _geVec.dist_config.mixture_scale = mixScale;
   if (params.skew !== undefined)        _geVec.dist_config.skew = params.skew;
 
   // Common H section
@@ -472,8 +577,7 @@ function _applyPreset(name, engineType) {
   _updateVecDisplay('inflatedims', 'ge-inflatedims-display');
 
   document.querySelectorAll('.ge-preset-btn').forEach(b => b.classList.remove('active'));
-  const pBtn = document.querySelector(`.ge-preset-btn[data-preset="${name}"]`);
-  if (pBtn) pBtn.classList.add('active');
+  document.querySelectorAll('.ge-preset-btn').forEach(b => { if (b.dataset.preset === name) b.classList.add('active'); });
   _lastPresetName   = name;
   _lastPresetEngine = engineType;
   if (typeof _refreshStartValPlaceholders === 'function') _refreshStartValPlaceholders();
@@ -512,18 +616,14 @@ function _applyPresetScaled(name, engineType, intensity, smoothness) {
     _setSlider('ge-lam',        Math.min(0.99, Math.max(0.05, lam)), 'ge-lam-val');
   } else {
     // RW: intensity scales step_size; smoothness scales mr_dims (higher = more reversion)
-    const p = PRESET_PARAMS[name] || (_customChars[engineType] || {})[name] || {};
-    const baseSS = p.step_size || _RW_SS_DEF;
+    // _applyPreset above filled _geVec.rw with the padded preset vectors
+    if (!_geVec.rw) return;   // unknown preset name
+    _geVec.rw.step_size = _geVec.rw.step_size.map(v => +(v * intensity).toFixed(3));
+    if (smoothness !== 1)
+      _geVec.rw.mr_dims = _geVec.rw.mr_dims.map(v => +Math.max(0, v * smoothness).toFixed(3));
     for (let i = 0; i < DIM_NAMES.length; i++) {
-      const v = baseSS[i] * intensity;
-      _setVal(`ge-rw-step-${i}`, v.toFixed(3));
-    }
-    if (smoothness !== 1) {
-      const baseMR = p.mr_dims || _RW_ZERO;
-      for (let i = 0; i < DIM_NAMES.length; i++) {
-        const v = Math.max(0, baseMR[i] * smoothness);
-        _setVal(`ge-rw-mr-${i}`, v.toFixed(3));
-      }
+      _setVal(`ge-rw-step-${i}`, _geVec.rw.step_size[i]);
+      _setVal(`ge-rw-mr-${i}`,   _geVec.rw.mr_dims[i]);
     }
   }
 }
@@ -533,7 +633,7 @@ function _readGolemEditor() {
   const dist    = _getActiveDist();
   const from    = parseFloat(document.getElementById('ge-from')?.value)    || 0;
   const to      = parseFloat(document.getElementById('ge-to')?.value)      || 0;
-  const weight  = parseFloat(document.getElementById('ge-weight')?.value)  || 1.0;
+  const weight  = _numOr(document.getElementById('ge-weight')?.value, 1.0);
   const fadeIn  = parseFloat(document.getElementById('ge-fadein')?.value)  || 0;
   const fadeOut = parseFloat(document.getElementById('ge-fadeout')?.value) || 0;
 
@@ -569,9 +669,9 @@ function _readGolemEditor() {
   });
   if (Object.keys(_svBias).length > 0) golem.cold_start_bias = _svBias;
 
-  // Distribution config
+  // Distribution config — the backend reads it nested as golem.dist_config
   if (_geVec.dist_config && Object.keys(_geVec.dist_config).length > 0)
-    Object.assign(golem, _geVec.dist_config);
+    golem.dist_config = JSON.parse(JSON.stringify(_geVec.dist_config));
 
   if (engine === 'kalman') {
     golem.lam         = parseFloat(document.getElementById('ge-lam')?.value)         ?? 0.80;
@@ -597,10 +697,9 @@ function _readGolemEditor() {
     if (_geVec.fpmask)    golem.fp_mask           = _geVec.fpmask;
     if (_geVec.fpscale)   golem.fp_scale          = _geVec.fpscale;
   } else if (engine === 'random_walk') {
-    const _D = DIM_NAMES.length;
-    golem.step_size     = Array.from({length: _D}, (_, i) => parseFloat(document.getElementById(`ge-rw-step-${i}`)?.value)  || 0);
-    golem.drift         = Array.from({length: _D}, (_, i) => parseFloat(document.getElementById(`ge-rw-drift-${i}`)?.value) || 0);
-    golem.mr_dims       = Array.from({length: _D}, (_, i) => parseFloat(document.getElementById(`ge-rw-mr-${i}`)?.value)    || 0);
+    golem.step_size     = _readRwVector('step_size', 'ge-rw-step');
+    golem.drift         = _readRwVector('drift',     'ge-rw-drift');
+    golem.mr_dims       = _readRwVector('mr_dims',   'ge-rw-mr');
     golem.boundary_mode = document.getElementById('ge-rw-boundary')?.value || 'clip';
     // New RW params
     if (_geVec.mrtarget)    golem.mr_target   = _geVec.mrtarget;
@@ -675,14 +774,7 @@ function _populateEditorFromGolem(golem) {
     _updateVecDisplay('fpmask',    'ge-fpmask-display');
     _updateVecDisplay('fpscale',   'ge-fpscale-display');
   } else if (engine === 'random_walk') {
-    const ss = golem.step_size || _RW_SS_DEF;
-    const dr = golem.drift     || _RW_ZERO;
-    const mr = golem.mr_dims   || _RW_ZERO;
-    for (let i = 0; i < DIM_NAMES.length; i++) {
-      _setVal(`ge-rw-step-${i}`,  ss[i]);
-      _setVal(`ge-rw-drift-${i}`, dr[i]);
-      _setVal(`ge-rw-mr-${i}`,    mr[i]);
-    }
+    _setRwVectors(golem.step_size, golem.drift, golem.mr_dims);
     _setVal('ge-rw-boundary', golem.boundary_mode || 'clip');
     // New RW params
     const bpEl = document.getElementById('ge-breath-period');
@@ -717,13 +809,19 @@ function _populateEditorFromGolem(golem) {
   // Track character for placeholder display even if no preset button was clicked yet
   if (golem.character) _lastPresetName = golem.character;
   if (typeof _refreshStartValPlaceholders === 'function') _refreshStartValPlaceholders();
-  // Distribution config
+  // Distribution config — nested golem.dist_config; also accept older golems
+  // that had the keys flattened onto the golem (with the old UI key names).
   _geVec.dist_config = {};
-  ['df','bimodal_sep','beta_a','beta_b','mixture_p','spike_scale','skew',
-   'cauchy_clip','trunc_lo','trunc_hi','trunc_base_dist',
+  const _RENAME = { spike_scale: 'mixture_scale', trunc_base_dist: 'base_dist' };
+  ['df','bimodal_sep','beta_a','beta_b','mixture_p','spike_scale','mixture_scale','skew',
+   'cauchy_clip','trunc_lo','trunc_hi','trunc_base_dist','base_dist',
    'dist_dims','dist_dims_params','salience_conditioned'].forEach(k => {
-    if (golem[k] !== undefined) _geVec.dist_config[k] = golem[k];
+    if (golem[k] !== undefined) _geVec.dist_config[_RENAME[k] || k] = golem[k];
   });
+  if (golem.dist_config && typeof golem.dist_config === 'object') {
+    for (const [k, v] of Object.entries(golem.dist_config))
+      _geVec.dist_config[_RENAME[k] || k] = v;
+  }
 
   // Section H
   _setVal('ge-fade-curve', golem.fade_curve || 'linear');
@@ -767,6 +865,7 @@ function _newGolem() {
   golem.character = golem.character || 'lyrical';
   const charCount = interpState.golems.filter(g => g.character === golem.character).length;
   golem.name = golem.character + ' #' + (charCount + 1);
+  pushHistory();
   interpState.golems.push(golem);
   interpState.golems.sort((a, b) => a.from - b.from);
   _selectedGolemIdx = interpState.golems.indexOf(golem);
@@ -869,6 +968,7 @@ function _golemCanvasMousedown(e) {
       mode: hit.mode, golemIdx: hit.idx,
       startX: x,
       origFrom: g.from, origTo: g.to,
+      snap: _snapshotState(),   // committed as one undo step if the golem moves
     };
   } else {
     _golemDrag = { mode: 'create', startX: x, startT: (x / rect.width) * dur };
@@ -924,11 +1024,19 @@ function _golemFinalizeDrag(e) {
   const canvas = document.getElementById('golem-canvas');
 
   if (_golemDrag.mode === 'move' || _golemDrag.mode === 'resize-left' || _golemDrag.mode === 'resize-right') {
-    const dragged = interpState.golems[_golemDrag.golemIdx];
+    // A click on a golem arrives here as a zero-length move
+    const dragged  = interpState.golems[_golemDrag.golemIdx];
+    const prevSel  = _selectedGolemIdx !== null ? interpState.golems[_selectedGolemIdx] : null;
+    if (dragged && (dragged.from !== _golemDrag.origFrom || dragged.to !== _golemDrag.origTo))
+      pushHistory(_golemDrag.snap);
     interpState.golems.sort((a, b) => a.from - b.from);
     const newIdx = interpState.golems.indexOf(dragged);
     _golemDrag = null;
     _selectedGolemIdx = newIdx;
+    // Selecting a different golem must load its params into the editor, or
+    // Update would write the previous golem's params onto it. Re-dragging the
+    // already-selected golem keeps any unsaved editor edits (from/to are live).
+    if (dragged !== prevSel) _populateEditorFromGolem(dragged);
     _renderGolemCards();
     drawGolemTimeline();
     return;
@@ -965,6 +1073,7 @@ function _golemFinalizeDrag(e) {
   const golem = _readGolemEditor();
   golem.from  = parseFloat(from.toFixed(2));
   golem.to    = parseFloat(to.toFixed(2));
+  pushHistory();
   interpState.golems.push(golem);
   const charCount = interpState.golems.filter(g => g.character === golem.character).length;
   golem.name  = golem.character + ' #' + charCount;
@@ -980,7 +1089,7 @@ function _updateGCharOptions() {
   const gCharEl = document.getElementById('g-char');
   if (!gTypeEl || !gCharEl) return;
   const chars = _allCharsForType(gTypeEl.value);
-  gCharEl.innerHTML = chars.map(c => `<option value="${c}">${c}</option>`).join('');
+  gCharEl.innerHTML = chars.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
 }
 
 function _allCharsForType(type) {
@@ -997,7 +1106,6 @@ async function loadCustomChars() {
     _customChars.random_walk = data.random_walk || {};
     _renderCustomCharList();
     _updateGCharOptions();
-    _renderGolemListCol();
     _refreshPresets(_getActiveEngine());
   } catch (e) { /* server may not be running */ }
 }
@@ -1011,11 +1119,13 @@ function _renderCustomCharList() {
       const badge = type === 'kalman'
         ? '<span style="color:#7b70c8;font-size:9px;">K</span>'
         : '<span style="color:#c8a050;font-size:9px;">RW</span>';
+      // Name goes through a data- attribute so quotes/markup in it can't break out
+      const n = escapeHtml(name);
       rows.push(`<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px;">
         ${badge}
-        <span style="flex:1;font-size:11px;color:#aaa;">${name}</span>
-        <button onclick="ccLoad('${name}','${type}')" style="font-size:9px;padding:1px 4px;color:#555;border-color:#333;">edit</button>
-        <button onclick="ccDelete('${name}','${type}')" style="font-size:9px;padding:1px 4px;color:#c87070;border-color:#c87070;">✕</button>
+        <span style="flex:1;font-size:11px;color:#aaa;">${n}</span>
+        <button data-name="${n}" data-type="${type}" onclick="ccLoad(this.dataset.name,this.dataset.type)" style="font-size:9px;padding:1px 4px;color:#555;border-color:#333;">edit</button>
+        <button data-name="${n}" data-type="${type}" onclick="ccDelete(this.dataset.name,this.dataset.type)" style="font-size:9px;padding:1px 4px;color:#c87070;border-color:#c87070;">✕</button>
       </div>`);
     }
   }
@@ -1044,12 +1154,19 @@ function ccToggleRWMixture() {
   if (el) el.style.display = dist === 'mixture' ? '' : 'none';
 }
 
+// 12×12 (identity outside the gain/bright/timing/attack block)
 const _CORR_PRESETS = {
   none:        null,
-  gain_bright: [[1,0.7,0,0,0],[0.7,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,0,1]],
-  expressive:  [[1,0.6,0,0.5,0],[0.6,1,0,0.4,0],[0,0,1,0,0],[0.5,0.4,0,1,0],[0,0,0,0,1]],
-  temporal:    [[1,0,0.6,0,0],[0,1,0,0,0],[0.6,0,1,0,0],[0,0,0,1,0],[0,0,0,0,1]],
+  gain_bright: _corr12([[0, 1, 0.7]]),
+  expressive:  _corr12([[0, 1, 0.6], [0, 3, 0.5], [1, 3, 0.4]]),
+  temporal:    _corr12([[0, 2, 0.6]]),
 };
+
+// Compare correlation matrices on their top-left 5×5 block, so characters
+// saved with the old 5×5 presets still match.
+function _corrBlockKey(m) {
+  return m ? JSON.stringify(m.slice(0, 5).map(r => r.slice(0, 5))) : 'null';
+}
 
 function ccLoad(name, type) {
   const params = (_customChars[type] || {})[name];
@@ -1075,20 +1192,20 @@ function ccLoad(name, type) {
   } else {
     const step  = params.step_size || _RW_SS_DEF;
     const drift = params.drift      || _RW_ZERO;
-    const mr    = params.mr_dims    || Array(5).fill(params.mean_reversion||0);
+    const mr    = params.mr_dims    || Array(DIM_NAMES.length).fill(params.mean_reversion||0);
     for (let i = 0; i < DIM_NAMES.length; i++) {
-      _setVal(`cc-step-${i}`,  step[i]);
-      _setVal(`cc-drift-${i}`, drift[i]);
-      _setVal(`cc-mr-${i}`,    mr[i]);
+      _setVal(`cc-step-${i}`,  step[i] ?? _RW_SS_DEF[i]);
+      _setVal(`cc-drift-${i}`, drift[i] ?? 0);
+      _setVal(`cc-mr-${i}`,    mr[i] ?? 0);
     }
     _setVal('cc-rw-dist',          params.distribution  ?? 'gaussian');
     _setVal('cc-boundary',         params.boundary_mode ?? 'clip');
     _setVal('cc-rw-mixture-p',     params.mixture_p     ?? 0.05);
     _setVal('cc-rw-mixture-scale', params.mixture_scale ?? 4.0);
-    const corrJson = JSON.stringify(params.correlation || null);
+    const corrKey = _corrBlockKey(params.correlation || null);
     let preset = 'none';
     for (const [k, v] of Object.entries(_CORR_PRESETS)) {
-      if (JSON.stringify(v) === corrJson) { preset = k; break; }
+      if (_corrBlockKey(v) === corrKey) { preset = k; break; }
     }
     _setVal('cc-corr-preset', preset);
     ccToggleRWMixture();
@@ -1108,7 +1225,6 @@ async function ccDelete(name, type) {
     delete (_customChars[type] || {})[name];
     _renderCustomCharList();
     _updateGCharOptions();
-    _renderGolemListCol();
     _refreshPresets(_getActiveEngine());
     if (st) st.textContent = `Deleted "${name}"`;
   } else {
@@ -1129,8 +1245,9 @@ async function ccSave() {
   if (type === 'kalman') {
     const a1dims = [0,1,2,3,4].map(i => document.getElementById(`cc-a1d-${i}`)?.value.trim());
     const a2dims = [0,1,2,3,4].map(i => document.getElementById(`cc-a2d-${i}`)?.value.trim());
-    const A1_dims = a1dims.some(v => v !== '') ? a1dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A1')) : null;
-    const A2_dims = a2dims.some(v => v !== '') ? a2dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A2')) : null;
+    // Per-dim overrides exist for the first 5 dims; pad to 12 with the scalar
+    const A1_dims = a1dims.some(v => v !== '') ? _pad12(a1dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A1')), _RW_ZERO.map(() => _n('cc-A1'))) : null;
+    const A2_dims = a2dims.some(v => v !== '') ? _pad12(a2dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A2')), _RW_ZERO.map(() => _n('cc-A2'))) : null;
     params = {
       A1: _n('cc-A1'), A2: _n('cc-A2'),
       Q_scale: _n('cc-Qscale'), R_scale: _n('cc-Rscale'), lam: _n('cc-lam'),
@@ -1145,9 +1262,10 @@ async function ccSave() {
   } else {
     const corrPreset = _s('cc-corr-preset') || 'none';
     params = {
-      step_size:      [0,1,2,3,4].map(i => _n(`cc-step-${i}`)),
-      drift:          [0,1,2,3,4].map(i => _n(`cc-drift-${i}`)),
-      mr_dims:        [0,1,2,3,4].map(i => _n(`cc-mr-${i}`)),
+      // 12-D: dims without an input get the backend defaults
+      step_size:      _RW_SS_DEF.map((d, i) => _nz(`cc-step-${i}`,  d)),
+      drift:          _RW_ZERO.map((d, i)   => _nz(`cc-drift-${i}`, d)),
+      mr_dims:        _RW_ZERO.map((d, i)   => _nz(`cc-mr-${i}`,    d)),
       mean_reversion: 0,
       distribution:   _s('cc-rw-dist')  || 'gaussian',
       boundary_mode:  _s('cc-boundary') || 'clip',
@@ -1168,7 +1286,6 @@ async function ccSave() {
     _customChars[type][name] = params;
     _renderCustomCharList();
     _updateGCharOptions();
-    _renderGolemListCol();
     _refreshPresets(_getActiveEngine());
     if (st) st.textContent = `Saved "${name}"`;
   } else {
@@ -1185,9 +1302,9 @@ const _DIST_INFO = {
   beta:        { label:'Curved (Beta)',       params:['beta_a','beta_b'] },
   student_t:   { label:'Heavy (Student-t)',   params:['df'] },
   bimodal:     { label:'Bipolar (Bimodal)',   params:['bimodal_sep'] },
-  mixture:     { label:'Bursting (Mixture)',  params:['mixture_p','spike_scale'] },
+  mixture:     { label:'Bursting (Mixture)',  params:['mixture_p','mixture_scale'] },
   skew_normal: { label:'Skewed (Skew-normal)', params:['skew'] },
-  truncated:   { label:'Bounded+ (Truncated)', params:['trunc_base_dist','trunc_lo','trunc_hi'] },
+  truncated:   { label:'Bounded+ (Truncated)', params:['base_dist','trunc_lo','trunc_hi'] },
 };
 
 const _DIST_PARAM_DEFS = {
@@ -1196,12 +1313,12 @@ const _DIST_PARAM_DEFS = {
   beta_a:          { label:'Shape α (a)', min:0.5, max:10, step:0.1, default:2 },
   beta_b:          { label:'Shape β (b)', min:0.5, max:10, step:0.1, default:2 },
   mixture_p:       { label:'Spike probability', min:0, max:0.5, step:0.01, default:0.05 },
-  spike_scale:     { label:'Spike scale (×σ)', min:1, max:20, step:0.5, default:4 },
+  mixture_scale:   { label:'Spike scale (×σ)', min:1, max:20, step:0.5, default:4 },
   skew:            { label:'Skewness', min:-5, max:5, step:0.1, default:0 },
   cauchy_clip:     { label:'Clip threshold (σ)', min:1, max:20, step:0.5, default:5 },
   trunc_lo:        { label:'Lower bound (σ)', min:-10, max:0, step:0.1, default:-3 },
   trunc_hi:        { label:'Upper bound (σ)', min:0,  max:10, step:0.1, default:3 },
-  trunc_base_dist: { label:'Base distribution', type:'select',
+  base_dist:       { label:'Base distribution', type:'select',
                      options:['gaussian','laplace','student_t'], default:'gaussian' },
 };
 
@@ -1355,7 +1472,8 @@ function _openDistPopup() {
     <div id="dp-params">${paramsHTML(currentDist)}</div>
     ${perDimHTML}${salCondHTML}`;
 
-  showPopup('Configure distribution', body).then(() => {
+  showPopup('Configure distribution', body).then(res => {
+    if (!res) return;   // Cancel
     // Read selected dist
     const newDist = document.querySelector('.dp-dist-btn.active')?.dataset.dist || currentDist;
     _setActiveDist(newDist);
@@ -1492,6 +1610,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Distribution config popup button
   document.getElementById('ge-dist-config-btn')?.addEventListener('click', _openDistPopup);
 
+  // Global Settings panel → v2config (salience/phys-limits popups sync on OK)
+  ['gp-salience-clamp', 'gp-omega-smooth', 'gp-clip-method'].forEach(id =>
+    document.getElementById(id)?.addEventListener('change', _syncGlobalSettings));
+  _syncGlobalSettings();
+
   // Distribution buttons
   document.querySelectorAll('.ge-dist-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1506,6 +1629,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('ge-add-btn')?.addEventListener('click', () => {
     const golem = _readGolemEditor();
     if (golem.to <= golem.from) { alert('end must be > start'); return; }
+    pushHistory();
     interpState.golems.push(golem);
     const charCount = interpState.golems.filter(g => g.character === golem.character).length;
     golem.name = golem.character + ' #' + charCount;
@@ -1520,14 +1644,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const updated = _readGolemEditor();
     // Preserve the existing name on update
     updated.name = interpState.golems[_selectedGolemIdx].name;
+    pushHistory();
     interpState.golems[_selectedGolemIdx] = updated;
     interpState.golems.sort((a, b) => a.from - b.from);
+    _selectedGolemIdx = interpState.golems.indexOf(updated);   // sort may move it
     _renderGolemCards();
     drawGolemTimeline();
   });
 
   document.getElementById('ge-delete-btn')?.addEventListener('click', () => {
     if (_selectedGolemIdx === null || _selectedGolemIdx >= interpState.golems.length) return;
+    pushHistory();
     interpState.golems.splice(_selectedGolemIdx, 1);
     _selectedGolemIdx = null;
     _renderGolemCards();
