@@ -1,9 +1,13 @@
 import numpy as np
 import librosa
 from scipy.signal import butter, sosfilt
-from src.envelope import apply_fade, build_duck_envelope, build_density_scale
-from src.fx       import apply_fx, _band_split
+from src.envelope import apply_fade, build_duck_envelope, build_density_scale, DEFAULT_FADE_CURVE
+from src.fx       import apply_fx, apply_zone, _band_split, reverb_wet
 from src.pitch    import resolve_event_pitch, apply_pitch_shift, apply_noterel_to_mix
+from src.stretch  import time_stretch
+from src.articulations import match_events, next_gaps, shape_event, accent_event, apply_mix_marks
+from src import render_cache
+from src.dsp      import as_frames, to_channels, pad_frames, fit_frames, env_mul, per_channel
 
 
 # ─── Golem state → mix modulation ─────────────────────────────────────────────
@@ -100,7 +104,7 @@ def _apply_seg_shelf(base: np.ndarray, sr: int, bright_env: np.ndarray,
     db_env = (bright_env - 0.5) * 16.0  # ±8 dB
     lin_delta = (10.0 ** (db_env / 20.0) - 1.0).astype(np.float32)
 
-    # No clipping here: the mix is float and gets normalised at the end.
+    # No clipping here: the mix is float; the safety brake handles overs at the end.
     if base.ndim == 1:
         return (base + hf * lin_delta).astype(np.float32)
     return (base + hf * lin_delta[:, None]).astype(np.float32)
@@ -141,7 +145,7 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
     if 'gain_db' in mix_dims:
         gain_db = _interp_dim_envelope(trace, n, sr, 0)
         gain_lin = (10.0 ** (gain_db / 20.0)).astype(np.float32)
-        mix = (mix * gain_lin).astype(np.float32)
+        mix = env_mul(mix, gain_lin)
 
     # dim 1: brightness — time-varying high-shelf EQ
     if 'brightness' in mix_dims:
@@ -160,13 +164,9 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
         wet_env = _interp_dim_envelope(trace, n, sr, 5)
         dry = mix.copy()
         try:
-            wet_full = apply_fx(mix, sr, [{'type': 'reverb', 'room': 0.7, 'wet': 1.0}])
-            if len(wet_full) > n:
-                wet_full = wet_full[:n]
-            elif len(wet_full) < n:
-                wet_full = np.pad(wet_full, (0, n - len(wet_full)))
+            wet_full = fit_frames(reverb_wet(mix, sr, {'room': 0.7}), n)   # the reverb alone
             w = np.clip(wet_env, 0.0, 1.0).astype(np.float32)
-            mix = (dry * (1.0 - w) + wet_full * w).astype(np.float32)
+            mix = env_mul(dry, 1.0 - w) + env_mul(wet_full, w)
         except Exception:
             pass  # reverb failed; leave mix unchanged
 
@@ -203,93 +203,6 @@ def _concat_with_xfade(chunks: list, xf: int) -> np.ndarray:
     return out
 
 
-def _variable_rate_pv(y: np.ndarray, sr: int, rate_at_score,
-                      score_t0: float, score_t1: float,
-                      n_fft: int = 2048, hop: int = 512) -> np.ndarray:
-    """Variable-rate phase vocoder.
-
-    Stretches a mono chunk where the playback rate varies continuously across
-    the chunk. Phase is propagated coherently from start to end (one STFT pass)
-    so there are no internal seams.
-
-    rate_at_score(s): callable returning the rate at score time `s` (seconds).
-                     rate > 1 = faster (output shorter), rate < 1 = slower.
-    score_t0:        score-time position of y[0].
-    score_t1:        score-time position of y[-1] + 1 sample.
-    """
-    if len(y) < n_fft * 2:
-        # Too short for a meaningful PV pass — fall back to a constant rate
-        # equal to the midpoint, via librosa's tested scalar implementation.
-        r_mid = float(rate_at_score((score_t0 + score_t1) / 2.0))
-        if abs(r_mid - 1.0) < 1e-3:
-            return y.astype(np.float32, copy=False)
-        return librosa.effects.time_stretch(y.astype(np.float32), rate=r_mid)
-
-    D = librosa.stft(y.astype(np.float32), n_fft=n_fft, hop_length=hop)
-    n_freq, n_in = D.shape
-    if n_in < 2:
-        return y.astype(np.float32, copy=False)
-
-    # Walk input frames at variable rate (Euler integration of dt_in/dk_out = r).
-    # k_out advances by 1 each iteration; t_in advances by r(current_score_time).
-    sec_per_frame = hop / sr
-    time_steps = [0.0]
-    while True:
-        cur = time_steps[-1]
-        s_score = score_t0 + cur * sec_per_frame
-        r = float(rate_at_score(s_score))
-        r = max(r, 0.01)
-        nxt = cur + r
-        if nxt >= n_in - 1:
-            break
-        time_steps.append(nxt)
-    time_steps = np.asarray(time_steps, dtype=np.float64)
-    n_out = len(time_steps)
-
-    # Expected phase advance per analysis hop, per frequency bin
-    omega = 2.0 * np.pi * np.arange(n_freq) * hop / n_fft
-
-    D_out = np.zeros((n_freq, n_out), dtype=np.complex64)
-    phase_acc = np.angle(D[:, 0]).astype(np.float64)
-    D_out[:, 0] = np.abs(D[:, 0]) * np.exp(1j * phase_acc)
-
-    for i in range(1, n_out):
-        t = time_steps[i]
-
-        t_floor = int(np.floor(t))
-        if t_floor >= n_in - 1:
-            t_floor = n_in - 2
-        alpha = t - t_floor
-
-        # Linear interpolation of magnitude between adjacent input frames
-        mag = (1.0 - alpha) * np.abs(D[:, t_floor]) + alpha * np.abs(D[:, t_floor + 1])
-
-        # True phase advance per ANALYSIS hop = omega + delta_phi (principal value)
-        dphi = np.angle(D[:, t_floor + 1]) - np.angle(D[:, t_floor]) - omega
-        dphi -= 2.0 * np.pi * np.round(dphi / (2.0 * np.pi))
-
-        # Per OUTPUT frame, phase advances by exactly one synthesis hop's worth.
-        # The rate only changes which input frame we sample magnitude/dphi from.
-        # (Multiplying by `advance` over-rotates and causes overlap-add cancellation.)
-        phase_acc = phase_acc + (omega + dphi)
-        D_out[:, i] = mag * np.exp(1j * phase_acc)
-
-    y_out = librosa.istft(D_out, hop_length=hop, n_fft=n_fft)
-
-    # Energy preservation: phase-vocoder magnitude interpolation + STFT edge
-    # windowing introduce a small but consistent RMS drop (~6–10%). Compensate
-    # by matching output RMS to input RMS over the same musical content.
-    in_rms  = float(np.sqrt(np.mean(y.astype(np.float64) ** 2)))
-    out_rms = float(np.sqrt(np.mean(y_out.astype(np.float64) ** 2)))
-    if out_rms > 1e-6 and in_rms > 1e-6:
-        gain = in_rms / out_rms
-        # Cap the gain to avoid amplifying tail noise if the input is near silent
-        gain = min(gain, 4.0)
-        y_out = y_out * gain
-
-    return y_out.astype(np.float32)
-
-
 def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
     """
     Stretch sections of the mix by tempo factor. Length may change.
@@ -297,10 +210,9 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
     Each range accepts a 'shape' field:
       - 'ramp' (default): rate ramps linearly from 1.0 at `from` to `factor` at `to`.
         This is the musically correct accelerando/ritardando — gradual.
-        Implemented as a single variable-rate phase-vocoder pass over the whole
-        ramp window so phase is continuous (no granular seams).
-      - 'step': constant `factor` across the whole window. Uses librosa's
-        scalar `time_stretch`.
+        One Rubber Band pass over the whole ramp window with a per-sample rate
+        curve (src/stretch.py), so there are no seams inside the ramp.
+      - 'step': constant `factor` across the whole window.
 
     Returns (stretched_mix, tempo_map) where tempo_map is
     [(score_t, real_t), ...] monotonically increasing, used by the editor to
@@ -343,7 +255,7 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
         return max(r, 0.01)
 
     # 3. Boundaries: range edges only. NO sub-division of ramps — each ramp
-    #    window is processed as a single segment by the variable-rate PV.
+    #    window is processed as a single segment with a rate curve.
     boundary_set = {0.0, float(duration)}
     for r in resolved:
         boundary_set.add(r['t0'])
@@ -363,15 +275,14 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
         segments.append((a, b, has_ramp, const_rate))
 
     # 4. Stretch each segment, build the tempo map, concat with short crossfades.
-    #    Seams are now rare (only at range edges, not inside ramps), so a slightly
-    #    longer crossfade hides phase discontinuities at rate transitions.
+    #    Seams only fall at range edges, not inside ramps; a short crossfade
+    #    hides the change of rate there.
     XFADE_MS = 10
     xf = max(1, int(XFADE_MS * sr / 1000))
-    stereo = (mix.ndim == 2)
 
     out_chunks = []
     tempo_map = [(0.0, 0.0)]
-    real_cursor = 0.0
+    out_len = 0          # length of the joined output so far (seams overlap by xf)
 
     for score_t0, score_t1, has_ramp, const_rate in segments:
         i0 = int(score_t0 * sr)
@@ -383,43 +294,35 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
         if (not has_ramp and abs(const_rate - 1.0) < 1e-3) or len(chunk) < 2048:
             stretched = chunk.astype(np.float32, copy=False)
         elif has_ramp:
-            # Variable-rate PV: one continuous phase-coherent pass across the
-            # entire ramp window. No internal seams → no granular artifacts.
-            if stereo:
-                stretched = np.stack([
-                    _variable_rate_pv(chunk[:, c], sr, rate_at, score_t0, score_t1)
-                    for c in range(chunk.shape[1])
-                ], axis=1)
-            else:
-                stretched = _variable_rate_pv(chunk, sr, rate_at, score_t0, score_t1)
-            stretched = stretched.astype(np.float32)
+            # One pass across the whole ramp window with a per-sample rate
+            # curve (sampled every 64 samples; the rate changes slowly).
+            grid = np.arange(0, len(chunk) + 64, 64)
+            grid_rate = [rate_at(score_t0 + g / sr) for g in grid]
+            curve = np.interp(np.arange(len(chunk)), grid, grid_rate)
+            stretched = time_stretch(chunk, sr, curve)
         else:
-            # Constant-rate segment (step range or no range): scalar PV.
-            if stereo:
-                stretched = np.stack([
-                    librosa.effects.time_stretch(chunk[:, c].astype(np.float32), rate=float(const_rate))
-                    for c in range(chunk.shape[1])
-                ], axis=1)
-            else:
-                stretched = librosa.effects.time_stretch(chunk.astype(np.float32), rate=float(const_rate))
-            stretched = stretched.astype(np.float32)
+            # Constant-rate segment (step range or no range)
+            stretched = time_stretch(chunk, sr, float(const_rate))
 
+        # Mirror _concat_with_xfade: a crossfaded seam overlaps xf samples
+        if out_chunks and out_len >= 2 * xf and len(stretched) >= 2 * xf:
+            out_len += len(stretched) - xf
+        else:
+            out_len += len(stretched)
         out_chunks.append(stretched)
-        real_cursor += len(stretched) / sr
-        tempo_map.append((float(score_t1), float(real_cursor)))
+        tempo_map.append((float(score_t1), out_len / sr))
 
     return _concat_with_xfade(out_chunks, xf), tempo_map
 
 
 def _apply_speed(clip: np.ndarray, speed: float, sr: int, pitch_lock: bool = False) -> np.ndarray:
+    """Varispeed (or time-stretch with pitch_lock) a (frames, channels) clip."""
     if abs(speed - 1.0) < 1e-3:
         return clip
     if pitch_lock:
-        # Phase-vocoder stretch: rate > 1 → shorter, rate < 1 → longer. Pitch unchanged.
-        return librosa.effects.time_stretch(clip.astype(np.float32), rate=float(speed))
-    return librosa.resample(
-        clip, orig_sr=int(sr * speed), target_sr=sr
-    ).astype(np.float32)
+        # Time-stretch: rate > 1 → shorter, rate < 1 → longer. Pitch unchanged.
+        return time_stretch(clip, sr, float(speed))
+    return per_channel(lambda ch: librosa.resample(ch, orig_sr=int(sr * speed), target_sr=sr), clip)
 
 
 def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.ndarray = None) -> np.ndarray:
@@ -431,61 +334,33 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     # Muted events neither sound nor trigger ducking / density scaling.
     events = [e for e in events if not e.get('muted')]
 
-    mix = base.copy() if base is not None else np.zeros(int((max((e['t'] for e in events), default=0.0) + 30.0) * sr), dtype=np.float32)
+    # All audio is (frames, channels); the piece's channel count comes from
+    # the base (or, without one, from the samples).
+    if base is not None:
+        mix = as_frames(base).copy()
+    else:
+        n_ch = max((as_frames(c).shape[1] for c in bank.values()), default=1)
+        mix = np.zeros((int((max((e['t'] for e in events), default=0.0) + 30.0) * sr), n_ch),
+                       dtype=np.float32)
+    channels = mix.shape[1]
 
-    # --- base fx (applied before events are layered) ---
-    base_fx = (score or {}).get('base_fx', [])
-    if base_fx and base is not None:
-        mix = apply_fx(mix, sr, base_fx)
+    # --- the source: base FX, then FX zones on the source (fx_ranges). Cached:
+    #     the same settings on the same audio are reused between renders. ---
+    base_fx   = (score or {}).get('base_fx', []) if base is not None else []
+    fx_ranges = sorted((fr for fr in (score or {}).get('fx_ranges', []) if not fr.get('muted')),
+                       key=lambda r: r['from'])
+    if base_fx or fx_ranges:
+        source = mix
 
-    # --- ranged fx (applied to specific segments of the base) ---
-    for fr in sorted((score or {}).get('fx_ranges', []), key=lambda r: r['from']):
-        i0 = int(fr['from'] * sr)
-        i1 = min(int(fr['to'] * sr), len(mix))
-        if i0 >= len(mix) or i0 >= i1:
-            continue
-        segment  = mix[i0:i1].copy()
-        processed = apply_fx(segment, sr, fr['fx'])
-        core_len = i1 - i0
+        def _process_source():
+            m = apply_fx(source, sr, base_fx) if base_fx else source
+            for fr in fx_ranges:
+                m = apply_zone(m, sr, int(fr['from'] * sr), int(fr['to'] * sr), fr['fx'], fr)
+            return m
 
-        if fr.get('fade'):
-            # Opt-in linear crossfade at zone boundaries. Default fade is 1:10
-            # of segment duration, clamped to [0.01, 1.0] seconds.
-            seg_dur_s = core_len / sr
-            default_s = max(0.01, min(1.0, seg_dur_s / 10.0))
-            fi_s = float(fr.get('fade_in_s',  default_s))
-            fo_s = float(fr.get('fade_out_s', default_s))
-            fi_n = min(int(fi_s * sr), core_len // 2)
-            fo_n = min(int(fo_s * sr), core_len // 2)
-
-            # Wet-delta = FX contribution on top of dry. Applying the envelope
-            # to the delta (not the whole processed buffer) keeps dry intact at
-            # the boundaries and bounds the tail extension.
-            dry_padded = np.zeros_like(processed)
-            dry_padded[:core_len] = segment
-            delta = processed - dry_padded
-
-            env = np.ones(len(delta), dtype=np.float32)
-            if fi_n > 0:
-                env[:fi_n] = np.linspace(0.0, 1.0, fi_n, dtype=np.float32)
-            if fo_n > 0:
-                fo_end = min(len(delta), core_len + fo_n)
-                env[core_len:fo_end] = np.linspace(1.0, 0.0, fo_end - core_len, dtype=np.float32)
-                env[fo_end:] = 0.0
-            else:
-                env[core_len:] = 0.0  # no tail bleed if fade_out is 0
-            delta *= env
-
-            out_end = i0 + len(delta)
-            if out_end > len(mix):
-                mix = np.pad(mix, (0, out_end - len(mix)))
-            mix[i0:out_end] += delta           # dry already in mix, add wet contribution
-        else:
-            mix[i0:i1] = 0.0
-            out_end = i0 + len(processed)
-            if out_end > len(mix):
-                mix = np.pad(mix, (0, out_end - len(mix)))
-            mix[i0:out_end] += processed
+        seed = int(np.random.randint(0, 2**31 - 1))
+        k = render_cache.key('source', render_cache.array_digest(source), base_fx, fx_ranges, sr)
+        mix = render_cache.run(k, seed, _process_source).copy()
 
     # --- duck_base: duck the base track before events are added ---
     db = (score or {}).get('duck_base')
@@ -496,61 +371,21 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
             attack=db.get('attack', 0.01),
             release=db.get('release', 0.3),
         )
-        mix[:len(duck_env)] *= duck_env
+        mix[:len(duck_env)] = env_mul(mix[:len(duck_env)], duck_env)
 
-    for event in events:
-        if event.get('muted'):
-            continue
-        base_clip = bank[event['sample']].copy()
+    # Event-target articulations: which marks shape which event, and how long
+    # until the next event (for legato)
+    event_marks = match_events(articulations, events)
+    gaps = next_gaps(events)
 
-        # --- speed / layered transpositions ---
-        pitch_lock = bool(event.get('pitch_lock', False))
-        speeds = event.get('speeds')
-        if speeds:
-            layers  = [_apply_speed(base_clip.copy(), s, sr, pitch_lock) for s in speeds]
-            max_len = max(len(l) for l in layers)
-            clip    = np.zeros(max_len, dtype=np.float32)
-            for l in layers:
-                clip[:len(l)] += l
-        else:
-            clip = _apply_speed(base_clip, event.get('speed', 1.0), sr, pitch_lock)
+    # --- every event's clip: processed in parallel, each with its own random
+    #     stream (seeded in order, so a seed renders the same every time) and
+    #     cached — an event whose sound didn't change is reused, even when it
+    #     moved in time. ---
+    clips = _event_clips(events, bank, sr, channels, samples_spec, event_marks, gaps, note_rels)
 
-        # --- reverse ---
-        if event.get('reverse', False):
-            clip = clip[::-1].copy()
-
-        # --- loop ---
-        loop = event.get('loop', 0)
-        if loop > 0:
-            clip = np.tile(clip, loop + 1)
-
-        # --- fade edges shaped by golem's attack/release ---
-        sample_spec  = samples_spec.get(event['sample'], {})
-        fade_in_pct  = event.get('fade_in',  sample_spec.get('fade_in',  0.05))
-        fade_out_pct = event.get('fade_out', sample_spec.get('fade_out', 0.05))
-        attack_shape = event.get('attack_shape')
-        if attack_shape is not None:
-            fade_in_pct = min(0.8, fade_in_pct * (attack_shape * 2.0))
-        release_shape = event.get('release_shape')
-        if release_shape is not None:
-            fade_out_pct = min(0.9, fade_out_pct * (release_shape * 2.0))
-        clip = apply_fade(clip, sr, fade_in_pct=fade_in_pct, fade_out_pct=fade_out_pct)
-
-        # --- score-level gain (NOT golem state — just the score's own gain_db) ---
-        gain_db = event.get('gain_db', -6.0)
-        clip   *= 10 ** (gain_db / 20.0)
-
-        # --- composer-authored per-event FX chain (score instructions, not golem) ---
-        fx_list = event.get('fx', [])
-        if fx_list:
-            clip = apply_fx(clip, sr, fx_list)
-
-        # --- articulations (applied post-mix in the mix-level pass below) ---
-
-        # --- pitch (score-level: static or glissando — NOT golem pitch_dev) ---
-        semitones = resolve_event_pitch(event['t'], float(event.get('pitch', 0.0)), note_rels)
-        if semitones:
-            clip = apply_pitch_shift(clip, sr, semitones)
+    for idx, event in enumerate(events):
+        clip = clips[idx]
 
         # --- place on timeline (score time; global stretch happens post-mix) ---
         t_real = float(event['t']) + silence_start
@@ -570,8 +405,7 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
 
         i0 = int(t_real * sr)
         i1 = i0 + len(clip)
-        if i1 > len(mix):
-            mix = np.pad(mix, (0, i1 - len(mix)))
+        mix = pad_frames(mix, i1)
 
         # --- mix mode ---
         ev_mix_mode = event.get('mix_mode', 'layer')
@@ -584,10 +418,7 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
             if xf > 0:
                 blend[:xf]  = np.linspace(0.0, blend_level, xf, dtype=np.float32)
                 blend[-xf:] = np.linspace(blend_level, 0.0, xf, dtype=np.float32)
-            if mix.ndim == 1:
-                mix[i0:i1] = mix[i0:i1] * (1 - blend) + clip * blend
-            else:
-                mix[i0:i1] = mix[i0:i1] * (1 - blend[:, None]) + clip * blend[:, None]
+            mix[i0:i1] = env_mul(mix[i0:i1], 1 - blend) + env_mul(clip, blend)
         else:  # 'layer'
             mix[i0:i1] += clip
 
@@ -603,106 +434,10 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     if note_rels:
         mix = apply_noterel_to_mix(mix, sr, note_rels)
 
-    # --- articulations on the full mix (base track + events) ---
-    _SILENCE_DUR_DEFAULT = 0.07  # seconds silenced after a staccato point mark
-    for art in articulations:
-        if art.get('muted'):
-            continue
-        art_type = art.get('type', '')
-        from_t = art.get('from')
-        to_t   = art.get('to')
-        if from_t is None or to_t is None:
-            pt = art.get('t')
-            if pt is None:
-                continue
-            silence_s = float(art.get('silence_s', _SILENCE_DUR_DEFAULT))
-            from_t = float(pt)
-            to_t   = from_t + silence_s
-        i0 = int(float(from_t) * sr)
-        i1 = min(int(float(to_t) * sr), len(mix))
-        if i0 >= len(mix) or i0 >= i1:
-            continue
-
-        # Optional per-band targeting: split segment, apply articulation to
-        # target band only, recombine. When freq fields are absent, seg IS
-        # the full segment and rest is None → identical to previous behavior.
-        freq_from = art.get('freq_from')
-        freq_to   = art.get('freq_to')
-        need_split = (freq_from is not None) or (freq_to is not None)
-
-        if need_split:
-            seg_full = mix[i0:i1].copy()
-            seg, rest = _band_split(seg_full, sr, freq_from, freq_to)
-        else:
-            seg = mix[i0:i1]  # direct view — in-place writes go to mix
-            rest = None
-
-        if art_type == 'staccato':
-            # Punchy: keep 20 ms at full attack, then sharp 5 ms cut, then silence.
-            n = len(seg)
-            keep  = min(int(0.02 * sr), n)
-            cut_n = min(int(0.005 * sr), n - keep)
-            if cut_n > 1:
-                seg[keep:keep + cut_n] *= np.linspace(1.0, 0.0, cut_n, dtype=np.float32)
-            seg[keep + cut_n:] = 0.0
-
-        elif art_type == 'accent':
-            # Boost attack: ramp 2× → 1× over the first 50 ms. Values above 1.0
-            # are fine here — the float mix is normalised before writing.
-            atk = min(int(0.05 * sr), len(seg))
-            if atk > 1:
-                seg[:atk] *= np.linspace(2.0, 1.0, atk, dtype=np.float32)
-
-        elif art_type == 'legato':
-            # Smooth 50 ms fade-in at start; long 500 ms fade-out at end.
-            n = len(seg)
-            fi = min(int(0.05 * sr), n // 2)
-            fo = min(int(0.50 * sr), n // 2)
-            if fi > 1:
-                seg[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
-            if fo > 1:
-                seg[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
-
-        elif art_type == 'fermata':
-            # Grab hold_s of audio ending at end of seg. Extend and loop with
-            # slow fade, creating a dramatic, extended hold.
-            hold_s = float(art.get('hold_s', 2.0))
-            hold_n = min(int(hold_s * sr), len(seg))
-            src_s  = max(0, len(seg) - hold_n)
-            hold_n = len(seg) - src_s
-            if hold_n > int(0.05 * sr):
-                tail = seg[src_s:].copy()
-                fi   = max(1, hold_n // 8)
-                tail[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
-                n_reps = 6
-                if need_split:
-                    # Extend seg with tail repetitions
-                    ext = np.zeros(n_reps * hold_n, dtype=np.float32)
-                    for rep in range(n_reps):
-                        g = 1.0 - rep / (n_reps * 1.5)
-                        s = rep * hold_n
-                        ext[s:s + hold_n] += tail * g
-                    seg = np.concatenate([seg, ext])
-                else:
-                    needed = i1 + n_reps * hold_n
-                    if needed > len(mix):
-                        mix = np.pad(mix, (0, needed - len(mix)))
-                    for rep in range(n_reps):
-                        g = 1.0 - rep / (n_reps * 1.5)
-                        s = i1 + rep * hold_n
-                        mix[s:s + hold_n] += tail * g
-
-        # Recombine if band-split was used
-        if rest is not None:
-            if len(seg) > len(rest):
-                rest = np.pad(rest, (0, len(seg) - len(rest)))
-            elif len(rest) > len(seg):
-                seg = np.pad(seg, (0, len(rest) - len(seg)))
-            combined = (rest + seg).astype(np.float32)
-            out_end = i0 + len(combined)
-            if out_end > len(mix):
-                mix = np.pad(mix, (0, out_end - len(mix)))
-            mix[i0:out_end] = combined
+    # --- whole-mix articulations (target: mix): staccato / accent / legato.
+    #     Whole-mix fermatas insert time, so they come after the tempo
+    #     stretch (src/renderer.render_mix). ---
+    mix = apply_mix_marks(mix, sr, articulations)
 
     # --- auto_mix: scale down overlapping events ---
     am = (score or {}).get('auto_mix')
@@ -712,13 +447,108 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
             mode=am.get('mode', 'sqrt'),
             silence_start=silence_start,
         )
-        mix *= scale
+        mix = env_mul(mix, scale)
 
     return mix
 
 
-def normalise(mix: np.ndarray, headroom: float = 0.9) -> np.ndarray:
-    peak = np.max(np.abs(mix))
-    if peak > 0:
-        mix = mix / peak * headroom
-    return mix
+# Event fields that only say where an event goes, not how it sounds: an event
+# that changed only these reuses its processed clip.
+_PLACEMENT_KEYS = ('t', 'timing_offset_ms', 'mix_mode', 'blend', 'muted', 'label')
+_EVENT_POOL = None
+
+
+def _event_pool():
+    global _EVENT_POOL
+    if _EVENT_POOL is None:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        _EVENT_POOL = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 2),
+                                         thread_name_prefix='event')
+    return _EVENT_POOL
+
+
+def _event_clips(events, bank, sr, channels, samples_spec, event_marks, gaps, note_rels) -> list:
+    """Processed clip of every event (see _event_clip), in event order."""
+    if not events:
+        return []
+    from plugins import load_plugins
+    load_plugins()                                   # once, before the threads
+    seeds = [int(np.random.randint(0, 2**31 - 1)) for _ in events]
+    digests = {name: render_cache.array_digest(bank[name])
+               for name in {e['sample'] for e in events}}
+
+    def job(idx):
+        event = events[idx]
+        marks = event_marks.get(idx, [])
+        semitones = resolve_event_pitch(event['t'], float(event.get('pitch', 0.0)), note_rels)
+        gap = gaps[idx] if any(m.get('type') == 'legato' for m in marks) else None
+        sample_spec = samples_spec.get(event['sample'], {})
+        sound = {k: v for k, v in event.items() if k not in _PLACEMENT_KEYS}
+        k = render_cache.key('event', sound, digests[event['sample']], sample_spec,
+                             marks, gap, semitones, channels, sr)
+        return render_cache.run(k, seeds[idx], lambda: _event_clip(
+            event, bank[event['sample']], sr, channels, marks, gap, sample_spec, semitones))
+
+    if len(events) == 1:
+        return [job(0)]
+    return list(_event_pool().map(job, range(len(events))))
+
+
+def _event_clip(event, sample, sr, channels, marks, gap, sample_spec, semitones) -> np.ndarray:
+    """One event's sound, before placement: speed, reverse, loop,
+    articulations, fades, accent, gain, effects, pitch."""
+    # copy: fades and gain below work in place and must not touch the bank
+    base_clip = to_channels(sample, channels).copy()
+
+    # --- speed / layered transpositions ---
+    pitch_lock = bool(event.get('pitch_lock', False))
+    speeds = event.get('speeds')
+    if speeds:
+        layers  = [_apply_speed(base_clip.copy(), s, sr, pitch_lock) for s in speeds]
+        max_len = max(len(l) for l in layers)
+        clip    = sum(pad_frames(l, max_len) for l in layers)
+    else:
+        clip = _apply_speed(base_clip, event.get('speed', 1.0), sr, pitch_lock)
+
+    # --- reverse ---
+    if event.get('reverse', False):
+        clip = clip[::-1].copy()
+
+    # --- loop ---
+    loop = event.get('loop', 0)
+    if loop > 0:
+        clip = np.concatenate([clip] * (loop + 1), axis=0)
+
+    # --- articulations on this event: staccato / legato / fermata change
+    #     its length, before its fades and effects (accent comes after) ---
+    if marks:
+        clip = shape_event(clip, sr, marks, gap)
+
+    # --- fade edges shaped by golem's attack/release ---
+    fade_in_pct  = event.get('fade_in',  sample_spec.get('fade_in',  0.05))
+    fade_out_pct = event.get('fade_out', sample_spec.get('fade_out', 0.05))
+    attack_shape = event.get('attack_shape')
+    if attack_shape is not None:
+        fade_in_pct = min(0.8, fade_in_pct * (attack_shape * 2.0))
+    release_shape = event.get('release_shape')
+    if release_shape is not None:
+        fade_out_pct = min(0.9, fade_out_pct * (release_shape * 2.0))
+    clip = apply_fade(clip, sr, fade_in_pct=fade_in_pct, fade_out_pct=fade_out_pct,
+                      curve=event.get('fade_curve', sample_spec.get('fade_curve', DEFAULT_FADE_CURVE)))
+    if marks:
+        clip = accent_event(clip, sr, marks)
+
+    # --- score-level gain (NOT golem state — just the score's own gain_db) ---
+    gain_db = event.get('gain_db', -6.0)
+    clip = clip * (10 ** (gain_db / 20.0))
+
+    # --- composer-authored per-event FX chain (score instructions, not golem) ---
+    fx_list = event.get('fx', [])
+    if fx_list:
+        clip = to_channels(apply_fx(clip, sr, fx_list), channels)
+
+    # --- pitch (score-level: static or glissando — NOT golem pitch_dev) ---
+    if semitones:
+        clip = apply_pitch_shift(clip, sr, semitones)
+    return clip.astype(np.float32, copy=False)

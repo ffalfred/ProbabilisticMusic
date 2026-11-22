@@ -158,10 +158,37 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
     return env
 
 
+# ─── Fade shapes ─────────────────────────────────────────────────────────────
+FADE_CURVES = ('smooth', 'linear', 'exponential', 's-curve')
+DEFAULT_FADE_CURVE = 'smooth'
+
+
+def fade_ramp(n: int, curve: str = DEFAULT_FADE_CURVE) -> np.ndarray:
+    """A fade-in of n samples from 0 to 1 (reverse it for a fade-out).
+
+    smooth       equal-power (a quarter sine): even, no late drop — the default
+    linear       a straight line in amplitude
+    exponential  a straight line in decibels over 60 dB: steady in loudness,
+                 so the start of a fade-in and the end of a fade-out are long
+                 and quiet
+    s-curve      slow at both ends, faster in the middle (smoothstep)
+    """
+    t = np.linspace(0.0, 1.0, n, dtype=np.float64)
+    if curve == 'linear':
+        r = t
+    elif curve == 'exponential':
+        r = (10.0 ** (3.0 * t) - 1.0) / 999.0
+    elif curve in ('s-curve', 's_curve', 'scurve'):
+        r = t * t * (3.0 - 2.0 * t)
+    else:
+        r = np.sin(t * np.pi / 2)
+    return r.astype(np.float32)
+
+
 def apply_fade(clip: np.ndarray, sr: int,
                fade_in_pct: float = 0.0, fade_out_pct: float = 0.0,
-               ms: float = 10.0) -> np.ndarray:
-    """Apply fade in/out to a clip.
+               ms: float = 10.0, curve: str = DEFAULT_FADE_CURVE) -> np.ndarray:
+    """Apply fade in/out to a clip, shaped by `curve` (see fade_ramp).
 
     If fade_in_pct / fade_out_pct > 0, use them as a fraction of clip length.
     Otherwise fall back to a fixed ms fade.
@@ -171,10 +198,12 @@ def apply_fade(clip: np.ndarray, sr: int,
     fo = int(n * fade_out_pct) if fade_out_pct > 0 else int(ms * sr / 1000)
     fi = min(fi, n // 2)
     fo = min(fo, n // 2)
+    # Ramps broadcast over channels for (frames, channels) clips
+    shape = (-1, 1) if clip.ndim == 2 else (-1,)
     if fi > 0:
-        clip[:fi]  *= np.linspace(0, 1, fi,  dtype=np.float32)
+        clip[:fi]  *= fade_ramp(fi, curve).reshape(shape)
     if fo > 0:
-        clip[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)
+        clip[-fo:] *= fade_ramp(fo, curve)[::-1].reshape(shape)
     return clip
 
 
@@ -217,8 +246,9 @@ def build_phrase_envelope(n_samples: int, sr: int, phrases: list) -> np.ndarray:
         seg = np.full(n, 10 ** (gain_db / 20.0), dtype=np.float32)
         fi  = min(int(n * fi_pct), n // 2)
         fo  = min(int(n * fo_pct), n // 2)
-        if fi > 0: seg[:fi]  *= np.linspace(0, 1, fi,  dtype=np.float32)
-        if fo > 0: seg[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)
+        curve = ph.get('fade_curve', DEFAULT_FADE_CURVE)
+        if fi > 0: seg[:fi]  *= fade_ramp(fi, curve)
+        if fo > 0: seg[-fo:] *= fade_ramp(fo, curve)[::-1]
         env[i0:i1] *= seg
     return env
 

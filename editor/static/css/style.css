@@ -563,6 +563,25 @@
     gap: 6px;
     padding: 2px 8px;
   }
+  #audio-brake-wrap {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-right: 1px solid #1a1a1a;
+    cursor: pointer;
+  }
+  #audio-brake-wrap + #concerto-bar { margin-left: 0; }
+  #audio-brake-wrap input { margin: 0; }
+  #audio-brake-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #666;
+  }
+  #audio-brake-status { font-size: 10px; color: #888; min-width: 0; }
+  #audio-brake-status.clipping { color: #d66; }
   #concerto-bar-label {
     font-size: 9px;
     text-transform: uppercase;

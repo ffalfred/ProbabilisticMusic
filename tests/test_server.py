@@ -69,8 +69,55 @@ class ServerTests(unittest.TestCase):
         rendered, _ = sf.read(server.PREVIEW_TMP, dtype='float32')
         source, _ = sf.read(self.audio, dtype='float32')
         self.assertEqual(len(rendered), len(source))
-        # normalised copy of the source: same shape, peak 0.9
-        np.testing.assert_allclose(rendered, source / np.max(np.abs(source)) * 0.9, atol=1e-3)
+        # the source at its real level (no normalising; below the brake's ceiling)
+        np.testing.assert_allclose(rendered, source, atol=1e-4)
+
+    def test_preview_keeps_the_performed_level(self):
+        # A quieter source renders quieter: nothing turns it back up.
+        quiet = os.path.join(self.tmp, 'quiet.wav')
+        sf.write(quiet, sf.read(self.audio, dtype='float32')[0] * 0.1, SR)
+        levels = []
+        for path in (self.audio, quiet):
+            d = self._post('/preview', {'path': path, 'score': dict(self.score), 'engine': 'v1',
+                                        '_config': {'seed': 3}})
+            levels.append(d['loudness']['lufs'])
+        self.assertAlmostEqual(levels[0] - levels[1], 20.0, delta=0.5)
+
+    def test_brake_switch(self):
+        loud = os.path.join(self.tmp, 'loud.wav')
+        sf.write(loud, sf.read(self.audio, dtype='float32')[0] * 5, SR, subtype='FLOAT')
+        body = {'path': loud, 'engine': 'v1', 'score': {'samples': {}, 'events': []}}
+        on = self._post('/preview', {**body, 'loudness': {'brake': True}})['loudness']
+        self.assertGreater(on['brake_db'], 0)
+        self.assertLessEqual(on['peak_db'], -1.0 + 1e-3)
+        off = self._post('/preview', {**body, 'loudness': {'brake': False}})['loudness']
+        self.assertEqual(off['brake_db'], 0)
+        self.assertGreater(off['peak_db'], 0)          # reported: these peaks will clip
+
+    def test_export_loudness_target_and_range(self):
+        from src.loudness import measure_lufs
+        common = {'path': self.audio, 'score_path': self.score_path, 'audio_format': 'wav32f',
+                  'interp': {'golems': [], 'v2config': {'v2': {'seed': 4}}},
+                  'loudness': {'adjust': 'target', 'target_lufs': -23, 'brake': True}}
+        full = self._post('/export_interp_wav', {**common, 'out_path': os.path.join(self.tmp, 'full.wav')})
+        audio, _ = sf.read(full['path'], dtype='float32')
+        self.assertAlmostEqual(measure_lufs(audio, SR), -23.0, delta=0.1)
+        self.assertAlmostEqual(full['loudness']['lufs'], -23.0, delta=0.1)
+        # A range gets the gain of the whole piece, not its own
+        part = self._post('/export_interp_wav', {**common, 'out_path': os.path.join(self.tmp, 'part.wav'),
+                                                 'time_from': 1.0, 'time_to': 2.0})
+        clip, _ = sf.read(part['path'], dtype='float32')
+        np.testing.assert_allclose(clip, audio[SR:2 * SR], atol=1e-5)
+
+    def test_export_match_source(self):
+        from src.loudness import measure_lufs
+        d = self._post('/export_interp_wav', {
+            'path': self.audio, 'score_path': self.score_path, 'audio_format': 'wav32f',
+            'out_path': os.path.join(self.tmp, 'm.wav'), 'interp': {'golems': []},
+            'loudness': {'adjust': 'source', 'brake': False}})
+        audio, _ = sf.read(d['path'], dtype='float32')
+        source, _ = sf.read(self.audio, dtype='float32')
+        self.assertAlmostEqual(measure_lufs(audio, SR), measure_lufs(source, SR), delta=0.1)
 
     def test_preview_is_reproducible_from_its_seed(self):
         body = {'path': self.audio, 'score_path': self.score_path,
@@ -90,6 +137,34 @@ class ServerTests(unittest.TestCase):
         d = self._post('/trace', {'score_path': self.score_path, 'interp': {}})
         self.assertEqual(len(d['dimensions']), 12)
 
+    def test_composer_export_is_what_mix_plays(self):
+        # The Composer exports its current state, rendered like its Mix
+        cfg = {'seed': 21}
+        _, played = self._preview_audio({'path': self.audio, 'score': dict(self.score), 'engine': 'v1',
+                                         '_config': cfg, 'loudness': {'brake': True}})
+        d = self._post('/export_audio', {'path': self.audio, 'score': dict(self.score), 'engine': 'v1',
+                                         '_config': cfg, 'audio_format': 'wav32f',
+                                         'out_path': os.path.join(self.tmp, 'composer.wav'),
+                                         'loudness': {'adjust': 'none', 'brake': True}})
+        exported, _ = sf.read(d['path'], dtype='float32')
+        np.testing.assert_allclose(exported, played, atol=1e-6)
+        self.assertTrue(d['path'].endswith('composer.wav'))
+
+    def test_composer_export_modes_and_default_name(self):
+        common = {'path': self.audio, 'score': dict(self.score), 'audio_format': 'flac',
+                  'loudness': {'brake': False}}
+        raw = self._post('/export_audio', {**common, 'export_mode': 'raw',
+                                           'out_path': os.path.join(self.tmp, 'raw.wav')})
+        self.assertTrue(raw['path'].endswith('raw.flac'))               # extension follows format
+        audio, _ = sf.read(raw['path'], dtype='float32')
+        source, _ = sf.read(self.audio, dtype='float32')
+        np.testing.assert_allclose(audio, source, atol=1e-4)            # FLAC is 24-bit
+        d = self._post('/export_audio', {**common, 'export_mode': 'score_only'})
+        try:
+            self.assertIn('composer_base_', os.path.basename(d['path']))  # output/composer_<audio>_<time>
+        finally:
+            os.remove(d['path'])
+
     def test_score_only_export_has_no_base(self):
         out = os.path.join(self.tmp, 'events.wav')
         d = self._post('/export_interp_wav', {'path': self.audio, 'score_path': self.score_path,
@@ -108,8 +183,25 @@ class ServerTests(unittest.TestCase):
                                                'lead_in': 0.5, 'lead_out': 0.25})
         clip, _ = sf.read(d['path'], dtype='float32')
         self.assertEqual(len(clip), int(0.5 * SR) + SR + int(0.25 * SR))
-        self.assertEqual(sf.info(d['path']).subtype, sf.info(server.PREVIEW_TMP).subtype)
+        self.assertEqual(sf.info(server.PREVIEW_TMP).subtype, 'FLOAT')    # exact render
+        self.assertEqual(sf.info(d['path']).subtype, 'PCM_24')             # default format
         np.testing.assert_allclose(clip[int(0.5 * SR):int(0.5 * SR) + SR], full[SR:2 * SR], atol=1e-4)
+
+    def test_save_preview_audio_formats(self):
+        self._post('/preview', {'path': self.audio, 'score': dict(self.score), 'engine': 'v1'})
+        full, _ = sf.read(server.PREVIEW_TMP, dtype='float32')
+        out = os.path.join(self.tmp, 'video.mp4')     # Concerto passes the video path
+        for fmt, ext, subtype in (('wav32f', '.wav', 'FLOAT'), ('flac', '.flac', 'PCM_24'),
+                                  ('wav16', '.wav', 'PCM_16')):
+            with self.subTest(fmt=fmt):
+                d = self._post('/save_preview_audio', {'out_path': out, 'audio_format': fmt})
+                self.assertEqual(d['path'], os.path.join(self.tmp, 'video' + ext))
+                self.assertEqual(sf.info(d['path']).subtype, subtype)
+                audio, _ = sf.read(d['path'], dtype='float32')
+                if fmt == 'wav32f':
+                    np.testing.assert_array_equal(audio, full)          # bit-exact copy
+                else:
+                    np.testing.assert_allclose(audio, full, atol=1e-4)
 
     def test_resume_metadata_round_trip(self):
         out = os.path.join(self.tmp, 'video.ts')
@@ -123,6 +215,41 @@ class ServerTests(unittest.TestCase):
                 f.write(b'x')
         d = self._post('/concerto_check_segments', {'out_path': out})
         self.assertEqual(d['existing'], [0, 3])
+
+    def _stems(self, path, **opts):
+        d = self._post('/separate', {'path': path, **opts})
+        return {s['name']: sf.read(s['path'], dtype='float32', always_2d=True)[0] for s in d['stems']}
+
+    def test_stems_keep_the_stereo_image(self):
+        t = np.arange(2 * SR) / SR
+        tone = 0.3 * np.sin(2 * np.pi * 220 * t)
+        clicks = np.zeros_like(t); clicks[::SR // 4] = 0.8
+        src = np.stack([tone + clicks, np.zeros_like(t)], axis=1).astype(np.float32)  # all left
+        path = os.path.join(self.tmp, 'lr.wav')
+        sf.write(path, src, SR, subtype='FLOAT')
+        for opts in ({'method': 'hpss'}, {'method': 'nmf', 'n_components': 2},
+                     {'method': 'nmf', 'n_components': 2, 'nmf_mode': 'naive'},
+                     {'method': 'freqband', 'bands': [{'low': 0, 'high': 1000}, {'low': 1000, 'high': 11025}]}):
+            with self.subTest(**{k: v for k, v in opts.items() if k != 'bands'}):
+                stems = self._stems(path, **opts)
+                for name, y in stems.items():
+                    self.assertEqual(y.shape, src.shape, name)                 # stereo, full length
+                    self.assertLess(float(np.max(np.abs(y[:, 1]))), 1e-4, name)  # right stays silent
+                if opts.get('nmf_mode') != 'naive':
+                    # soft masks / band masks partition the spectrum → stems sum to the source
+                    np.testing.assert_allclose(sum(stems.values()), src, atol=2e-3)
+
+    def test_mono_stems_match_standard_hpss(self):
+        import librosa
+        y = (0.3 * np.sin(2 * np.pi * 220 * np.arange(SR) / SR)).astype(np.float32)
+        y[::SR // 5] += 0.8
+        path = os.path.join(self.tmp, 'm.wav')
+        sf.write(path, y, SR, subtype='FLOAT')
+        stems = self._stems(path, method='hpss')
+        h, p = librosa.effects.hpss(y)
+        self.assertEqual(stems['harmonic'].shape, (len(y), 1))                  # still mono
+        np.testing.assert_allclose(stems['harmonic'][:, 0], h, atol=1e-5)
+        np.testing.assert_allclose(stems['percussive'][:, 0], p, atol=1e-5)
 
     def test_only_the_editor_page_can_use_the_server(self):
         secret = os.path.join(self.tmp, 'secret.png')

@@ -1,9 +1,12 @@
 """Messiaen: Modes — sliding-window pitch quantization to Messiaen's modes of limited transposition."""
 import numpy as np
+from plugins import frames_io, mono
+from src.stretch import pitch_shift
 
 NAME     = "Messiaen: Modes"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_modes"
+STEREO   = True   # gets (frames, channels); see plugins.apply_plugin
 
 # Standard musicologically correct Messiaen modes (semitone intervals within octave)
 _MODES = {
@@ -47,16 +50,16 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     dw            = float(params.get("dry_wet", 100)) / 100.0
     pitch_classes = _MODES.get(mode_key, _MODES["2"])
 
-    audio   = clip.astype(np.float32)
+    audio, back = frames_io(clip)
+    analysis = mono(audio)
     win_len = max(512, int(window_sec * sr))
     hop_len = win_len // 2
 
-    wet  = np.zeros_like(audio)
-    norm = np.zeros_like(audio)
+    centres, shifts = [], []
 
     for i0 in range(0, len(audio), hop_len):
         i1     = min(i0 + win_len, len(audio))
-        window = audio[i0:i1]
+        window = analysis[i0:i1]
         if len(window) < 64:
             continue
 
@@ -74,28 +77,14 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
             else:
                 shift_st = _snap_shift(float(np.median(voiced)), root_hz, pitch_classes)
 
-        # Apply shift to this window
-        if abs(shift_st) >= 0.05:
-            try:
-                shifted = librosa.effects.pitch_shift(window, sr=sr, n_steps=float(shift_st))
-            except Exception:
-                shifted = window.copy()
-        else:
-            shifted = window.copy()
+        centres.append((i0 + i1) / 2.0)
+        shifts.append(shift_st if abs(shift_st) >= 0.05 else 0.0)
 
-        # Trim/pad to window length
-        if len(shifted) > len(window):
-            shifted = shifted[:len(window)]
-        elif len(shifted) < len(window):
-            shifted = np.pad(shifted, (0, len(window) - len(shifted)))
+    if not centres or not any(shifts):
+        return back(audio)
+    # The snapped shift of each window, gliding from window centre to window
+    # centre, as one pitch curve for a single Rubber Band pass.
+    curve = np.interp(np.arange(len(audio)), centres, shifts)
+    wet = pitch_shift(audio, sr, curve)
 
-        # Hanning envelope for overlap-add
-        env         = np.hanning(len(window)).astype(np.float32)
-        wet[i0:i1]  += shifted * env
-        norm[i0:i1] += env
-
-    # Normalize by accumulated envelope weights
-    safe_norm = np.where(norm > 1e-6, norm, 1.0)
-    wet       = wet / safe_norm
-
-    return (audio * (1.0 - dw) + wet * dw).astype(np.float32)
+    return back(audio * (1.0 - dw) + wet * dw)

@@ -123,5 +123,27 @@ For reference, here is what the program does when you run it:
 4. **V2** (if enabled) — interprets dynamics markings and adds expressive offsets to each event
 5. **Mix** — places each event on the timeline: resamples for speed, reverses if set, loops, applies fade, applies gain and effects
 6. **Dynamics** — builds the amplitude envelope from dynamic marks and crescendo/decrescendo ranges, and multiplies it into the mix
-7. **Normalise** — adjusts the overall level to 0.9 peak amplitude
+7. **Loudness** — the level stays as the performance made it. The safety brake pulls down any moment that would go above −1 dB, and an optional adjustment sets the loudness of the whole file (see below)
 8. **Write** — saves the output file
+
+---
+
+## Output loudness
+
+The render keeps the level the performance produced: a quiet interpretation comes out quiet and a loud one loud, so renders can be compared directly. Two settings in the `output:` block of `config.yaml` finish the file:
+
+```yaml
+output:
+  brake: true         # safety brake (recommended)
+  adjust: none        # none | source | target
+  target_lufs: -14    # used when adjust: target
+```
+
+- **brake** — a limiter that pulls down only the moments that would go above −1 dB, so loud passages don't distort. Everything else is left exactly as it is. With `false`, anything over the maximum clips.
+- **adjust** — one volume change for the whole file. Levels inside the piece are kept.
+  - `none` — keep the level as performed.
+  - `source` — make the render as loud overall as the input recording.
+  - `target` — reach `target_lufs`: −14 for streaming (Spotify, YouTube), −16 for Apple Music and podcasts, −23 for broadcast. Loudness is measured in LUFS (ITU-R BS.1770), which follows how loud music sounds, not its single loudest instant.
+
+After each render the program prints the loudness, any adjustment, and how much the brake had to work. If the brake reduces peaks by several dB at a target, that target is louder than this piece comfortably allows.
+

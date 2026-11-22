@@ -1,5 +1,6 @@
 import yaml
 import numpy as np
+from src.rand import rng
 from src.envelope import DYNAMIC_LEVELS
 
 
@@ -14,25 +15,25 @@ def _resolve(val):
     """
     # shorthand: [min, max] → uniform range
     if isinstance(val, list) and len(val) == 2:
-        return float(np.random.uniform(val[0], val[1]))
+        return float(rng().uniform(val[0], val[1]))
 
     if not isinstance(val, dict) or 'distribution' not in val:
         return val
 
     dist = val['distribution']
     if dist == 'gaussian':
-        return float(np.random.normal(val['mean'], val['std']))
+        return float(rng().normal(val['mean'], val['std']))
     if dist in ('uniform', 'random'):
-        return float(np.random.uniform(val['low'], val['high']))
+        return float(rng().uniform(val['low'], val['high']))
     if dist == 'bernoulli':
-        return bool(np.random.random() < val['p'])
+        return bool(rng().random_sample() < val['p'])
     if dist == 'discrete':
         values  = val['values']
         weights = val.get('weights')
         if weights:
             weights = np.array(weights, dtype=float)
             weights /= weights.sum()
-        return values[int(np.random.choice(len(values), p=weights))]
+        return values[int(rng().choice(len(values), p=weights))]
     raise ValueError(f"unknown distribution: '{dist}'")
 
 

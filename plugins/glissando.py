@@ -1,10 +1,12 @@
 """Penderecki: Glissando — linear pitch slides spanning each segment."""
 import numpy as np
-from src.dsp import ola_blocks
+from plugins import frames_io
+from src.stretch import pitch_shift, steps_to_curve
 
 NAME     = "Penderecki: Glissando"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissando"
+STEREO   = True   # gets (frames, channels); see plugins.apply_plugin
 
 PARAMS = {
     "gliss_range": {"label": "gliss range st", "type": "int",   "min": 1,   "max": 24,  "default": 12},
@@ -14,13 +16,11 @@ PARAMS = {
 
 
 def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
-    import librosa
-
     gliss_range = int(params.get("gliss_range", 12))
     n_steps     = max(3, int(params.get("n_steps", 5)))
     dw          = float(params.get("dry_wet", 80)) / 100.0
 
-    audio   = clip.astype(np.float32)
+    audio, back = frames_io(clip)
     seg_len = max(1024, int(0.2 * sr))  # one sweep every ~200 ms
     sub_len = seg_len // n_steps
 
@@ -28,14 +28,10 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     # sub-steps, repeating every segment.
     shifts = np.linspace(-gliss_range / 2, gliss_range / 2, n_steps)
 
-    def _step(k, sub):
-        st = float(shifts[k % n_steps])
-        try:
-            return librosa.effects.pitch_shift(sub, sr=sr, n_steps=st)
-        except Exception:
-            return sub
+    # The repeating sweep as one pitch curve, gliding between steps, followed
+    # by a single Rubber Band pass.
+    n_sub = -(-len(audio) // sub_len)
+    values = shifts[np.arange(n_sub) % n_steps]
+    wet = pitch_shift(audio, sr, steps_to_curve(values, sub_len, len(audio)))
 
-    # Overlapping windows crossfade adjacent steps (butted steps crackle).
-    wet = ola_blocks(audio, 2 * sub_len, _step)
-
-    return (audio * (1.0 - dw) + wet * dw).astype(np.float32)
+    return back(audio * (1.0 - dw) + wet * dw)

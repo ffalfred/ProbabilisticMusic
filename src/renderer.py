@@ -3,8 +3,11 @@ import subprocess
 import numpy as np
 import soundfile as sf
 from src.envelope import build_dynamics_envelope, build_duck_envelope, build_phrase_envelope
-from src.mixer    import mix_events, normalise, _stretch_mix_by_tempo
+from src.mixer    import mix_events, _stretch_mix_by_tempo
 from src.fx       import apply_section_fx, apply_global_fx
+from src.dsp      import env_mul, pad_frames
+from src.loudness import finish, options_from
+from src.articulations import apply_mix_fermatas
 
 
 def _neutralise_score(score: dict, events: list):
@@ -45,12 +48,32 @@ def _neutralise_score(score: dict, events: list):
     return score2, events2
 
 
+# Score lists whose entries can be muted in the editor (events, dynamics and
+# articulations are skipped where they are used)
+_MUTABLE = ('tempo', 'phrases', 'note_rel', 'fx_ranges', 'fx_sections')
+
+
+def drop_muted(score: dict) -> dict:
+    """The score without its muted tempo ranges, phrases, note relations and
+    FX zones, so a saved score renders like the editor plays it."""
+    if not any(isinstance(score.get(k), list) and any(isinstance(x, dict) and x.get('muted')
+                                                      for x in score[k]) for k in _MUTABLE):
+        return score
+    out = dict(score)
+    for k in _MUTABLE:
+        if isinstance(score.get(k), list):
+            out[k] = [x for x in score[k] if not (isinstance(x, dict) and x.get('muted'))]
+    return out
+
+
 def _apply_phrase_tempo(score: dict) -> dict:
     """Merge phrase tempo_factors into score['tempo'] so the single stretch pass handles both.
+    Muted entries are dropped first (drop_muted): every render path calls this.
 
     Phrase tempo_factor is a CONSTANT multiplier across the phrase (not a ramp),
     so we explicitly mark it shape='step'.
     """
+    score = drop_muted(score)
     phrase_tempos = [
         {'from': p['from'], 'to': p['to'], 'factor': p['tempo_factor'], 'shape': 'step'}
         for p in score.get('phrases', [])
@@ -110,11 +133,15 @@ def _remap_events(events: list, tempo_map: list) -> list:
 
 def render_mix(score: dict, bank: dict, events: list, sr: int,
                base: np.ndarray = None) -> tuple:
-    """Render events over the base and return (normalised mix, tempo_map).
+    """Render events over the base and return (mix, tempo_map).
 
     Shared by the CLI renderer and the editor server so every route produces
     the same audio. Expects phrase tempos already merged (_apply_phrase_tempo).
+    The mix keeps the level the performance produced — it is not normalised;
+    src.loudness.finish applies the safety brake / export adjustment.
     """
+    score = drop_muted(score)
+
     # 1. Mix everything in SCORE TIME — no tempo warping anywhere inside mix_events.
     mix = mix_events(events, bank, sr, score, base)
 
@@ -122,9 +149,14 @@ def render_mix(score: dict, bank: dict, events: list, sr: int,
     #    Returns a score→real tempo map used to remap everything else.
     mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
 
+    # 2b. Whole-mix fermatas: the piece waits. Inserts the held sound and
+    #     makes the tempo map stand still there, so everything below (and the
+    #     editor's cursor) follows.
+    mix, tempo_map = apply_mix_fermatas(mix, sr, score.get('articulations', []), tempo_map, _score_to_real)
+
     # 3. FX applied AFTER stretch, in real time, so reverb tails don't get
     #    phase-vocoded and seam discontinuities are avoided.
-    mix = apply_section_fx(mix, sr, score.get('fx_sections', []))
+    mix = apply_section_fx(mix, sr, score.get('fx_sections', []), tempo_map, _score_to_real)
     mix = apply_global_fx(mix, sr, score.get('fx_global', []))
 
     # 4. Envelopes: positions authored in score time → remap to real time.
@@ -134,31 +166,39 @@ def render_mix(score: dict, bank: dict, events: list, sr: int,
     if not _golem_active:
         dynamics = score.get('dynamics', [])
         if dynamics:
-            mix *= build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map))
+            mix = env_mul(mix, build_dynamics_envelope(len(mix), sr, _remap_dynamics(dynamics, tempo_map)))
 
     phrases = score.get('phrases', [])
     if phrases:
-        mix *= build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map))
+        mix = env_mul(mix, build_phrase_envelope(len(mix), sr, _remap_phrases(phrases, tempo_map)))
 
     # duck_key: a specific sample ducks the entire mix
     dk = score.get('duck_key')
     sounding = [e for e in events if not e.get('muted')]
     if dk and dk.get('enabled') and dk.get('key') and sounding:
-        mix *= build_duck_envelope(
+        mix = env_mul(mix, build_duck_envelope(
             len(mix), sr, _remap_events(sounding, tempo_map),
             trigger_fn=lambda ev: ev.get('sample') == dk['key'],
             amount_db=dk.get('amount_db', -10.0),
             attack=dk.get('attack', 0.01),
             release=dk.get('release', 0.3),
-        )
+        ))
 
-    return normalise(mix), tempo_map
+    # 5. silence_end: seconds of silence after the piece
+    tail = int(float(score.get('silence_end') or 0) * sr)
+    if tail > 0:
+        mix = pad_frames(mix, len(mix) + tail)
+
+    return mix, tempo_map
 
 
 def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = None,
-           wav_path: str = None):
+           wav_path: str = None, loudness: dict = None):
+    """Render to a file. `loudness` is config.yaml's output block:
+    {brake: true, adjust: none|source|target, target_lufs: -14}."""
     score = _apply_phrase_tempo(score)
     mix, tempo_map = render_mix(score, bank, events, sr, base)
+    mix, report = finish(mix, sr, source=base, **options_from(loudness))
     score['_tempo_map'] = tempo_map
     os.makedirs('output', exist_ok=True)
 
@@ -185,3 +225,21 @@ def render(score: dict, bank: dict, events: list, sr: int, base: np.ndarray = No
         print(f"rendered → {out_path}  ({len(mix)/sr:.1f}s)")
     else:
         print(f"rendered → {wav_path}  ({len(mix)/sr:.1f}s)")
+    print(describe_loudness(report))
+
+
+def describe_loudness(report: dict) -> str:
+    """One line for the user: level, adjustment, brake, peak."""
+    def f(v):
+        return 'silent' if v is None else f"{v:.1f}"
+    parts = [f"loudness {f(report.get('lufs'))} LUFS"]
+    if report.get('gain_db'):
+        parts.append(f"adjusted {report['gain_db']:+.1f} dB")
+    if report.get('brake_db'):
+        parts.append(f"brake −{report['brake_db']:.1f} dB")
+    pk = report.get('peak_db')
+    if pk is not None and pk > 0:
+        parts.append(f"peaks +{pk:.1f} dB over max (will clip)")
+    else:
+        parts.append(f"peak {f(pk)} dB")
+    return ', '.join(parts)

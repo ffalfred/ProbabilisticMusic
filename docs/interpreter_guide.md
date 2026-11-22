@@ -206,6 +206,8 @@ You can iterate: save "version 1", change things, save "version 2", compare.
 
 Also top bar: **↓ WAV** button. Renders the current interpretation and saves it to `output/<name>.wav`. Uses the `name` field you set.
 
+The export popup has a **Loudness** setting: leave the level as performed (default), match the loaded audio, or reach a target (−14 / −16 / −23 LUFS). The **Safety brake** checkbox (ticked by default) keeps peaks below −1 dB. The same options are in the Concerto Download popup. See [Loudness and the safety brake](editor.md#loudness-and-the-safety-brake).
+
 If you want a bunch of different takes: press WAV, change the seed (or clear it), press Trace, press WAV again. You'll get multiple distinct renders.
 
 ---

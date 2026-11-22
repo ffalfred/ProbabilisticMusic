@@ -9,7 +9,11 @@ const state = {
   events: [],         // [{sample, t, speed, gain_db, loop, reverse, fx, speeds}]
   tempo: [],          // [{from, to, mark, factor}]
   baseFx: [],         // [{type, ...params}] — fx on the base audio track
-  fxRanges: [],       // [{from, to, fx: [...]}] — fx on a time range of the base
+  fxRanges: [],       // [{from, to, fx: [...], target?: "output"}] — FX zones: on the source
+                      // (fx_ranges), or with target "output" on the whole output (fx_sections)
+  fxGlobal: [],       // [{type, ...params}] — Output FX: on the whole output (fx_global)
+  silenceStart: 0,    // s: events start this much later (lead-in of source audio)
+  silenceEnd: 0,      // s: silence added after the piece
   phrases: [],        // [{from, to, label, gain_db, fade_in, fade_out, tempo_factor}]
   noteRel: [],        // [{type:"glissando"|"arpeggiate", from, to, label}]
   articulations: [],  // [{type:"staccato"|"legato"|"fermata"|"accent", t?, from?, to?, label?}]
@@ -136,3 +140,50 @@ const vid          = document.getElementById("frame-vid");
 const baseAudio    = document.getElementById("base-audio");
 const mixAudio     = document.getElementById("mix-audio");
 let   currentSourcePath = null;
+
+
+// ─── FX zones: one list in the editor, two lists in a score ──────────────────
+// Zones on the source are `fx_ranges`; zones on the whole output (source +
+// events, after tempo changes) are `fx_sections`. In the editor they share
+// one list (state.fxRanges), output zones marked `target: "output"`.
+const FX_ZONE_COLORS = { source: "#8844cc", output: "#cc7733" };
+function fxZoneColor(fz) { return fz && fz.target === "output" ? FX_ZONE_COLORS.output : FX_ZONE_COLORS.source; }
+function fxZoneTag(fz)   { return fz && fz.target === "output" ? "out:" : "fx:"; }
+
+function zonesFromScore(sc) {
+  const src = (sc.fx_ranges || []).map(z => { const { target, ...r } = z; return r; });
+  const out = (sc.fx_sections || []).map(z => {
+    const to = z.to ?? (state.duration || (z.from || 0) + 1);
+    if (Array.isArray(z.fx)) return { ...z, to, target: "output" };
+    // The older single-effect form: {from, to, type, ...params}
+    const { from, to: _t, label, muted, ...fx } = z;
+    return { from: from || 0, to, fx: [fx], target: "output",
+             fade: true, fade_in_s: 0.006, fade_out_s: 0.006,
+             ...(label ? { label } : {}), ...(muted ? { muted } : {}) };
+  });
+  return [...src, ...out];
+}
+
+function zonesToScore(zones) {
+  const strip = z => { const { target, ...r } = z; return r; };
+  const fx_ranges   = zones.filter(z => z.target !== "output").map(strip);
+  const fx_sections = zones.filter(z => z.target === "output").map(strip);
+  return { fx_ranges, ...(fx_sections.length ? { fx_sections } : {}) };
+}
+
+// Output FX, lead-in and tail silence, as score fields (only when set)
+function outputSettingsToScore() {
+  return {
+    ...(state.fxGlobal && state.fxGlobal.length ? { fx_global: state.fxGlobal } : {}),
+    ...(state.silenceStart ? { silence_start: state.silenceStart } : {}),
+    ...(state.silenceEnd   ? { silence_end:   state.silenceEnd   } : {}),
+  };
+}
+
+function outputSettingsFromScore(sc) {
+  state.fxGlobal     = sc.fx_global || [];
+  state.silenceStart = parseFloat(sc.silence_start) || 0;
+  state.silenceEnd   = parseFloat(sc.silence_end) || 0;
+  if (typeof _updateOutputFxLabel === "function") _updateOutputFxLabel();
+  if (typeof _updateBaseFxLabel === "function") _updateBaseFxLabel();
+}

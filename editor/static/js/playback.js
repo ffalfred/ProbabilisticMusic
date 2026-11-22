@@ -28,7 +28,8 @@ function _mixRenderKey(mode) {
   const audioEl   = document.getElementById('interp-audio-path');
   const audioPath = (audioEl && audioEl.value.trim()) || state.filePath;
   const seedEl    = document.getElementById('interp-seed');
-  const key = { mode, audioPath, scorePath: interpState.scorePath, mix_dims: interpState.mix_dims };
+  const key = { mode, audioPath, scorePath: interpState.scorePath, mix_dims: interpState.mix_dims,
+                brake: audioBrakeOn() };
   if (mode === 'interp') {
     // seed is tracked via the seed box; trace_step only affects the trace
     const { seed, ...cfg } = interpState.v2config || {};
@@ -200,7 +201,9 @@ function buildComposerScore() {
   for (const [k, v] of Object.entries(state.samples))
     samplesClean[k] = { from: v.from, to: v.to,
       fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
-      ...(v.track ? { track: v.track } : {}) };
+      ...(v.fade_curve ? { fade_curve: v.fade_curve } : {}),
+      ...(v.track ? { track: v.track } : {}),
+      ...(v.include ? { include: v.include } : {}) };
   // The backend only honours `muted` on events/dynamics/articulations —
   // drop muted phrases, tempo ranges, fx zones and note relations here.
   const _live = arr => (arr || []).filter(x => !x.muted);
@@ -210,12 +213,14 @@ function buildComposerScore() {
     dynamics: state.dynamics,
     tempo: _live(state.tempo),
     base_fx: state.baseFx,
-    fx_ranges: _live(state.fxRanges),
+    ...zonesToScore(_live(state.fxRanges)),
+    ...outputSettingsToScore(),
     events: state.events,
     phrases: _live(state.phrases).map(p => ({
       from: p.from, to: p.to, label: p.label,
       gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
       fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
+      ...(p.fade_curve ? { fade_curve: p.fade_curve } : {}),
     })),
     ...(state.tracks.length > 1 ? { tracks: state.tracks.map(tk => ({
       path: tk.path, name: tk.name, gain_db: tk.gain_db, muted: tk.muted,
@@ -246,11 +251,13 @@ async function renderAndPlay() {
     const res = await fetch("/preview", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ path: state.filePath, score: buildComposerScore(), engine: 'v1' })
+      body: JSON.stringify({ path: state.filePath, score: buildComposerScore(), engine: 'v1',
+                             loudness: previewLoudness() })
     });
     const data = await res.json();
     if (gen !== _renderGen) return;
     if (data.error) { alert("Render error: " + (data.detail || data.error)); return; }
+    showBrakeReport(data.loudness);
 
     // Tempo map: score→real timing returned by server. Drives cursor/event
     // remapping between the score timeline and the rendered audio timeline.

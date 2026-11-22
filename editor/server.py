@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(_BETA_DIR))
 from src.sample_engine import build_bank
 from src.scheduler     import get_events
 from src.parser        import resolve_score, seed_everything
-from src.mixer         import normalise
+from src.loudness       import finish, options_from
 from src.renderer      import _apply_phrase_tempo, _neutralise_score, render_mix
 from src.character     import DIM_NAMES
 
@@ -287,12 +287,20 @@ def preview():
             score, events = _neutralise_score(score, events)
 
         mix, tempo_map = render_mix(score, bank, events, sr, base)
-        sf.write(PREVIEW_TMP, mix, sr)
+        # Level as performed, then the safety brake (the editor's switch) and,
+        # for a Concerto download, the export adjustment. Measured on the
+        # whole render, so a later range trim keeps the same level.
+        mix, loudness = finish(mix, sr, source=base, **options_from(data.get("loudness")))
+        # 32-bit float: the exact render. Browsers decode it, and the files
+        # made from it (Concerto audio, the video's soundtrack) are converted
+        # once, to the format the user chose, instead of from 16-bit.
+        sf.write(PREVIEW_TMP, mix, sr, subtype="FLOAT")
         return jsonify({
             "url": f"/preview_audio?v={int(_time.time())}",
             "tempo_map": tempo_map,
             "duration_real": float(len(mix) / sr),
             "seed": seed,
+            "loudness": loudness,
         })
     except Exception as e:
         import traceback
@@ -1123,13 +1131,14 @@ def concerto_load_trace():
 
 @app.route("/save_preview_audio", methods=["POST"])
 def save_preview_audio():
-    """Copy PREVIEW_TMP (the last rendered audio) to a user-chosen path.
+    """Save PREVIEW_TMP (the last rendered audio) to a user-chosen path.
 
     Used by the concerto popup's 'Audio' output checkbox. The audio has
-    already been rendered by /preview (with performance_neutral applied
-    if the user ticked that). Optionally pads silence at the start
-    (lead_in) and end (lead_out) so the WAV matches a video that has
-    matching lead-in/lead-out — the muxed result will stay in sync.
+    already been rendered by /preview (with performance_neutral and the
+    export loudness applied). Written in `audio_format` (as the Interpreter
+    export: wav24 default, wav32f, flac, wav16). Optionally pads silence at
+    the start (lead_in) and end (lead_out) so the file matches a video that
+    has matching lead-in/lead-out — the muxed result will stay in sync.
     """
     data = request.get_json() or {}
     out_path = (data.get('out_path') or '').strip()
@@ -1144,45 +1153,48 @@ def save_preview_audio():
         time_from = max(0.0, float(data.get('time_from', 0) or 0))
         time_to   = max(0.0, float(data.get('time_to', 0) or 0))
         out_path = os.path.abspath(out_path)
-        # Force .wav extension
-        base, _ = os.path.splitext(out_path)
-        out_path = base + '.wav'
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        info = sf.info(PREVIEW_TMP)
-        if lead_in <= 0 and lead_out <= 0 and time_from <= 0 and time_to <= 0:
-            # Nothing to trim or pad — fast path: just copy the file.
-            import shutil
-            shutil.copyfile(PREVIEW_TMP, out_path)
-        else:
-            audio, sr_in = sf.read(PREVIEW_TMP, dtype='float32', always_2d=True)
-            i0 = min(len(audio), int(round(time_from * sr_in)))
-            i1 = min(len(audio), int(round(time_to * sr_in))) if time_to > time_from else len(audio)
-            ch = audio.shape[1]
-            padded = np.concatenate([
-                np.zeros((int(round(lead_in * sr_in)), ch), dtype=np.float32),
-                audio[i0:i1],
-                np.zeros((int(round(lead_out * sr_in)), ch), dtype=np.float32),
-            ])
-            if ch == 1:
-                padded = padded[:, 0]
-            sf.write(out_path, padded, sr_in, subtype=info.subtype)  # keep source bit depth
+        audio, sr_in = sf.read(PREVIEW_TMP, dtype='float32', always_2d=True)
+        i0 = min(len(audio), int(round(time_from * sr_in)))
+        i1 = min(len(audio), int(round(time_to * sr_in))) if time_to > time_from else len(audio)
+        ch = audio.shape[1]
+        padded = np.concatenate([
+            np.zeros((int(round(lead_in * sr_in)), ch), dtype=np.float32),
+            audio[i0:i1],
+            np.zeros((int(round(lead_out * sr_in)), ch), dtype=np.float32),
+        ])
+        if ch == 1:
+            padded = padded[:, 0]
+        # _write_audio sets the extension to match the format (.wav / .flac)
+        out_path = _write_audio(out_path, padded, sr_in, data.get('audio_format', 'wav24'))
         return jsonify({"path": out_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/export_audio", methods=["POST"])
 @app.route("/export_interp_wav", methods=["POST"])
-def export_interp_wav():
-    """Render the interpreter mix and save to ProbabilisticMusic/output/."""
+def export_audio():
+    """Render and save an audio file — the Composer's or the Interpreter's.
+
+    The Composer sends its current state as `score` (rendered like its Mix:
+    engine v1 unless `engine` says otherwise); the Interpreter sends
+    `score_path` plus its interpretation (`interp`). export_mode: 'interp' /
+    'mix' (everything), 'score_only' (events, no source), 'raw' (the source).
+    """
     import datetime
     data = request.get_json()
     path = data.get("path", "")
     score_path = data.get("score_path")
-    if not score_path or not os.path.exists(score_path):
-        return jsonify({"error": f"Score not found: {score_path}"}), 404
+    composer = isinstance(data.get("score"), dict) and bool(data["score"])
     try:
-        with open(score_path) as f:
-            score = yaml.safe_load(f) or {}
+        if composer:
+            score = json.loads(json.dumps(data["score"]))       # private copy
+        else:
+            if not score_path or not os.path.exists(score_path):
+                return jsonify({"error": f"Score not found: {score_path}"}), 404
+            with open(score_path) as f:
+                score = yaml.safe_load(f) or {}
         if not path:
             path = score.get("base_track", "")
         if not path or not os.path.exists(path):
@@ -1193,7 +1205,11 @@ def export_interp_wav():
             score["golems"] = interp["golems"]
         if interp.get("mix_dims"):
             score["mix_dims"] = interp["mix_dims"]
-        config = _load_server_config(interp.get("v2config"))
+        config = _load_server_config(data.get("_config") or interp.get("v2config"))
+        if data.get("engine"):
+            config["engine"] = data["engine"]
+        elif composer:
+            config["engine"] = "v1"                   # the Composer's Mix engine
         seed_everything(config)
         resolve_score(score)
         score["base_track"] = path
@@ -1204,19 +1220,26 @@ def export_interp_wav():
         time_from   = float(data.get("time_from", 0) or 0)
         time_to     = float(data.get("time_to", 0) or 0)
 
-        from src.interpreter import interpret
-
+        source = base   # the loaded recording: reference for "match source"
         if export_mode == "raw":
-            # Raw base — no events, no golem
-            mix = normalise(base.copy() if base is not None else np.zeros(sr, dtype=np.float32))
+            # The source alone — no events, no golem
+            mix = base.copy() if base is not None else np.zeros(sr, dtype=np.float32)
         else:
             # Same render path as /preview. score_only drops the base track:
-            # events + golem over silence of the same length.
-            events, _state_trace = interpret(score, config, return_trace=True)
-            score['_state_trace'] = _state_trace
+            # events (+ golem) over silence of the same length.
+            if config.get("engine") == "v2":
+                from src.interpreter import interpret
+                events, _state_trace = interpret(score, config, return_trace=True)
+                score['_state_trace'] = _state_trace
+            else:
+                events = get_events(score)
             if export_mode == "score_only" and base is not None:
                 base = np.zeros_like(base)
             mix, _tm = render_mix(score, bank, events, sr, base)
+
+        # Loudness on the WHOLE render, before the range trim, so exporting
+        # part of the piece gives it the same level it has in the whole.
+        mix, loudness = finish(mix, sr, source=source, **options_from(data.get("loudness")))
 
         # Time range trim
         if time_to > time_from and time_from >= 0:
@@ -1230,31 +1253,24 @@ def export_interp_wav():
         fmt_ext   = _AUDIO_FORMATS.get(audio_fmt, _AUDIO_FORMATS['wav24'])['ext']
         user_path = (data.get("out_path") or "").strip()
         user_name = (data.get("out_name") or "").strip()
+        out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
         if user_path:
             # User chose a full path via the file browser
-            out_path = os.path.abspath(user_path)
-            base_p, _ = os.path.splitext(out_path)
-            out_path = base_p + fmt_ext
+            out_path = os.path.splitext(os.path.abspath(user_path))[0] + fmt_ext
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            out_name = os.path.basename(out_path)
         elif user_name:
-            out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
             os.makedirs(out_dir, exist_ok=True)
             safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
-            base_n, _ = os.path.splitext(safe)
-            safe = base_n + fmt_ext
-            out_name = safe
-            out_path = os.path.abspath(os.path.join(out_dir, out_name))
+            out_path = os.path.abspath(os.path.join(out_dir, os.path.splitext(safe)[0] + fmt_ext))
         else:
-            out_dir = os.path.join(os.path.dirname(__file__), "..", "output")
             os.makedirs(out_dir, exist_ok=True)
-            score_name = os.path.splitext(os.path.basename(score_path))[0]
+            stem = os.path.splitext(os.path.basename(score_path if not composer else path))[0]
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            out_name = f"interp_{score_name}_{ts}{fmt_ext}"
-            out_path = os.path.abspath(os.path.join(out_dir, out_name))
+            out_path = os.path.abspath(os.path.join(
+                out_dir, f"{'composer' if composer else 'interp'}_{stem}_{ts}{fmt_ext}"))
         out_path = _write_audio(out_path, mix, sr, audio_fmt)
-        out_name = os.path.basename(out_path)
-        return jsonify({"path": out_path, "name": out_name})
+        return jsonify({"path": out_path, "name": os.path.basename(out_path), "loudness": loudness,
+                        "duration": round(len(mix) / sr, 3)})
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
@@ -1302,83 +1318,6 @@ def serve_image():
     return send_from_directory(directory, os.path.basename(path), mimetype=mime)
 
 
-@app.route("/export_mp4", methods=["POST"])
-def export_mp4():
-    data        = request.get_json()
-    audio_path  = data["audioPath"]
-    image_path  = data["imagePath"]
-    score_start = float(data.get("scoreStart", 0))
-    score_end   = float(data.get("scoreEnd", 0))
-    fps         = int(data.get("fps", 30))
-    out_h       = int(data.get("height", 540))
-    out_w       = int(data.get("width", 960))
-
-    if not os.path.exists(audio_path) or not os.path.exists(image_path):
-        return jsonify({"error": "File not found"}), 404
-
-    dur = score_end - score_start
-    if dur <= 0:
-        return jsonify({"error": "scoreEnd must be > scoreStart"}), 400
-
-    output_path = data.get("output_path", "")
-    if output_path and os.path.isabs(output_path):
-        out_path = output_path
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    else:
-        out_name  = data.get("name", "score_video")
-        safe_name = "".join(c for c in out_name if c.isalnum() or c in "-_").strip() or "score_video"
-        os.makedirs(SCORES_DIR, exist_ok=True)
-        out_path  = os.path.join(SCORES_DIR, f"{safe_name}.mp4")
-
-    try:
-        from PIL import Image as PILImage, ImageDraw
-        img = PILImage.open(image_path).convert("RGB")
-        scale = out_h / img.height
-        img = img.resize((int(img.width * scale), out_h), PILImage.LANCZOS)
-        img_w = img.width
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s", f"{out_w}x{out_h}", "-r", str(fps),
-            "-i", "pipe:0",
-            # Input-side seek on the audio only: the piped video already
-            # starts at score_start. (As an output option -ss also cut the
-            # first score_start seconds off the video.)
-            "-ss", str(score_start), "-t", str(dur),
-            "-i", audio_path,
-            "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest",
-            out_path
-        ]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-
-        n_frames = int(dur * fps)
-        for i in range(n_frames):
-            t = score_start + i / fps
-            cursor_display = (t - score_start) / dur * img_w
-            scroll_left = int(cursor_display - out_w / 2)
-            src_x  = max(0, scroll_left)
-            src_x2 = min(img_w, scroll_left + out_w)
-            crop  = img.crop((src_x, 0, src_x2, out_h))
-            frame = PILImage.new("RGB", (out_w, out_h), (17, 17, 17))
-            frame.paste(crop, (src_x - scroll_left, 0))
-            draw = ImageDraw.Draw(frame)
-            cx = out_w // 2
-            draw.line([(cx, 0), (cx, out_h)], fill=(255, 50, 50), width=2)
-            proc.stdin.write(frame.tobytes())
-
-        proc.stdin.close()
-        proc.wait()
-        if proc.returncode != 0:
-            return jsonify({"error": "ffmpeg failed"}), 500
-        return jsonify({"path": out_path})
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "detail": traceback.format_exc()}), 500
-
-
 @app.route("/separate", methods=["POST"])
 def separate():
     data         = request.get_json()
@@ -1394,7 +1333,7 @@ def separate():
 
     try:
         import librosa
-        load_kwargs = {"sr": None, "mono": True}
+        load_kwargs = {"sr": None, "mono": False}   # keep the channels
         if from_t is not None:
             load_kwargs["offset"] = float(from_t)
         if to_t is not None and from_t is not None:
@@ -1402,6 +1341,8 @@ def separate():
         elif to_t is not None:
             load_kwargs["duration"] = float(to_t)
         audio, sr_lib = librosa.load(path, **load_kwargs)
+        audio = np.atleast_2d(audio)[:2]              # (channels, samples), L/R at most
+        n_samples = audio.shape[-1]
         base_name = os.path.splitext(os.path.basename(path))[0]
         # Method-specific subdirectory prevents overwriting across different stemize runs
         out_dir   = os.path.join(os.path.dirname(os.path.abspath(path)),
@@ -1411,45 +1352,53 @@ def separate():
         stems = []
 
         def _save(name, y):
+            # y is (channels, samples); files are (frames, channels)
             p = os.path.join(out_dir, f"{name}.wav")
-            sf.write(p, y.astype(np.float32), sr_lib, subtype='PCM_24')
+            sf.write(p, np.asarray(y, dtype=np.float32).T, sr_lib, subtype='PCM_24')
             stems.append({"name": name, "path": p})
 
+        # Stereo: every method analyses ONE reference magnitude (the channels'
+        # average) and applies the same mask to each channel's spectrum, so a
+        # stem keeps each sound's left/right placement, and stems of one sound
+        # line up across channels (separate per-channel NMF would number its
+        # components differently on each side). Mono reduces to the usual
+        # single-channel separation.
+        D     = librosa.stft(audio)                   # (channels, freq, frames)
+        S_ref = np.abs(D).mean(axis=0)                # (freq, frames)
+
+        def _istft(spec):
+            return librosa.istft(spec, length=n_samples)
+
         if method in ("hpss", "both"):
-            harmonic, percussive = librosa.effects.hpss(audio)
-            _save("harmonic", harmonic)
-            _save("percussive", percussive)
+            mask_h, mask_p = librosa.decompose.hpss(S_ref, mask=True)
+            _save("harmonic",   _istft(D * mask_h))
+            _save("percussive", _istft(D * mask_p))
 
         if method in ("nmf", "both"):
-            D     = librosa.stft(audio)
-            S     = np.abs(D)
-            comps, acts = librosa.decompose.decompose(S, n_components=n_components, sort=True)
+            comps, acts = librosa.decompose.decompose(S_ref, n_components=n_components, sort=True)
             components  = [np.outer(comps[:, i], acts[i, :]) for i in range(n_components)]
             if nmf_mode == "softmask":
                 S_total = np.maximum(sum(components), 1e-10)
                 for i, S_i in enumerate(components):
-                    y_i = librosa.istft((S_i / S_total) * D)
-                    _save(f"nmf_{i+1}", y_i)
-            else:  # naive
-                phase = np.angle(D)
+                    _save(f"nmf_{i+1}", _istft((S_i / S_total) * D))
+            else:  # naive: component magnitude with each channel's own phase,
+                   # shared out by that channel's share of the reference level
+                share = np.abs(D) / np.maximum(S_ref, 1e-10)
+                phase = np.exp(1j * np.angle(D))
                 for i, S_i in enumerate(components):
-                    y_i = librosa.istft(S_i * np.exp(1j * phase))
-                    _save(f"nmf_{i+1}", y_i)
+                    _save(f"nmf_{i+1}", _istft(S_i * share * phase))
 
         if method == "freqband":
             bands = data.get("bands", [])
             if not bands:
                 return jsonify({"error": "No frequency bands defined"}), 400
-            n_fft = 2048
-            D     = librosa.stft(audio, n_fft=n_fft)
-            freqs = librosa.fft_frequencies(sr=sr_lib, n_fft=n_fft)
+            freqs = librosa.fft_frequencies(sr=sr_lib, n_fft=2048)   # librosa.stft default
             for band in bands:
                 low_hz  = float(band.get("low",  0))
                 high_hz = float(band.get("high", sr_lib / 2))
                 name    = str(band.get("name", "")).strip() or f"band_{int(low_hz)}_{int(high_hz)}"
                 mask    = ((freqs >= low_hz) & (freqs <= high_hz)).reshape(-1, 1).astype(np.float32)
-                y_band  = librosa.istft(D * mask, length=len(audio))
-                _save(name, y_band)
+                _save(name, _istft(D * mask))
 
         return jsonify({"stems": stems})
     except Exception as e:

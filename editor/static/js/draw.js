@@ -222,7 +222,7 @@ function draw() {
   // FX zones
   for (const fz of _sdd().fxRanges) {
     const x1 = tToX(fz.from), x2 = tToX(fz.to);
-    const col = "#8844cc";
+    const col = fxZoneColor(fz);
     ctx.fillStyle = hexAlpha(col, 0.14);
     ctx.fillRect(x1, RULER_H, x2 - x1, wH);
     ctx.strokeStyle = col;
@@ -547,13 +547,13 @@ function drawScoreOverlay(c, ctx, view) {
   }
   // FX zones
   for (const fz of _sdd().fxRanges) {
-    const x1 = tx(fz.from), x2 = tx(fz.to);
-    ctx.fillStyle = hexAlpha("#8844cc", 0.12); ctx.fillRect(x1, 0, x2 - x1, H);
-    ctx.strokeStyle = hexAlpha("#8844cc", 0.5); ctx.lineWidth = 1; ctx.setLineDash([2,3]);
+    const x1 = tx(fz.from), x2 = tx(fz.to), zc = fxZoneColor(fz);
+    ctx.fillStyle = hexAlpha(zc, 0.12); ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = hexAlpha(zc, 0.5); ctx.lineWidth = 1; ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke();
-    ctx.setLineDash([]); ctx.fillStyle = hexAlpha("#8844cc", 0.9); ctx.font = "10px 'Courier New', monospace";
-    ctx.fillText("fx:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
+    ctx.setLineDash([]); ctx.fillStyle = hexAlpha(zc, 0.9); ctx.font = "10px 'Courier New', monospace";
+    ctx.fillText(fxZoneTag(fz) + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
   }
   // Phrase / slur markers
   for (const ph of _sdd().phrases) {
@@ -603,11 +603,12 @@ function drawScoreOverlay(c, ctx, view) {
       ctx.strokeStyle = hexAlpha(col, 0.7); ctx.lineWidth = 1.5; ctx.setLineDash([2,3]);
       ctx.beginPath(); ctx.moveTo(xa, 0); ctx.lineTo(xa, H); ctx.stroke();
       ctx.setLineDash([]);
-      const sym = ar.type === "staccato" ? "\u2022" : ar.type === "fermata" ? "\uD834\uDD10" : ">";
+      const sym = ar.type === "staccato" ? "\u2022" : ar.type === "fermata" ? "\uD834\uDD10"
+                : ar.type === "legato" ? "\u2322" : ">";
       ctx.fillStyle = hexAlpha(col, 0.95); ctx.font = "13px 'Courier New', monospace";
       ctx.fillText(sym, xa + 3, H / 2);
       ctx.font = "8px 'Courier New', monospace";
-      ctx.fillText(ar.type, xa + 3, H / 2 + 13);
+      ctx.fillText(ar.type + (ar.target === "mix" ? " (mix)" : ""), xa + 3, H / 2 + 13);
     } else {
       const x1 = tx(ar.from), x2 = tx(ar.to);
       ctx.fillStyle = hexAlpha(col, 0.07); ctx.fillRect(x1, 0, x2 - x1, H);
@@ -617,7 +618,7 @@ function drawScoreOverlay(c, ctx, view) {
       ctx.setLineDash([]); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(x1, 8); ctx.bezierCurveTo(x1, 0, x2, 0, x2, 8); ctx.stroke();
       ctx.fillStyle = hexAlpha(col, 0.9); ctx.font = "8px 'Courier New', monospace";
-      ctx.fillText("legato", x1 + 3, 20);
+      ctx.fillText(ar.type + (ar.target === "mix" ? " (mix)" : ""), x1 + 3, 20);
     }
   }
   // Event markers
@@ -745,17 +746,17 @@ function drawFrameOverlay() {
 
   // FX zones
   for (const fz of _sdd().fxRanges) {
-    const x1 = tToXF(fz.from), x2 = tToXF(fz.to);
-    frameCtx.fillStyle = hexAlpha("#8844cc", 0.12);
+    const x1 = tToXF(fz.from), x2 = tToXF(fz.to), zc = fxZoneColor(fz);
+    frameCtx.fillStyle = hexAlpha(zc, 0.12);
     frameCtx.fillRect(x1, 0, x2 - x1, H);
-    frameCtx.strokeStyle = hexAlpha("#8844cc", 0.5);
+    frameCtx.strokeStyle = hexAlpha(zc, 0.5);
     frameCtx.lineWidth = 1; frameCtx.setLineDash([2,3]);
     frameCtx.beginPath(); frameCtx.moveTo(x1, 0); frameCtx.lineTo(x1, H); frameCtx.stroke();
     frameCtx.beginPath(); frameCtx.moveTo(x2, 0); frameCtx.lineTo(x2, H); frameCtx.stroke();
     frameCtx.setLineDash([]);
-    frameCtx.fillStyle = hexAlpha("#8844cc", 0.9);
+    frameCtx.fillStyle = hexAlpha(zc, 0.9);
     frameCtx.font = "10px 'Courier New', monospace";
-    frameCtx.fillText("fx:" + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
+    frameCtx.fillText(fxZoneTag(fz) + fz.fx.map(f => f.type).join("+"), x1 + 3, H - 8);
   }
 
   // Phrase markers
@@ -916,14 +917,14 @@ function _drawFullExport(canvasEl, view) {
 
   // ── FX zones ──
   for (const fz of _sdd().fxRanges) {
-    const x1 = tx(fz.from), x2 = tx(fz.to);
-    ctx.fillStyle = 'rgba(136,68,204,0.12)'; ctx.fillRect(x1, 0, x2 - x1, H);
-    ctx.strokeStyle = 'rgba(136,68,204,0.5)'; ctx.lineWidth = lw(1); ctx.setLineDash([Math.round(3*S), Math.round(3*S)]);
+    const x1 = tx(fz.from), x2 = tx(fz.to), zc = fxZoneColor(fz);
+    ctx.fillStyle = hexAlpha(zc, 0.12); ctx.fillRect(x1, 0, x2 - x1, H);
+    ctx.strokeStyle = hexAlpha(zc, 0.5); ctx.lineWidth = lw(1); ctx.setLineDash([Math.round(3*S), Math.round(3*S)]);
     ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x2, 0); ctx.lineTo(x2, H); ctx.stroke(); ctx.setLineDash([]);
-    const label = 'FX:' + fz.fx.map(f => f.type).join('+');
+    const label = fxZoneTag(fz).toUpperCase() + fz.fx.map(f => f.type).join('+');
     const fs = Math.round(9 * S);
-    botLabels.push({ x: x1 + pad, y: H - Math.round(6*S), text: label, w: label.length * fs * 0.6, h: fs, color: 'rgba(136,68,204,0.8)', font: font(9) });
+    botLabels.push({ x: x1 + pad, y: H - Math.round(6*S), text: label, w: label.length * fs * 0.6, h: fs, color: hexAlpha(zc, 0.8), font: font(9) });
   }
 
   // ── Phrases / slurs ──

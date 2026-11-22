@@ -11,6 +11,11 @@
   <button class="ws-tab active" data-ws="composer">Composer</button>
   <button class="ws-tab" data-ws="interpreter">Interpreter</button>
   <button class="ws-tab" data-ws="conductor">Conductor</button>
+  <label id="audio-brake-wrap" title="Safety brake: a limiter that pulls down only the moments that would go above −1 dB, so loud passages do not distort. Renders otherwise keep the level the performance produced. Off: overs clip.">
+    <input id="audio-brake" type="checkbox" checked>
+    <span id="audio-brake-label">brake</span>
+    <span id="audio-brake-status"></span>
+  </label>
   <div id="concerto-bar" title="">
     <span id="concerto-bar-label">concerto</span>
     <select id="concerto-audio" title="Audio that Concerto plays (View) and renders (Download)"
@@ -62,8 +67,8 @@
     <span class="ctb-sep">|</span>
     <input id="export-yaml-path" type="text" placeholder="save score…" class="path-select ctb-input" />
     <button id="export-btn" class="ctb-btn" title="Save score as YAML">&#8595;</button>
-    <input id="export-mp4-path" type="text" placeholder="save audio…" class="path-select ctb-input" />
-    <button id="export-mp4-btn" class="ctb-btn" title="Save scrolling score video">&#8659;</button>
+    <input id="export-audio-path" type="text" placeholder="save audio…" class="path-select ctb-input" />
+    <button id="export-audio-btn" class="ctb-btn" title="Export the mix as an audio file (WAV / FLAC)">&#8595;</button>
     <span class="ctb-sep">|</span>
     <input id="import-path" type="text" placeholder="import score…" class="path-select ctb-input" />
     <button id="browse-import-btn" class="ctb-btn" title="Browse score YAML files">&#128193;</button>
@@ -171,6 +176,12 @@
       <button id="base-fx-morpho-btn" title="Add a Morphogenics FX to the base track">+ &#10022; Morpho</button>
       <button id="base-fx-clear-btn" title="Remove all base FX" style="color:#a66;">&times;</button>
       <span id="base-fx-label" style="font-size:10px;color:#888;">none</span>
+      <span class="tool-sep" title="Effects on the whole output: source and events, after tempo changes">Output FX</span>
+      <button id="output-fx-classic-btn" title="Add a Classic FX to the whole output">+ &#9670; Classic</button>
+      <button id="output-fx-morpho-btn" title="Add a Morphogenics FX to the whole output">+ &#10022; Morpho</button>
+      <button id="output-fx-clear-btn" title="Remove all output FX" style="color:#a66;">&times;</button>
+      <span id="output-fx-label" style="font-size:10px;color:#888;">none</span>
+      <button id="timing-btn" title="Lead-in before the first event, and silence after the piece">&#9201; Lead / tail</button>
       <!-- Score tools -->
       <span class="tool-sep">Score</span>
       <button id="tool-sample" class="active" data-tool="sample">[ Sample ]</button>
@@ -914,6 +925,7 @@
 
 <script src="js/filebrowser.js"></script>
 <script src="js/state.js"></script>
+<script src="js/loudness.js"></script>
 <script src="js/wa-mixer.js"></script>
 <script src="js/wa-mix.js"></script>
 <script src="js/playback.js"></script>

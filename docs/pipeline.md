@@ -37,27 +37,31 @@ config.yaml     score.yaml  +  source audio/video
                 ├── apply fx_ranges (src/fx.py)
                 ├── duck_base envelope (src/envelope.py)
                 └── for each event:
-                    ├── varispeed resample (librosa)
+                    ├── varispeed resample (librosa), or time-stretch if pitch_lock (src/stretch.py)
                     ├── reverse
                     ├── loop
+                    ├── articulations on this event: staccato / legato / fermata (src/articulations.py)
                     ├── fade edges — fade_in/fade_out (src/envelope.py)
+                    ├── accent on this event
                     ├── gain
                     ├── apply event fx (src/fx.py)
-                    ├── articulations (staccato/accent/fermata/legato)
                     ├── pitch shift — pitch: field + note_rel: glissando (src/pitch.py)
                     └── place on timeline at warped time + silence_start
+                ├── whole-mix articulations: staccato / accent / legato (target: mix)
                 ├── auto_mix density scale (src/envelope.py)
                 │
                 ▼
             src/renderer.py
             render(score, bank, events, sr, base)
                 ├── merge phrases[].tempo_factor into tempo:
+                ├── tempo stretch (accelerando / ritardando) → tempo map
+                ├── whole-mix fermatas: insert the held sound, tempo map stands still
                 ├── build dynamics envelope (src/envelope.py)
                 ├── multiply envelope into mix
                 ├── build phrase envelope (src/envelope.py)
                 ├── multiply phrase envelope into mix
                 ├── duck_key envelope (src/envelope.py)
-                ├── normalise (src/mixer.normalise)
+                ├── loudness: adjust + safety brake (src/loudness.finish)
                 └── write output_<score>_<base>_NNN.wav
 ```
 
@@ -80,7 +84,11 @@ FX parameters are also resolved probabilistically. The `t`, `sample`, and `speed
 
 ## `src/sample_engine.py`
 
-Reads the source audio into a mono float32 numpy array. For video files, ffmpeg extracts the audio to a temp WAV first.
+Reads the source audio as a float32 numpy array of shape `(frames, channels)`, keeping its channels (more than two keep the first two, L/R). For video files (mp4, mov, avi, mkv, webm), ffmpeg extracts the audio to a temp WAV first, also keeping its channels.
+
+**Sample rate:** the piece runs at track 0's sample rate. Other tracks are resampled to it on load (librosa / soxr), before their track FX.
+
+**Channels:** all audio inside the engine is `(frames, channels)` with 1 or 2 channels, the layout soundfile reads and writes. A piece is stereo if any of its tracks is; mono tracks then play on both sides. A mono piece renders a mono file. Helpers in `src/dsp.py` keep this safe: `env_mul` applies 1-D envelopes (never `x * env`, which broadcasts `(n, 1) × (n,)` to `(n, n)`), `pad_frames` pads along time only, and `per_channel` runs mono processors (chorus, spectral inversion, mono plugins) on each channel with the same random draws. SoX effects and Rubber Band (`src/stretch.py`) process the channels together, so reverb and flanger spread a stereo signal and pitch shifts keep the image. Plugins that set `STEREO = True` (all but Spectral Smooth) get both channels at once, analyse the mono sum and can place voices with `spread` — see [morphogenics.md](morphogenics.md#stereo).
 
 **Multi-track mode** (`tracks:` in score): loads each track from its own file, applies per-track `gain_db`, skips `muted` tracks, and sums all active tracks into `combined_base`. The list of individual track arrays is kept so that samples can be sliced from a specific track via the `track:` field on the sample entry.
 
@@ -108,16 +116,27 @@ The core of the engine.
 4. If `duck_base.enabled`, ducks `mix` before events are layered (see below)
 5. For each event:
    - Copies the clip from the bank
-   - **Varispeed**: `librosa.resample(clip, orig_sr=int(sr * speed), target_sr=sr)` — telling librosa the source rate is `sr × speed` while asking for `sr` output is equivalent to a tape varispeed
+   - **Varispeed**: `librosa.resample(clip, orig_sr=int(sr * speed), target_sr=sr)` — telling librosa the source rate is `sr × speed` while asking for `sr` output is equivalent to a tape varispeed. With `pitch_lock`, `time_stretch(clip, sr, speed)` (src/stretch.py) changes the speed and keeps the pitch instead
    - **Reverse**: `clip[::-1].copy()`
    - **Loop**: `np.tile(clip, loop + 1)`
    - **Fade**: per-event or per-sample `fade_in_pct`/`fade_out_pct`; falls back to fixed 10ms
    - **Gain**: `clip *= 10 ** (gain_db / 20.0)`
    - **FX**: `apply_fx(clip, sr, fx_list)`
-   - **Articulations**: `staccato` / `accent` / `fermata` / `legato` applied if an `articulations:` entry matches this event's time
+   - **Articulations** (`target: event`, src/articulations.py): marks are matched to events first (a point mark → the event starting nearest within 0.5 s; a range → every event starting inside). Staccato / legato / fermata change the clip's length before its fades and FX; accent boosts its attack after the fades. Whole-mix marks (`target: mix`) run on the mix after all events are placed; whole-mix fermatas run in `render_mix` after the tempo stretch, because they insert time
    - **Pitch**: `resolve_event_pitch(event_t, event.pitch, note_rels)` — returns a semitone value from a `note_rel:` glissando if the event falls in range, otherwise the event's own `pitch` field; then `apply_pitch_shift(clip, sr, semitones)`
    - **Placement**: `mix[i0:i1] += clip` at the tempo-warped time + `silence_start`
 6. If `auto_mix.enabled`, multiplies `mix` by a density-based gain scale
+
+### Speed: parallel events and the render cache
+
+`mix_events` works in three steps:
+1. **The source** — base FX, then source FX zones — is processed once and **cached** (`src/render_cache.py`): the same settings on the same audio are reused by the next render.
+2. **Every event's clip** (`_event_clip`: speed, reverse, loop, articulations, fades, accent, gain, FX, pitch) is processed **in parallel** (a thread pool; Rubber Band, SoX and numpy release the GIL) and **cached**. The cache key is everything the clip depends on — the event's settings except where it is placed (`t`, timing offset, mix mode), its sample's audio, the marks on it, its glissando pitch — so an event that only moved is reused.
+3. **Placement** — timing, arpeggio stagger, layering — runs in order, as before.
+
+**Randomness.** Effects draw random numbers through `src.rand.rng()`. Each event gets its own random state, seeded in order from the render's seed, so parallel processing gives the same result every time and one event's randomness never depends on another's. The cache stores a result under its key alone when the work drew no random numbers (it can't depend on the seed: reused with any seed), and under key + seed when it did (reused only with the same seed). So with the default `seed: null`, every Mix still redraws random effects and probabilistic values, and reuses everything else.
+
+Decoded source files are also kept (`sample_engine._load_audio`, the last 4, until the file changes on disk), so a video's audio is extracted once. The cache holds up to 768 MB of audio in the editor's server process, least recently used dropped first; restarting the server empties it.
 
 ### `_warp_time(t_score, tempo_ranges)`
 
@@ -227,12 +246,13 @@ Returns the full plugin registry as JSON for the editor's FX dropdown:
 ```json
 [
   {
-    "type":   "morpho_saariaho_freeze",
+    "type":   "morpho_spectral_freeze",
     "name":   "Saariaho: Spectral Freeze",
     "group":  "morphogenics",
     "params": {
-      "n_partials":  {"label": "partials",    "type": "int",   "min": 5, "max": 50, "default": 20},
-      "freeze_rate": {"label": "freeze rate", "type": "float", "min": 0.01, "max": 1.0, "default": 0.1},
+      "mode":        {"label": "mode", "type": "select", "options": ["attacks", "follow"], "default": "attacks"},
+      "n_partials":  {"label": "partials (0 = all)", "type": "int", "min": 0, "max": 100, "default": 20},
+      "freeze_rate": {"label": "follow rate", "type": "float", "min": 0.0, "max": 1.0, "default": 0.1},
       "dry_wet":     {"label": "dry/wet %",   "type": "float", "min": 0, "max": 100, "default": 80}
     }
   },
@@ -255,7 +275,7 @@ Ties the full pipeline together for the CLI:
 3. Builds and applies the dynamics envelope
 4. Builds and applies the phrase envelope
 5. Applies `duck_key:` envelope if enabled
-6. Normalises to 0.9 peak
+6. Finishes the level with `src/loudness.finish` (config `output:` block): the level is kept as performed, an optional whole-file adjustment (match source / target LUFS) is applied, then the safety brake (look-ahead limiter at −1 dBFS)
 7. For audio input: writes `output/output_<score>_<base>_NNN.wav`
 8. For video input: writes a temp WAV, then calls:
    ```
@@ -268,7 +288,23 @@ Also adds `src/pitch.py`:
 | Function | What it does |
 |----------|-------------|
 | `resolve_event_pitch(event_t, base_pitch, note_rels)` | Returns interpolated semitone value if event falls in a full-band `glissando` range, else `base_pitch`. Band-limited glissandi (`freq_from`/`freq_to`) are applied to the mix by `apply_noterel_to_mix` instead, so events are never shifted twice. |
-| `apply_pitch_shift(clip, sr, semitones)` | Wraps `librosa.effects.pitch_shift`; no-ops for shifts < 0.05 st |
+| `apply_pitch_shift(clip, sr, semitones)` | Calls `src.stretch.pitch_shift` (channels together); no-ops for shifts < 0.05 st |
+| `apply_noterel_to_mix(mix, sr, note_rels)` | Banded glissandi: one pitch-curve pass over the band; arpeggio fades |
+
+`src/stretch.py` — every pitch shift and time stretch in the engine (event pitch, `pitch_lock`, tempo steps and ramps, banded glissandi, overtones, Morphogenics) goes through it. Back end: Rubber Band (R3 engine) via `pedalboard`; deterministic, channels processed together.
+
+| Function | What it does |
+|----------|-------------|
+| `pitch_shift(x, sr, semitones)` | Same length. `semitones` may be a per-sample curve (glides, stepped detune) |
+| `time_stretch(x, sr, rate)` | rate > 1 = shorter. `rate` may be a per-sample curve (tempo ramps); output length is exactly `sum(1/rate)` |
+| `transform(x, sr, rate, semitones)` | Both at once, constant values |
+| `read_at_rate(x, start, n_out, ratio)` | Tape-style read (pitch and speed together) for grains and short slides |
+| `steps_to_curve(values, hop, n)` | One value per hop → a per-sample curve with glides between values |
+| `parallel_map(fn, items)` | Runs independent Rubber Band calls on a shared thread pool; same results as serial |
+
+Time-varying curves are followed about every 1024 samples, and timing inside a long wide curve can wander by up to ~20 ms; the ends are exact.
+
+**Licence:** Rubber Band and `pedalboard` are GPLv3, the project is Apache-2.0 — see [installation.md](installation.md#licences).
 
 ---
 
@@ -290,7 +326,8 @@ In practice the target pull dominates; the Kalman update's corrections are small
 
 - `src/parser.py: seed_everything(config)` seeds numpy's global RNG and Python's `random` from `v2.seed` / `seed` (drawing one if unset) and writes it back to `config['v2']['seed']`. The interpreter's own RNG uses the same seed; plugins draw their generators via `plugins.plugin_rng()`. One seed therefore reproduces a whole render.
 - `src/parser.py: resolve_score(score)` resolves random event values (ranges, distributions) and normalises `marking:` → `mark:`. Used by `load_score` and by every server render route.
-- `src/renderer.py: render_mix(score, bank, events, sr, base)` is the single post-interpretation pipeline (mix → tempo stretch → section/global FX → envelopes → duck_key → normalise), shared by the CLI and the editor server.
+- `src/renderer.py: render_mix(score, bank, events, sr, base)` is the single post-interpretation pipeline (mix → tempo stretch → section/global FX → envelopes → duck_key), shared by the CLI and the editor server. It returns the mix at the level the performance produced; nothing normalises it.
+- `src/loudness.py`: `measure_lufs` (ITU-R BS.1770-4 integrated loudness), `brake` (look-ahead limiter; audio below the ceiling passes bit-identical, both channels get the same gain), `finish(mix, sr, adjust, target_lufs, source, use_brake)` → (audio, report). The editor's previews apply the brake switch; exports (Interpreter WAV, Concerto Download) apply the chosen adjustment, measured on the whole render before any range trim.
 - `src/dsp.py` holds the overlap-add / crossfade helpers used wherever audio is processed in pieces (glissandi, piecewise plugins).
 
 ---

@@ -8,6 +8,19 @@ engine: v2
 # set seed to an integer to reproduce a specific run, null for random
 seed: null
 
+# --- Output loudness (CLI renders) ---
+# The render keeps the level the performance produced (no normalising).
+#   brake:  safety brake — a limiter that pulls down only the moments that
+#           would go above -1 dBFS; everything else is untouched
+#   adjust: none   = keep the level as performed
+#           source = as loud overall as the input recording
+#           target = reach target_lufs (-14 streaming, -16 Apple/podcasts,
+#                    -23 broadcast); one gain for the whole file
+output:
+  brake: true
+  adjust: none
+  target_lufs: -14
+
 # --- V1 stochastic parameters ---
 # which v1 parameters should vary randomly within a range each run
 v1_stochastic:

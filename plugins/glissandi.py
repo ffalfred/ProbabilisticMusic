@@ -1,10 +1,12 @@
 """Desyatnikov: Glissandi — portamento slides at a random subset of onset boundaries."""
 import numpy as np
-from plugins import plugin_rng
+from plugins import plugin_rng, frames_io, mono
+from src.stretch import read_at_rate
 
 NAME     = "Desyatnikov: Glissandi"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissandi"
+STEREO   = True   # gets (frames, channels); see plugins.apply_plugin
 
 PARAMS = {
     "portamento_st": {"label": "portamento st",  "type": "float", "min": 1,  "max": 7,  "default": 3},
@@ -22,12 +24,12 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     density  = float(params.get("density_pct", 10)) / 100.0
     dw       = float(params.get("dry_wet", 80)) / 100.0
 
-    audio    = clip.astype(np.float32)
+    audio, back = frames_io(clip)
     slide_len = max(32, int(_SLIDE_MS * sr / 1000))
 
-    onsets = librosa.onset.onset_detect(y=audio, sr=sr, units="samples")
+    onsets = librosa.onset.onset_detect(y=mono(audio), sr=sr, units="samples")
     if len(onsets) < 1:
-        return audio
+        return back(audio)
 
     rng        = plugin_rng()
     n_selected = max(1, int(len(onsets) * density))
@@ -42,45 +44,15 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
         if len(seg) < 32:
             continue
 
-        # Slide from +port_st down to 0 (glide into the note)
-        # More sub-steps = smoother pitch transitions (less audible stepping).
-        # 75% overlap = stronger crossfade = no audible boundaries.
-        n_sub = 11
-        sub_len = max(16, len(seg) // (n_sub // 4 + 1))
-        if sub_len < 8:
-            continue
+        # Slide from +port_st down to 0 (glide into the note), tape-style:
+        # 50 ms is far too short for a time-stretcher, and a real portamento
+        # changes pitch and speed together anyway.
+        st = np.linspace(port_st, 0.0, len(seg))
+        ratio = 2.0 ** (st / 12.0)
+        slide_out = np.stack([read_at_rate(audio[:, c], i0, len(seg), ratio)
+                              for c in range(audio.shape[1])], axis=1)
 
-        # Overlap-add the pitch-shifted sub-segments with 75% overlap so the
-        # boundaries crossfade smoothly. This eliminates the phase
-        # discontinuities that caused crackling between adjacent pitch steps.
-        slide_out = np.zeros(len(seg), dtype=np.float32)
-        weight    = np.zeros(len(seg), dtype=np.float32)
-        hop = max(1, sub_len // 4)
-        win_len = sub_len
-        for k in range(n_sub):
-            t = k / max(n_sub - 1, 1)
-            st = port_st * (1.0 - t)  # slide from port_st → 0
-            s0 = k * hop
-            s1 = min(s0 + win_len, len(seg))
-            if s1 - s0 < 16:
-                continue
-            sub = seg[s0:s1]
-            try:
-                shifted = librosa.effects.pitch_shift(sub, sr=sr, n_steps=float(st))
-            except Exception:
-                shifted = sub
-            if len(shifted) > len(sub):
-                shifted = shifted[:len(sub)]
-            elif len(shifted) < len(sub):
-                shifted = np.pad(shifted, (0, len(sub) - len(shifted)))
-            win = np.hanning(len(shifted)).astype(np.float32)
-            slide_out[s0:s1] += shifted * win
-            weight[s0:s1]    += win
-        # Normalize overlap-add by accumulated window weight (avoid /0).
-        weight = np.maximum(weight, 1e-6)
-        slide_out /= weight
-
-        env = np.hanning(len(slide_out)).astype(np.float32)
+        env = np.hanning(len(slide_out)).astype(np.float32)[:, None]
         wet[i0:i1] += slide_out * env * 0.5  # additive blend
 
-    return (audio * (1.0 - dw) + wet * dw).astype(np.float32)
+    return back(audio * (1.0 - dw) + wet * dw)

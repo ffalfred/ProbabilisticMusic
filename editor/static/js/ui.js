@@ -130,13 +130,17 @@ function collectParam(id) {
 // this object. Each entry: {key, label, def, step, min?, max?, type?, options?}
 // type defaults to 'number'. Use 'select' for enum dropdowns.
 const FX_CLASSIC_SCHEMA = {
-  reverb:             [{ key: "reverberance", label: "reverberance", def: 100, step: 5,  min: 0, max: 100 },
+  reverb:             [{ key: "reverberance", label: "reverberance", def: 50,  step: 5,  min: 0, max: 100 },
                        { key: "damping",      label: "damping",      def: 50,  step: 5,  min: 0, max: 100 },
                        { key: "room_scale",   label: "room_scale",   def: 100, step: 5,  min: 0, max: 100 },
                        { key: "pre_delay",    label: "pre_delay_ms", def: 0,   step: 5,  min: 0, max: 500 },
+                       // dry = level of the original, wet = level of the reverb (1 = as loud as the original)
+                       { key: "dry",          label: "dry",          def: 1.0, step: 0.05, min: 0, max: 1 },
                        { key: "wet",          label: "wet",          def: 0.5, step: 0.05, min: 0, max: 1 }],
   delay:              [{ key: "delay_sec",    label: "delay_sec",    def: 0.3, step: 0.05, min: 0.01 },
+                       // each echo = feedback × the previous one; wet = level of the first echo
                        { key: "feedback",     label: "feedback",     def: 0.6, step: 0.05, min: 0, max: 0.95 },
+                       { key: "dry",          label: "dry",          def: 1.0, step: 0.05, min: 0, max: 1 },
                        { key: "wet",          label: "wet",          def: 0.5, step: 0.05, min: 0, max: 1 }],
   overdrive:          [{ key: "gain",         label: "gain",         def: 60, step: 5, min: 0, max: 100 },
                        { key: "colour",       label: "colour",       def: 20, step: 5, min: 0, max: 100 },
@@ -206,9 +210,53 @@ function _fxDefaults(fxType) {
 }
 
 // Read a single param input by id, parsing according to spec type
+// ─── Automation: a numeric FX setting can be a curve ─────────────────────────
+// Shown as text "0s: 200, 2s: 3000, 5s: 400" — seconds from the start of what
+// the effect processes (the event, the zone, the track or the whole output).
+function _isCurve(v) { return v && typeof v === "object" && Array.isArray(v.curve); }
+function _curveText(v) { return v.curve.map(([t, x]) => `${+t}s: ${+x}`).join(", "); }
+function _parseCurve(text) {
+  const pts = String(text).split(/[,;]/).map(p => p.trim()).filter(Boolean).map(p => {
+    const m = p.match(/^(-?[\d.]+)\s*s?\s*[:=]\s*(-?[\d.]+)$/);
+    return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
+  });
+  if (!pts.length || pts.some(p => !p || p.some(isNaN))) return null;
+  return { curve: pts.sort((a, b) => a[0] - b[0]) };
+}
+function _fxNumberInputHTML(id, spec, val) {
+  const style = "flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-family:inherit;font-size:11px;";
+  if (_isCurve(val))
+    return `<input id="${id}" data-curve="1" type="text" value="${escapeHtml(_curveText(val))}"
+       placeholder="0s: 200, 2s: 3000" title="seconds: value, … — straight lines between points" style="${style}color:#c9b6ff;" />`;
+  const minAttr = spec.min != null ? `min="${spec.min}"` : "";
+  const maxAttr = spec.max != null ? `max="${spec.max}"` : "";
+  const step    = spec.step != null ? spec.step : 0.1;
+  const v = (typeof val === "number" || typeof val === "string") ? val : spec.def;
+  return `<input id="${id}" type="number" value="${v}" step="${step}" ${minAttr} ${maxAttr} style="${style}" />`;
+}
+function _toggleFxCurve(id, idx, key) {
+  _syncRowsToModel();
+  const fx = _fxChain[idx];
+  const spec = _fxParamSpecs(fx.type).find(s => s.key === key) || { def: 0 };
+  const cur = fx[key];
+  if (_isCurve(cur)) fx[key] = cur.curve[0][1];                         // back to one value
+  else {
+    const v = (typeof cur === "number" && !isNaN(cur)) ? cur : spec.def;
+    fx[key] = { curve: [[0, v], [2, v]] };                              // a starting curve to edit
+  }
+  _renderFxChain();
+}
+
 function _readFxParamInput(id, spec) {
   const el = document.getElementById(id);
   if (!el) return spec.def;
+  if (el.dataset && el.dataset.curve === "1") {
+    const c = _parseCurve(el.value);
+    if (c) return c;
+    alert(`Couldn't read the curve for "${spec.label}": use  seconds: value, …  (e.g. 0s: 200, 2s: 3000). Keeping its first value.`);
+    const first = parseFloat(String(el.value).split(/[:=]/)[1]);
+    return isNaN(first) ? spec.def : first;
+  }
   if (spec.type === "select") return el.value;
   if (spec.type === "int")    return parseInt(el.value);
   return parseFloat(el.value);
@@ -295,11 +343,10 @@ function _fxRowHTML(fx, idx) {
       }).join("");
       input = `<select id="${id}" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;font-family:inherit;font-size:11px;padding:2px 4px;">${opts}</select>`;
     } else {
-      const minAttr = spec.min != null ? `min="${spec.min}"` : "";
-      const maxAttr = spec.max != null ? `max="${spec.max}"` : "";
-      const step    = spec.step != null ? spec.step : 0.1;
-      input = `<input id="${id}" type="number" value="${val}" step="${step}" ${minAttr} ${maxAttr}
-         style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-family:inherit;font-size:11px;" />`;
+      input = _fxNumberInputHTML(id, spec, val)
+        + `<button type="button" onclick="_toggleFxCurve('${id}', ${idx}, '${spec.key}')"
+             title="automate: let this setting change over time (points: seconds: value)"
+             style="flex:none;font-size:11px;padding:0 5px;border:1px solid #333;background:${_isCurve(val) ? '#2a2040' : '#1a1a1a'};color:#a8c;cursor:pointer;">~</button>`;
     }
     return `<div style="display:flex;gap:4px;align-items:center;margin:1px 0;">
       <span style="font-size:10px;color:#666;width:90px;flex:none;">${spec.label}</span>
@@ -378,6 +425,43 @@ function _addFxToChain(scope) {
   _renderFxChain();
 }
 
+// ─── Fade shape ───────────────────────────────────────────────────────────────
+// smooth (equal-power) is the default; others are stored as `fade_curve`.
+const _FADE_SHAPES = [["smooth", "smooth"], ["linear", "linear"], ["exponential", "exponential"], ["s-curve", "S-curve"]];
+function _fadeShapeRow(id, cur, inheritLabel) {
+  const v = cur || (inheritLabel ? "" : "smooth");
+  const opts = (inheritLabel ? `<option value=""${v === "" ? " selected" : ""}>${inheritLabel}</option>` : "")
+    + _FADE_SHAPES.map(([k, lab]) => `<option value="${k}"${k === v ? " selected" : ""}>${lab}</option>`).join("");
+  return row("fade shape", `<select id="${id}" style="width:auto;">${opts}</select>`);
+}
+function _setFadeShape(entry, id, keepDefault) {
+  const v = document.getElementById(id)?.value ?? "";
+  if (!v || (v === "smooth" && !keepDefault)) delete entry.fade_curve; else entry.fade_curve = v;
+}
+
+// ─── What a sample carries from its track ────────────────────────────────────
+// A track shapes its sound in this order; a sample can carry any of the
+// stages. Default (no `include` field): the FX chain only. Mute is never carried.
+const _SAMPLE_STAGES = [["fx", "FX chain"], ["fx_regions", "FX regions"], ["automation", "automation"], ["gain", "gain"]];
+
+function _sampleIncludeRow(s) {
+  const inc = !s || s.include == null ? ["fx"]
+            : s.include === "all" ? _SAMPLE_STAGES.map(x => x[0])
+            : s.include === "none" ? [] : [].concat(s.include);
+  const boxes = _SAMPLE_STAGES.map(([k, label]) =>
+    `<label style="font-size:10px;color:#aaa;margin-right:6px;white-space:nowrap;">
+       <input type="checkbox" class="p-s-inc" value="${k}"${inc.includes(k) ? " checked" : ""}> ${label}</label>`).join("");
+  return row("carry from track", `<span style="display:inline-flex;flex-wrap:wrap;">${boxes}</span>`);
+}
+
+function _collectSampleInclude(entry) {
+  const inc = [...document.querySelectorAll(".p-s-inc")].filter(el => el.checked).map(el => el.value);
+  if (inc.length === 1 && inc[0] === "fx") delete entry.include;          // the default
+  else if (inc.length === _SAMPLE_STAGES.length) entry.include = "all";
+  else if (!inc.length) entry.include = "none";
+  else entry.include = inc;
+}
+
 // ─── Sample popup ─────────────────────────────────────────────────────────────
 async function openSamplePopup(t1, t2) {
   const trackOpts = state.tracks.length > 1
@@ -389,6 +473,8 @@ async function openSamplePopup(t1, t2) {
     + (state.tracks.length > 1 ? row("track", `<select id="p-track">${trackOpts}</select>`) : "")
     + row("fade in",  `<input id="p-fi" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + row("fade out", `<input id="p-fo" type="number" value="5" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
+    + _fadeShapeRow("p-fshape", null)
+    + _sampleIncludeRow(null)
     + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("[ Sample ] — define range", html);
   if (!res) return;
@@ -401,6 +487,8 @@ async function openSamplePopup(t1, t2) {
   const color = nextColor();
   pushHistory();
   state.samples[name] = { from: t1, to: t2, color, fade_in: fi, fade_out: fo, track: trackIdx };
+  _collectSampleInclude(state.samples[name]);
+  _setFadeShape(state.samples[name], "p-fshape");
   updateScoreInfo();
   draw();
 }
@@ -419,6 +507,7 @@ async function openEventPopup(t) {
           "overrides sample default")
     + row("fade out", `<input id="p-ev-fo" type="number" value="" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
           "overrides sample default")
+    + _fadeShapeRow("p-ev-fshape", null, "— sample's")
     + row("pitch", `<input id="p-ev-pitch" type="number" value="0" min="-24" max="24" step="0.5" style="width:60px;"> st`,
           "-24 – +24 semitones")
     + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
@@ -472,6 +561,7 @@ async function openEventPopup(t) {
   const foRaw = document.getElementById("p-ev-fo").value.trim();
   if (fiRaw !== "") ev.fade_in  = Math.max(0, Math.min(0.5, parseFloat(fiRaw) / 100));
   if (foRaw !== "") ev.fade_out = Math.max(0, Math.min(0.5, parseFloat(foRaw) / 100));
+  _setFadeShape(ev, "p-ev-fshape", true);
   const pitchVal = parseFloat(document.getElementById("p-ev-pitch").value);
   if (!isNaN(pitchVal) && pitchVal !== 0) ev.pitch = pitchVal;
   if (speedsArr.length > 0) ev.speeds = speedsArr;
@@ -504,6 +594,7 @@ async function editEventAt(i) {
           "overrides sample default")
     + row("fade out", `<input id="p-ev-fo" type="number" value="${foVal}" min="0" max="50" step="1" style="width:60px;" placeholder="—"> %`,
           "overrides sample default")
+    + _fadeShapeRow("p-ev-fshape", ev.fade_curve, "— sample's")
     + row("pitch", `<input id="p-ev-pitch" type="number" value="${ev.pitch ?? 0}" min="-24" max="24" step="0.5" style="width:60px;"> st`,
           "-24 – +24 semitones")
     + row("reverse", `<select id="p-rev-mode" onchange="updateRevWidget()"
@@ -555,6 +646,7 @@ async function editEventAt(i) {
   const foRaw2 = document.getElementById("p-ev-fo").value.trim();
   if (fiRaw2 !== "") updated.fade_in  = Math.max(0, Math.min(0.5, parseFloat(fiRaw2) / 100));
   if (foRaw2 !== "") updated.fade_out = Math.max(0, Math.min(0.5, parseFloat(foRaw2) / 100));
+  _setFadeShape(updated, "p-ev-fshape", true);
   const pitchVal2 = parseFloat(document.getElementById("p-ev-pitch").value);
   if (!isNaN(pitchVal2) && pitchVal2 !== 0) updated.pitch = pitchVal2;
   if (speedsArr.length > 0) updated.speeds = speedsArr;
@@ -575,6 +667,8 @@ async function editSampleAt(name) {
   const html = row("name", `<input id="p-name" type="text" value="${escapeHtml(name)}" />`)
     + row("fade in",  `<input id="p-fi" type="number" value="${fiVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
     + row("fade out", `<input id="p-fo" type="number" value="${foVal}" min="0" max="50" step="1" style="width:60px;"> %`, "of clip length")
+    + _fadeShapeRow("p-fshape", s.fade_curve)
+    + _sampleIncludeRow(s)
     + row("from (s)", `<input id="p-s-from" type="number" value="${s.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
     + row("to (s)",   `<input id="p-s-to"   type="number" value="${s.to.toFixed(3)}"   step="0.001" min="0" style="width:90px;">`);
   const res = await showPopup("✎ Edit Sample", html);
@@ -592,6 +686,8 @@ async function editSampleAt(name) {
   const updated = { ...s, fade_in: fi, fade_out: fo,
     from: isNaN(newFrom) ? s.from : newFrom,
     to:   isNaN(newTo)   ? s.to   : newTo };
+  _collectSampleInclude(updated);
+  _setFadeShape(updated, "p-fshape");
   if (newName !== name) {
     delete state.samples[name];
     state.events.forEach(ev => { if (ev.sample === name) ev.sample = newName; });
@@ -638,6 +734,7 @@ async function editPhraseAt(i) {
     + row("gain dB",  `<input id="p-ph-gain"  type="number" value="${ph.gain_db ?? 0}"   step="0.5" style="width:60px;">`, "-20–20")
     + row("fade in",  `<input id="p-ph-fi"    type="number" value="${Math.round((ph.fade_in  ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
     + row("fade out", `<input id="p-ph-fo"    type="number" value="${Math.round((ph.fade_out ?? 0) * 100)}" min="0" max="50" step="1" style="width:60px;"> %`)
+    + _fadeShapeRow("p-ph-fshape", ph.fade_curve)
     + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="${ph.tempo_factor ?? 1.0}" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change)</span>`)
     + row("from (s)", `<input id="p-ph-from" type="number" value="${ph.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
     + row("to (s)",   `<input id="p-ph-to"   type="number" value="${ph.to.toFixed(3)}"   step="0.001" min="0" style="width:90px;">`);
@@ -647,6 +744,7 @@ async function editPhraseAt(i) {
   const newTo   = parseFloat(document.getElementById("p-ph-to").value);
   pushHistory();
   state.phrases[i] = {
+    ...ph,                                            // keeps mute and other fields
     from: isNaN(newFrom) ? ph.from : newFrom,
     to:   isNaN(newTo)   ? ph.to   : newTo,
     label:        document.getElementById("p-phrase-label").value.trim() || ph.label,
@@ -655,6 +753,7 @@ async function editPhraseAt(i) {
     fade_out:     Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-ph-fo").value)  || 0) / 100)),
     tempo_factor: parseFloat(document.getElementById("p-ph-tempo").value) || 1.0,
   };
+  _setFadeShape(state.phrases[i], "p-ph-fshape");
   updateScoreInfo(); draw();
 }
 
@@ -711,9 +810,29 @@ function _fxZoneBodyHTML(t1, t2, fz, scope) {
               min="0" max="5" step="0.01" style="flex:none;width:72px;" ${fadeOn ? '' : 'disabled'}>
        <span style="font-size:10px;color:#666;">s</span>
      </div>
+     <div class="popup-row">
+       <label>shape</label>
+       <select class="p-fz-fade-input" id="p-fz-fshape" style="flex:none;" ${fadeOn ? '' : 'disabled'}>
+         ${_FADE_SHAPES.map(([k, lab]) => `<option value="${k}"${k === ((fz && fz.fade_curve) || 'smooth') ? ' selected' : ''}>${lab}</option>`).join('')}
+       </select>
+     </div>
      <div style="font-size:10px;color:#444;padding-left:98px;">default 1:10 of zone duration</div>`);
 
-  return chainSection + rangeSection + fadeSection;
+  const isOut = !!(fz && fz.target === "output");
+  const targetSection = _popupSection("Applies to",
+    `<div class="popup-row">
+       <select id="p-fz-target" style="flex:none;">
+         <option value="source"${isOut ? "" : " selected"}>the source</option>
+         <option value="output"${isOut ? " selected" : ""}>the whole output</option>
+       </select>
+     </div>
+     <div style="font-size:10px;color:#555;">source: the base audio only, before events are added.
+       whole output: everything — source and events — after tempo changes.</div>`);
+
+  return chainSection + targetSection + rangeSection + fadeSection;
+}
+function _collectFxZoneTarget() {
+  return document.getElementById("p-fz-target")?.value === "output" ? { target: "output" } : {};
 }
 function _collectFxZoneFade() {
   const cb = document.getElementById("p-fz-fade");
@@ -722,6 +841,7 @@ function _collectFxZoneFade() {
     fade: true,
     fade_in_s:  Math.max(0, parseFloat(document.getElementById("p-fz-fi").value) || 0),
     fade_out_s: Math.max(0, parseFloat(document.getElementById("p-fz-fo").value) || 0),
+    ...((v => v && v !== "smooth" ? { fade_curve: v } : {})(document.getElementById("p-fz-fshape")?.value)),
   };
 }
 
@@ -740,7 +860,10 @@ async function editFxZoneAt(i) {
     from: isNaN(newFrom) ? fz.from : newFrom,
     to:   isNaN(newTo)   ? fz.to   : newTo,
     fx: collectFxChain(),
-    ...(fade || {}) };
+    ...(fade || {}),
+    ..._collectFxZoneTarget(),
+    ...(fz.muted ? { muted: true } : {}),
+    ...(fz.label ? { label: fz.label } : {}) };
   updateScoreInfo(); draw();
 }
 
@@ -855,6 +978,7 @@ async function openPhrasePopup(t1, t2) {
     + row("gain dB",  `<input id="p-ph-gain"  type="number" value="2"   step="0.5" style="width:60px;">`, "-20–20")
     + row("fade in",  `<input id="p-ph-fi"    type="number" value="10"  min="0" max="50" step="1" style="width:60px;"> %`)
     + row("fade out", `<input id="p-ph-fo"    type="number" value="15"  min="0" max="50" step="1" style="width:60px;"> %`)
+    + _fadeShapeRow("p-ph-fshape", null)
     + row("tempo ×",  `<input id="p-ph-tempo" type="number" value="1.0" step="0.05" min="0.1" style="width:60px;"> <span style="font-size:10px;color:#666;">(1.0 = no change; affects event timing only)</span>`)
     + `<div style="font-size:10px;color:#444;margin-top:4px;">range: ${t1.toFixed(3)}s → ${t2.toFixed(3)}s</div>`;
   const res = await showPopup("&#8994; Slur", html);
@@ -868,6 +992,7 @@ async function openPhrasePopup(t1, t2) {
     fade_out:     Math.max(0, Math.min(0.5, (parseFloat(document.getElementById("p-ph-fo").value)   || 0) / 100)),
     tempo_factor: parseFloat(document.getElementById("p-ph-tempo").value) || 1.0,
   });
+  _setFadeShape(state.phrases[state.phrases.length - 1], "p-ph-fshape");
   updateScoreInfo();
   draw();
 }
@@ -922,43 +1047,77 @@ function _collectFreqTarget(entry) {
   if (!isNaN(ft) && ft > 0) entry.freq_to   = ft; else delete entry.freq_to;
 }
 
+// Shared fields for a new or edited articulation. Target "event" shapes the
+// events the mark covers; "mix" shapes everything sounding then (source + events).
+const _ART_TITLES = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
+const _ART_DESCS = {
+  event: {
+    staccato: "The marked event plays only its first 'keep' seconds, then is cut short.",
+    accent:   "The marked event's first 50 ms are louder.",
+    legato:   "Each marked event rings on until the next event starts, then fades as it enters.",
+    fermata:  "The marked event's last moment is held for 'hold' seconds. Nothing else moves.",
+  },
+  mix: {
+    staccato: "Everything is cut: after 'keep', silence (a point) or until the next attack (a range).",
+    accent:   "Everything is louder at the mark (a point) or at each attack in the range.",
+    legato:   "At the mark / each attack in the range, the sound before it rings on across it.",
+    fermata:  "The whole piece waits: the sound at the mark is held for 'hold' seconds, then everything resumes.",
+  },
+};
+
+function _articulationFields(type, isRange, ar) {
+  ar = ar || {};
+  const tgt = ar.target === "mix" ? "mix" : "event";
+  const num = (id, v, min, max, step) =>
+    `<input id="${id}" type="number" value="${v}" min="${min}" max="${max}" step="${step}" style="width:60px;">`;
+  let h = row("target", `<select id="p-art-target" onchange="_artTargetSync('${type}', ${isRange})">
+      <option value="event"${tgt === "event" ? " selected" : ""}>event</option>
+      <option value="mix"${tgt === "mix" ? " selected" : ""}>whole mix</option></select>`);
+  if (type === "staccato") h += row("keep (s)", num("p-art-keep", ar.keep_s ?? 0.15, 0.01, 10, 0.01), "how much of the start plays");
+  if (type === "staccato" && !isRange) h += `<div class="art-mix-only">${row("silence (s)", num("p-art-silence", ar.silence_s ?? 0.07, 0.01, 2, 0.01), "whole mix: length of the cut")}</div>`;
+  if (type === "accent") h += row("boost (dB)", num("p-art-boost", ar.boost_db ?? 6, 0, 24, 0.5));
+  if (type === "fermata") h += row("hold (s)", num("p-art-hold", ar.hold_s ?? 2, 0.1, 30, 0.1));
+  if (isRange && type !== "fermata") h += `<div class="art-mix-only">${row("every (s)", `<input id="p-art-every" type="number" value="${ar.every_s ?? ""}" min="0.02" max="10" step="0.05" placeholder="attacks" style="width:60px;">`, "blank = at detected attacks")}</div>`;
+  h += _freqTargetRow(ar);
+  h += `<div id="p-art-desc" style="font-size:10px;color:#555;margin-top:4px;"></div>`;
+  return h;
+}
+
+function _artTargetSync(type, isRange) {
+  const tgt = document.getElementById("p-art-target")?.value || "event";
+  document.querySelectorAll("#popup-body .art-mix-only, .art-mix-only").forEach(el => {
+    el.style.display = tgt === "mix" ? "" : "none";
+  });
+  const d = document.getElementById("p-art-desc");
+  if (d) d.textContent = (_ART_DESCS[tgt] || {})[type] || "";
+}
+
+function _collectArticulationFields(type, entry) {
+  const tgt = document.getElementById("p-art-target")?.value || "event";
+  if (tgt === "mix") entry.target = "mix"; else delete entry.target;
+  const val = id => parseFloat(document.getElementById(id)?.value);
+  const set = (key, v, keep) => { if (!isNaN(v)) entry[key] = v; else if (!keep) delete entry[key]; };
+  if (type === "staccato") { set("keep_s", val("p-art-keep")); set("silence_s", val("p-art-silence")); }
+  if (type === "accent")   set("boost_db", val("p-art-boost"));
+  if (type === "fermata")  set("hold_s", val("p-art-hold"));
+  const every = val("p-art-every");
+  if (!isNaN(every) && every > 0 && tgt === "mix") entry.every_s = every; else delete entry.every_s;
+  _collectFreqTarget(entry);
+}
+
 async function openArticulationPopup(type, t1, t2) {
   const isRange = (t2 !== undefined && Math.abs(t2 - t1) >= 0.01);
-  const titles = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
-  const descs  = {
-    staccato: "Short punchy cut — 20 ms attack, then silence.",
-    accent:   "Boosts the attack of the note by 2×.",
-    fermata:  "Extends the note by holding its tail.",
-    legato:   "Smooth connection — notes flow into each other.",
-  };
   const posStr = isRange ? `${t1.toFixed(3)}s → ${t2.toFixed(3)}s` : `@${t1.toFixed(3)}s`;
-  const silenceRow = (!isRange && type === 'staccato')
-    ? row("silence (s)", `<input id="p-art-silence" type="number" value="0.07" min="0.01" max="2" step="0.01" style="width:60px;">`)
-    : '';
-  const fermataRow = (type === 'fermata')
-    ? row("tail (s)", `<input id="p-art-hold" type="number" value="2" min="0.1" max="10" step="0.1" style="width:60px;">`)
-    : '';
   const html = row("label", `<input id="p-art-label" type="text" placeholder="optional label" />`)
-    + silenceRow
-    + fermataRow
-    + _freqTargetRow(null)
-    + `<div style="font-size:10px;color:#555;margin-top:4px;">${descs[type] || ""}</div>`
-    + `<div style="font-size:10px;color:#444;margin-top:4px;">${titles[type] || type} — ${posStr}</div>`;
-  const res = await showPopup(titles[type] || type, html);
+    + _articulationFields(type, isRange, null)
+    + `<div style="font-size:10px;color:#444;margin-top:4px;">${_ART_TITLES[type] || type} — ${posStr}</div>`;
+  const res = await showPopup(_ART_TITLES[type] || type, html, () => _artTargetSync(type, isRange));
   if (!res) return;
   pushHistory();
   const entry = { type, label: document.getElementById("p-art-label").value.trim() || undefined };
   if (isRange) { entry.from = t1; entry.to = t2; }
   else { entry.t = t1; }
-  if (type === 'staccato') {
-    const silEl = document.getElementById("p-art-silence");
-    if (silEl) entry.silence_s = parseFloat(silEl.value) || 0.07;
-  }
-  if (type === 'fermata') {
-    const holdEl = document.getElementById("p-art-hold");
-    if (holdEl) entry.hold_s = parseFloat(holdEl.value) || 2.0;
-  }
-  _collectFreqTarget(entry);
+  _collectArticulationFields(type, entry);
   state.articulations.push(entry);
   updateScoreInfo(); draw();
 }
@@ -998,32 +1157,17 @@ async function editNoteRelAt(i) {
 async function editArticulationAt(i) {
   const ar = state.articulations[i];
   const isRange = ar.from !== undefined;
-  const titles  = { staccato: "• Staccato", legato: "⌢ Legato", fermata: "𝄐 Fermata", accent: "> Accent" };
-  const silenceRow = (!isRange && ar.type === 'staccato')
-    ? row("silence (s)", `<input id="p-art-silence" type="number" value="${ar.silence_s ?? 0.07}" min="0.01" max="2" step="0.01" style="width:60px;">`)
-    : '';
-  const fermataRow = (ar.type === 'fermata')
-    ? row("tail (s)", `<input id="p-art-hold" type="number" value="${ar.hold_s ?? 2}" min="0.1" max="10" step="0.1" style="width:60px;">`)
-    : '';
   const html = row("label", `<input id="p-art-label" type="text" value="${escapeHtml(ar.label || '')}" placeholder="optional label" />`)
-    + silenceRow + fermataRow
-    + _freqTargetRow(ar)
+    + _articulationFields(ar.type, isRange, ar)
     + (isRange
         ? row("from (s)", `<input id="p-ar-from" type="number" value="${ar.from.toFixed(3)}" step="0.001" min="0" style="width:90px;">`)
           + row("to (s)", `<input id="p-ar-to"   type="number" value="${ar.to.toFixed(3)}"   step="0.001" min="0" style="width:90px;">`)
         : row("at (s)", `<input id="p-ar-t" type="number" value="${ar.t.toFixed(3)}" step="0.001" min="0" style="width:90px;">`));
-  const res = await showPopup("✎ Edit " + (titles[ar.type] || ar.type), html);
+  const res = await showPopup("✎ Edit " + (_ART_TITLES[ar.type] || ar.type), html, () => _artTargetSync(ar.type, isRange));
   if (!res) return;
   pushHistory();
   const updated = { ...ar, label: document.getElementById("p-art-label").value.trim() || undefined };
-  if (ar.type === 'staccato') {
-    const silEl = document.getElementById("p-art-silence");
-    if (silEl) updated.silence_s = parseFloat(silEl.value) || 0.07;
-  }
-  if (ar.type === 'fermata') {
-    const holdEl = document.getElementById("p-art-hold");
-    if (holdEl) updated.hold_s = parseFloat(holdEl.value) || 2.0;
-  }
+  _collectArticulationFields(ar.type, updated);
   if (isRange) {
     const newFrom = parseFloat(document.getElementById("p-ar-from").value);
     const newTo   = parseFloat(document.getElementById("p-ar-to").value);
@@ -1033,7 +1177,6 @@ async function editArticulationAt(i) {
     const newT = parseFloat(document.getElementById("p-ar-t").value);
     if (!isNaN(newT)) updated.t = newT;
   }
-  _collectFreqTarget(updated);
   state.articulations[i] = updated;
   updateScoreInfo(); draw();
 }
@@ -1127,16 +1270,20 @@ async function openFxZonePopup(t1, t2, scope) {
     from: isNaN(newFrom) ? t1 : newFrom,
     to:   isNaN(newTo)   ? t2 : newTo,
     fx,
-    ...(fade || {})
+    ...(fade || {}),
+    ..._collectFxZoneTarget()
   });
   updateScoreInfo();
   draw();
 }
 
 // ─── Base FX ──────────────────────────────────────────────────────────────────
-async function openBaseFxPopup(scope) {
+async function openBaseFxPopup(scope, which) {
   scope = scope || 'all';
-  const title = scope === 'morpho' ? '✦ Morpho Base FX'
+  const output = which === 'output';
+  const key = output ? 'fxGlobal' : 'baseFx';
+  const title = output ? 'Output FX — applied to the whole output (source + events)'
+              : scope === 'morpho' ? '✦ Morpho Base FX'
               : scope === 'classic' ? '◆ Classic Base FX'
               : 'Base FX — applied to base audio';
   const html = `<div><label style="font-size:10px;color:#666;">FX chain:</label>
@@ -1145,11 +1292,36 @@ async function openBaseFxPopup(scope) {
         ${scope !== 'morpho' ? '<button type="button" onclick="_addFxToChain(\'classic\')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>' : ''}
         ${scope !== 'classic' ? '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>' : ''}
       </div></div>`;
-  const res = await showPopup(title, html, () => _initFxChain(state.baseFx || []));
+  const res = await showPopup(title, html, () => _initFxChain(state[key] || []));
   if (!res) return;
   pushHistory();
-  state.baseFx = collectFxChain();
+  state[key] = collectFxChain();
   _updateBaseFxLabel();
+  _updateOutputFxLabel();
+}
+
+function _updateOutputFxLabel() {
+  const el = document.getElementById("output-fx-label");
+  if (el) el.textContent = (state.fxGlobal && state.fxGlobal.length)
+    ? state.fxGlobal.map(f => f.type.replace(/^morpho_/, '')).join(' + ') : 'none';
+  const tb = document.getElementById("timing-btn");
+  if (tb) tb.textContent = (state.silenceStart || state.silenceEnd)
+    ? `⏱ lead ${+(state.silenceStart || 0).toFixed(2)}s · tail ${+(state.silenceEnd || 0).toFixed(2)}s`
+    : '⏱ Lead / tail';
+}
+
+// Lead-in (events start later; the source plays from 0) and silence after the piece
+async function openTimingPopup() {
+  const html = row("lead-in (s)", `<input id="p-lead" type="number" value="${state.silenceStart || 0}" min="0" max="600" step="0.1" style="width:70px;">`,
+                   "events start this much later; the source plays from 0")
+    + row("tail (s)", `<input id="p-tail" type="number" value="${state.silenceEnd || 0}" min="0" max="600" step="0.1" style="width:70px;">`,
+          "silence added after the piece");
+  const res = await showPopup("⏱ Lead-in / tail silence", html);
+  if (!res) return;
+  pushHistory();
+  state.silenceStart = Math.max(0, parseFloat(document.getElementById("p-lead").value) || 0);
+  state.silenceEnd   = Math.max(0, parseFloat(document.getElementById("p-tail").value) || 0);
+  _updateOutputFxLabel();
 }
 
 function _updateBaseFxLabel() {
@@ -1174,6 +1346,21 @@ document.addEventListener('DOMContentLoaded', () => {
     _updateBaseFxLabel();
   });
   _updateBaseFxLabel();
+  // Output FX (fx_global) and lead-in / tail
+  const oClassic = document.getElementById("output-fx-classic-btn");
+  const oMorpho  = document.getElementById("output-fx-morpho-btn");
+  const oClear   = document.getElementById("output-fx-clear-btn");
+  const timing   = document.getElementById("timing-btn");
+  if (oClassic) oClassic.addEventListener("click", () => openBaseFxPopup('classic', 'output'));
+  if (oMorpho)  oMorpho.addEventListener("click",  () => openBaseFxPopup('morpho', 'output'));
+  if (oClear)   oClear.addEventListener("click",   () => {
+    if (!state.fxGlobal || !state.fxGlobal.length) return;
+    pushHistory();
+    state.fxGlobal = [];
+    _updateOutputFxLabel();
+  });
+  if (timing)   timing.addEventListener("click", openTimingPopup);
+  _updateOutputFxLabel();
 });
 
 // ─── Undo / Redo ──────────────────────────────────────────────────────────────
@@ -1192,7 +1379,7 @@ function _snapshotTracks() {
 }
 
 function _snapshotState() {
-  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix,
+  return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, fxGlobal: state.fxGlobal, silenceStart: state.silenceStart, silenceEnd: state.silenceEnd, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix,
     tracks: _snapshotTracks(),
     golems: (typeof interpState !== 'undefined') ? interpState.golems : undefined });
 }
@@ -1216,6 +1403,9 @@ function _applySnapshot(snap) {
   state.tempo = s.tempo || [];
   state.baseFx = s.baseFx || [];
   state.fxRanges = s.fxRanges || [];
+  state.fxGlobal = s.fxGlobal || [];
+  state.silenceStart = s.silenceStart || 0;
+  state.silenceEnd   = s.silenceEnd   || 0;
   state.phrases  = s.phrases  || [];
   state.noteRel  = s.noteRel  || [];
   state.articulations = s.articulations || [];
@@ -1223,6 +1413,7 @@ function _applySnapshot(snap) {
   if (s.duckKey)  Object.assign(state.duckKey,  s.duckKey);
   if (s.autoMix)  Object.assign(state.autoMix,  s.autoMix);
   _updateBaseFxLabel();
+  _updateOutputFxLabel();
 }
 
 // Record the current state before an edit. Drags pass the snapshot taken when
@@ -1361,7 +1552,7 @@ function updateScoreInfo() {
     if (!state.fxRanges.length) html += `<div class="info-item" style="color:#2a2a2a;">—</div>`;
     state.fxRanges.forEach((fz, i) => {
       html += _ha(`editFxZoneAt(${i})`, 'fxzone', 'fxzone', i,
-        `<span style="color:#8844cc">${escapeHtml(fz.fx.map(f => f.type).join("+"))}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s`, !!fz.muted);
+        `<span style="color:${fxZoneColor(fz)}">${fz.target === "output" ? "output: " : ""}${escapeHtml(fz.fx.map(f => f.type).join("+"))}</span> ${fz.from.toFixed(2)}s → ${fz.to.toFixed(2)}s`, !!fz.muted);
     });
   }
 

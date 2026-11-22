@@ -135,7 +135,8 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 | `numpy` | Fast math for audio arrays |
 | `scipy` | Signal processing — used by Morphogenics spectral plugins |
 | `soundfile` | Reads and writes WAV and FLAC files |
-| `librosa` | Resamples audio, pitch-shifting, spectral analysis |
+| `librosa` | Resamples audio, onset and pitch detection, spectral analysis |
+| `pedalboard` | Pitch shifting and time stretching (contains the Rubber Band library) |
 | `pyyaml` | Reads YAML score files |
 | `flask` | Runs the web editor server |
 | `pillow` | Image handling for score image overlays |
@@ -147,7 +148,7 @@ This will take a minute. You'll see a lot of text scroll by — that's normal.
 Run these three commands. Each should produce output without errors:
 
 ```bash
-python -c "import numpy, scipy, soundfile, librosa, yaml, flask, PIL; print('Python packages OK')"
+python -c "import numpy, scipy, soundfile, librosa, pedalboard, yaml, flask, PIL; print('Python packages OK')"
 ```
 
 ```bash
@@ -171,3 +172,19 @@ If all three work, you're ready. Go to [editor.md](editor.md) to start composing
 **`No module named ...`** — You probably forgot to activate the virtual environment. Run `source venv/bin/activate` and try again.
 
 **`sox: command not found` or `ffmpeg: command not found`** — The system tools were not installed correctly. Go back to Step 1 and try again.
+
+---
+
+## Licences
+
+This project is licensed under Apache 2.0. One dependency is not:
+
+- **`pedalboard` and the Rubber Band library inside it are GPLv3.** They do the engine's pitch shifting and time stretching (`src/stretch.py`).
+
+**What this means.** Using the tool, changing it, and everything it produces (renders, Concerto videos) are unaffected. The GPL only applies when the tool itself is handed to others: then it has to be shared under GPL terms, with its source code. Running it for others through a browser does not count as handing it over.
+
+**Open question, to discuss later (noted 2026-11-20).** If the tool is ever going to be distributed as closed software, sold, or passed to a partner who can't accept GPL code, this needs revisiting. The options:
+
+1. Replace the back end with **Signalsmith Stretch** (MIT licence, `python-stretch` on PyPI). In the November 2026 comparison it matched Rubber Band on pitch shifts, was the fastest, and was weaker when slowing audio down (attacks smear more). Only `src/stretch.py` would change.
+2. Buy a commercial Rubber Band licence (from Breakfast Quay, its authors). Note that pedalboard itself is also GPLv3, so this would also mean calling Rubber Band without pedalboard.
+3. Keep it as is and publish the project under GPLv3.

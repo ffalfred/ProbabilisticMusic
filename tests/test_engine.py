@@ -59,9 +59,10 @@ class EngineTests(unittest.TestCase):
             'samples': {'s0': {'from': 0, 'to': 0.1, 'track': 0},
                         's1': {'from': 0, 'to': 0.1, 'track': 1}},
         })
-        self.assertAlmostEqual(float(base[100]), 0.6, places=4)
-        self.assertAlmostEqual(float(bank['s0'][10]), 0.1, places=4)
-        self.assertAlmostEqual(float(bank['s1'][10]), 0.5, places=4)
+        # audio is (frames, channels)
+        self.assertAlmostEqual(float(base[100, 0]), 0.6, places=4)
+        self.assertAlmostEqual(float(bank['s0'][10, 0]), 0.1, places=4)
+        self.assertAlmostEqual(float(bank['s1'][10, 0]), 0.5, places=4)
 
     def test_simultaneous_events_survive_interpreter(self):
         score = {
@@ -114,7 +115,7 @@ class EngineTests(unittest.TestCase):
         nr = [{'type': 'glissando', 'from': 0.0, 'to': 2.0, 'from_pitch': 0, 'to_pitch': 4}]
         self.assertAlmostEqual(resolve_event_pitch(1.0, 0.0, nr), 2.0)
         # Full-band glissandi act on events only; the mix pass leaves the mix alone.
-        mix = _sine(440, 2.0)
+        mix = _sine(440, 2.0)[:, None]          # (frames, channels)
         self.assertTrue(np.array_equal(apply_noterel_to_mix(mix, SR, nr), mix))
         # Band-limited glissandi act on the mix, so events must not be shifted again.
         banded = [dict(nr[0], freq_from=200)]
@@ -187,7 +188,7 @@ class EngineTests(unittest.TestCase):
         base = np.full(SR, 0.5, np.float32)
         bank = {'a': np.zeros(int(0.1 * SR), np.float32)}
         mix = mix_events([{'t': 0.5, 'sample': 'a', 'muted': True}], bank, SR, score, base)
-        self.assertAlmostEqual(float(mix[int(0.52 * SR)]), 0.5, places=4)
+        self.assertAlmostEqual(float(mix[int(0.52 * SR), 0]), 0.5, places=4)
 
 
 if __name__ == '__main__':

@@ -24,9 +24,9 @@ events:
     t: 4.0
     gain_db: -6
     fx:
-      - type: morpho_saariaho_freeze
+      - type: morpho_spectral_freeze
+        mode: attacks
         n_partials: 20
-        freeze_rate: 0.1
         dry_wet: 80
 ```
 
@@ -37,7 +37,7 @@ fx_ranges:
   - from: 10.0
     to: 18.0
     fx:
-      - type: morpho_xenakis_granular
+      - type: morpho_grain_scatter
         grain_ms: 40
         pitch_spread: 6
         shuffle_pct: 30
@@ -57,7 +57,7 @@ Every plugin has a `dry_wet` parameter (0–100%). At `0`, the output is the ori
 
 ## Nørgaard: Undertones
 
-**Type key:** `morpho_norgaard_undertones`
+**Type key:** `morpho_undertones`
 
 Inspired by Per Nørgaard's infinity series and undertone spectralism. Adds synthetic undertones below the fundamental — pitch-shifted copies at successive intervals down the harmonic series.
 
@@ -77,7 +77,7 @@ Undertone intervals (in semitones below the source): −12, −19, −24, −28,
 
 ## Messiaen: Modes
 
-**Type key:** `morpho_messiaen_modes`
+**Type key:** `morpho_modes`
 
 Pitch-quantizes the audio to one of Messiaen's 7 modes of limited transposition. The mode is detected and applied in overlapping time windows so gradual pitch movement is tracked rather than applying a single global shift.
 
@@ -93,7 +93,7 @@ The musicologically correct mode definitions are used:
 | 6 | 0, 2, 4, 5, 6, 8, 10, 11 | — |
 | 7 | 0, 1, 2, 3, 5, 6, 7, 8, 9, 11 | — |
 
-The algorithm detects the fundamental frequency (F0) per window using `librosa.yin`, finds the nearest pitch class in the selected mode, and shifts that window accordingly. Windows overlap by 50% with Hanning crossfades to prevent seams.
+The algorithm detects the fundamental frequency (F0) per window using `librosa.yin`, finds the nearest pitch class in the selected mode, and works out the shift that window needs. The shifts become one pitch curve that glides from window to window, and the whole clip is shifted along it in a single pass, so there are no seams.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
@@ -108,29 +108,39 @@ The algorithm detects the fundamental frequency (F0) per window using `librosa.y
 
 ## Penderecki: Cluster
 
-**Type key:** `morpho_penderecki_cluster`
+**Type key:** `morpho_cluster`
 
-Inspired by Krzysztof Penderecki's Threnody for the Victims of Hiroshima. Adds N evenly-spaced pitch-shifted voices spread symmetrically around the original pitch, creating a dense tone cluster.
+Inspired by the string clusters of Penderecki's *Threnody for the Victims of Hiroshima*. The sound is copied onto **every semitone (or quarter tone) across a band** of `cluster_width`, centred on its own pitch: width 4 in semitones gives −2, −1, 0, +1, +2; in quarter tones, nine voices from −2 to +2. Up to 25 voices.
 
-A cluster with `cluster_width: 4` and `n_voices: 4` places voices at −2, −0.67, +0.67, +2 semitones. With 8 voices at width 12, you get a full chromatic cluster.
+Each voice is alive rather than a static copy:
+- **Drift** — every voice wanders slowly and independently by up to ±`drift_cents`, gliding to a new target about every 0.7 s, so the band shimmers and beats like a section of players instead of sounding like a harmoniser.
+- **Entries** — with `entry_s` above 0, the voices enter one by one, in random order, spread over that many seconds (each fading in over 0.3 s): the cluster builds up.
+- **Stereo** — the voices are laid out across the field from low (left) to high (right), as wide as `spread`.
+
+The cluster is matched to the input's loudness.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `cluster_width` | 1–12 st | 4 | Total spread of the cluster in semitones |
-| `n_voices` | 2–8 | 4 | Number of pitch-shifted copies |
+| `cluster_width` | 1–24 st | 4 | Width of the band |
+| `step` | semitone / quarter tone | semitone | Spacing of the voices |
+| `drift_cents` | 0–50 cents | 10 | How far each voice wanders (0 = static) |
+| `entry_s` | 0–10 s | 0 | Voices enter one by one over this time (0 = all together) |
+| `spread` | 0–100% | 60 | Stereo width (stereo pieces only) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Widen a single melodic note or texture into a cloud of close pitches. Combine with reverb for a Penderecki orchestral wall of sound.
+**Typical use:** A wide quarter-tone band (`cluster_width: 6`, `step: quarter tone`) with `entry_s: 4` for a Threnody-like build-up on a sustained sound; a narrow semitone band with 20–30 cents of drift for a dense, beating halo. Combine with reverb for an orchestral wall of sound.
+
+*Changed in this version:* the old Cluster placed `n_voices` static copies evenly across the width (−2, −0.67, +0.67, +2 at the defaults), so it was neither a semitone band nor alive. `n_voices` is gone; the band's steps set the number of voices.
 
 ---
 
 ## Penderecki: Aleatoric
 
-**Type key:** `morpho_penderecki_aleatoric`
+**Type key:** `morpho_aleatoric`
 
 Inspired by Penderecki's Devil's Staircase and aleatoric notation. Divides the audio into ~250ms segments and applies a different random pitch shift to each, within a user-defined detune range.
 
-The randomness is controlled per segment independently — it doesn't drift cumulatively; each segment draws a fresh value.
+The randomness is controlled per segment independently — it doesn't drift cumulatively; each segment draws a fresh value. Neighbouring segments are joined by short glides rather than jumps.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
@@ -143,28 +153,37 @@ The randomness is controlled per segment independently — it doesn't drift cumu
 
 ## Penderecki: Textural
 
-**Type key:** `morpho_penderecki_textural`
+**Type key:** `morpho_textural`
 
-Inspired by Polymorphia. Combines the Cluster and Aleatoric techniques simultaneously: a static cluster layer (0.6 weight) plus a per-segment aleatoric detune layer (0.4 weight). The result is a texture that is both clustered and subtly unstable.
+Inspired by *Polymorphia*: the restless, aleatoric counterpart to Cluster. The same band of voices (every semitone or quarter tone across `cluster_width`), but every voice is unstable:
+- each jumps to a new random detune, up to ±`detune_cents`, about every 250 ms (with a 60 ms glide), independently of the others;
+- each swells and fades on its own, between full level and `1 − swell`;
+- in stereo, the voices are scattered at random across the field, as wide as `spread`.
+
+The result is a seething sound mass rather than a chord.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `cluster_width` | 1–12 st | 4 | Cluster spread (see Cluster) |
-| `n_voices` | 2–8 | 4 | Number of cluster voices |
-| `detune_cents` | 0–100 cents | 25 | Aleatoric detune range per segment |
+| `cluster_width` | 1–12 st | 4 | Width of the band |
+| `step` | semitone / quarter tone | semitone | Spacing of the voices |
+| `detune_cents` | 0–100 cents | 25 | How far each voice jumps |
+| `swell` | 0–100% | 50 | How deep each voice's level swells (0 = steady) |
+| `spread` | 0–100% | 80 | Stereo width (stereo pieces only) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** The most complete Penderecki texture. Use on sustained tones or drones. Heavier settings create dense, seething sound masses.
+**Typical use:** Sustained tones or drones. Moderate settings give a nervous, living texture; quarter tones with 60–100 cents of detune and full swell give dense, seething masses. Quarter-tone bands have many voices, so they take longer to render.
+
+*Changed in this version:* Textural used to be a static cluster plus one randomly detuned copy. `n_voices` is gone.
 
 ---
 
 ## Penderecki: Glissando
 
-**Type key:** `morpho_penderecki_glissando`
+**Type key:** `morpho_glissando`
 
 Creates continuous pitch slides through each segment of the audio — a linear sweep from −gliss_range/2 to +gliss_range/2 semitones over each ~200ms chunk.
 
-Each chunk is subdivided into `n_steps` subframes. Subframe 1 is pitch-shifted to the low end of the range; subframe N is shifted to the high end. The subframes are concatenated to create a continuous rising slide. The next chunk starts the sweep again from the bottom.
+Each chunk is subdivided into `n_steps` steps, from the low end of the range to the high end, joined by glides into one rising slide. The next chunk starts the sweep again from the bottom.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
@@ -176,11 +195,11 @@ Each chunk is subdivided into `n_steps` subframes. Subframe 1 is pitch-shifted t
 
 ---
 
-## Xenakis: Granular Cloud
+## Xenakis: Grain Scatter
 
-**Type key:** `morpho_xenakis_granular`
+**Type key:** `morpho_grain_scatter`
 
-Stochastic granular synthesis in the spirit of Xenakis's formalized music theory. Divides the audio into grains, randomly shuffles a percentage of them, applies random pitch shifts and amplitude variations to each, and reassembles with Hanning-windowed overlap.
+Stochastic granular resynthesis in the spirit of Xenakis's formalized music theory. Divides the audio into grains, randomly shuffles a percentage of them, applies random pitch shifts and amplitude variations to each, and reassembles them. Grains overlap by half under Hann windows, which add up to a constant, so the grain stream itself never dips: with no randomness the output is exactly the input. Grains are re-pitched tape-style (read faster or slower), the classic granular technique: at 10–100 ms they are too short for a time-stretcher.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
@@ -188,6 +207,7 @@ Stochastic granular synthesis in the spirit of Xenakis's formalized music theory
 | `pitch_spread` | 0–24 st | 6 | Maximum random pitch shift per grain (±spread/2) |
 | `shuffle_pct` | 0–100% | 30 | Percentage of grains whose playback order is randomly permuted |
 | `amplitude_var` | 0–100% | 40 | Random amplitude reduction per grain (each grain is attenuated by a random factor) |
+| `spread` | 0–100% | 50 | Stereo pieces: each grain lands at a random place in the field (0 = the source's own image) |
 | `dry_wet` | 0–100% | 90 | Dry/wet mix |
 
 **Typical use:** Break apart a recognizable texture into a cloud of fragments. Lower shuffle produces a smeared version of the original; higher shuffle creates something entirely new.
@@ -196,7 +216,7 @@ Stochastic granular synthesis in the spirit of Xenakis's formalized music theory
 
 ## Xenakis: Stochastic Cloud
 
-**Type key:** `morpho_xenakis_stochastic`
+**Type key:** `morpho_stochastic_cloud`
 
 Generates a dense probabilistic layer of short sine-burst grains at random frequencies within a user-defined range. The frequency distribution is log-uniform (equal density per octave), meaning you get as many grains between 200–400 Hz as between 1600–3200 Hz.
 
@@ -208,6 +228,7 @@ All grains are Hanning-windowed and summed additively into a new signal that is 
 | `low_hz` | 50–2000 Hz | 200 | Lower frequency bound |
 | `high_hz` | 500–8000 Hz | 3000 | Upper frequency bound |
 | `grain_ms` | 5–30 ms | 10 | Duration of each burst |
+| `spread` | 0–100% | 70 | Stereo pieces: each burst sits at a random place in the field (0 = centre) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
 **Typical use:** Add a shimmering or buzzing background texture inspired by Xenakis's GENDYN system. A narrow frequency range creates a pitched cluster; a wide range creates wideband noise-like texture.
@@ -216,50 +237,61 @@ All grains are Hanning-windowed and summed additively into a new signal that is 
 
 ## Xenakis: GENDY
 
-**Type key:** `morpho_xenakis_gendy`
+**Type key:** `morpho_gendy`
 
-Inspired by Xenakis's GENDY stochastic synthesis system. Applies a Weibull-distributed step amplitude envelope to the audio: the clip is divided into short grains, and each grain receives an independently drawn Weibull-distributed amplitude weight.
+Built on Xenakis's GENDYN (dynamic stochastic synthesis): a waveform is drawn through breakpoints whose heights and spacings take *second-order random walks* (a random walk whose step size is itself a random walk), each held between reflecting barriers. Steps are Cauchy-distributed, as in GENDYN: mostly small, occasionally large. `randomness` scales all the walks.
 
-The Weibull distribution is parameterized by its shape (k):
-- k < 1: heavy exponential distribution — most grains are very quiet, a few are loud
-- k = 1: exponential distribution — gradual dropoff
-- k ≈ 2: Rayleigh-like — bell-shaped with a moderate peak
-- k > 3: approaches normal — most grains are near the mean amplitude
+Three modes:
+- **`input`** (default) — the walks act on the input itself. At breakpoints every ~`grain_ms`, the read position drifts ahead or behind and the level dips, joined by straight lines. The original is continuously squeezed, stretched (pitch wobbles) and re-levelled: it turns grainy and unstable, without clicks.
+- **`synth`** — a real GENDYN oscillator with `breakpoints` points per period, centred on `pitch_hz` (0 = the input's own pitch), drifting up to ±`randomness` octaves, and following the input's loudness. It adds a new, buzzing, unstable voice; balance it with `dry_wet`.
+- **`envelope`** — only the level walks, smoothly between breakpoints: a stochastic tremolo, the gentlest mode.
+
+At `randomness: 0`, `input` and `envelope` leave the sound unchanged and `synth` holds one fixed waveform.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `weibull_shape` | 0.5–5.0 | 1.5 | Shape parameter of the Weibull distribution |
-| `grain_ms` | 5–50 ms | 20 | Duration of each envelope grain |
+| `mode` | input / synth / envelope | input | See above |
+| `randomness` | 0–100% | 30 | Size of the random walks |
+| `grain_ms` | 2–50 ms | 20 | Average breakpoint spacing (`input`, `envelope`) |
+| `breakpoints` | 4–32 | 12 | Breakpoints per waveform period (`synth`) — more = brighter, noisier |
+| `pitch_hz` | 0–2000 | 0 | Centre pitch (`synth`); 0 = detected from the input |
+| `spread` | 0–100% | 50 | Stereo pieces: each side also gets its own random walks, blended in by this much (0 = both sides move together) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Create abrupt, mathematically-derived amplitude patterns. Low shape values produce dramatically spiky dynamics; high values produce smooth, relatively even amplitude. Combine with Stochastic Cloud for a full GENDY-style texture.
+**Typical use:** `input` at 20–40% for an organic instability; 80–100% for a sound that keeps tearing apart. `synth` under a sustained sound for a Xenakis-like stochastic double. Combine with Stochastic Cloud for a full GENDY-style texture.
+
+*Changed in this version:* GENDY used to multiply the audio by a random step envelope (a new Weibull-distributed level every `grain_ms`, which clicked). `weibull_shape` is gone.
 
 ---
 
 ## Saariaho: Spectral Freeze
 
-**Type key:** `morpho_saariaho_freeze`
+**Type key:** `morpho_spectral_freeze`
 
-Inspired by Kaija Saariaho's spectral technique of sustained, slowly evolving harmonic fields. Uses STFT analysis to extract the top N partials (by magnitude) from each frame, then reconstructs the audio with very slowly advancing phases — creating a sustained, pad-like drone from any sound.
+Inspired by Kaija Saariaho's sustained, slowly evolving harmonic fields. Captures moments of the sound and holds them: a held moment keeps its magnitudes and keeps every partial at its true frequency (measured from the phase), so it sustains as a steady chord or halo.
 
-The `freeze_rate` controls how much the phase advances per frame:
-- `1.0` = natural phase evolution (sounds like the original)
-- `0.1` = very slow phase advance (sustained drone with subtle movement)
-- `0.01` = nearly static frozen spectrum
+Two modes:
+- **`attacks`** (default) — at every detected attack, the sound just after it is captured and held until the next attack, then crossfades into it (50 ms). The music becomes a chain of held chords: each note sustains at its full level instead of decaying.
+- **`follow`** — the held sound follows the original slowly. `freeze_rate` sets how fast: `1` follows almost at once (~50 ms), `0.1` takes about half a second, `0.01` about five seconds, and `0` holds the very first moment for the whole clip.
+
+`n_partials` keeps only the strongest partials of the held sound — low values (5–8) purify it to a few sustained tones; `0` keeps everything. The frozen layer is matched to the input's loudness.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `n_partials` | 5–50 | 20 | How many spectral partials to retain per frame |
-| `freeze_rate` | 0.01–1.0 | 0.1 | Rate of phase evolution (lower = more frozen) |
+| `mode` | attacks / follow | attacks | See above |
+| `n_partials` | 0–100 | 20 | Strongest partials kept (0 = all) |
+| `freeze_rate` | 0–1 | 0.1 | How fast the held sound follows (`follow` mode only) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Turn any audio fragment into a sustained spectral pad. Use low `n_partials` (5–8) for a pure harmonic tone; high values retain more of the original character. Mix at `dry_wet: 50–80` to blend the frozen layer under the original.
+**Typical use:** `attacks` turns a melody or a sequence of hits into sustained harmonies; `follow` at 0.02–0.1 makes a slowly morphing pad under the original. Mix at `dry_wet: 50–80` to keep the original audible.
+
+*Changed in this version:* the effect used to keep the loudest bins of every frame and advance their phases at a fraction of normal speed, which did not freeze anything — it transposed everything down and smeared it.
 
 ---
 
 ## Saariaho: Microtonal
 
-**Type key:** `morpho_saariaho_microtonal`
+**Type key:** `morpho_microtonal`
 
 Inspired by Saariaho's microtonal language tied to spectral brightness. Analyzes the spectral centroid of the input (a measure of brightness), maps it to a detune value, and applies a small pitch shift in the range ±max_cents.
 
@@ -276,7 +308,7 @@ Bright audio (high centroid → near 5000 Hz) is detuned upward (sharpened). Dar
 
 ## Desyatnikov: Minimalism
 
-**Type key:** `morpho_desyatnikov_minimalism`
+**Type key:** `morpho_minimalism`
 
 Inspired by Leonid Desyatnikov's polystylistic compositional language. Uses onset detection to locate note boundaries, then displaces every Nth onset segment by a fixed interval (the "quote interval"). The displaced segments sound like a sudden tonal intrusion from a different harmonic world — a polystylistic quote.
 
@@ -292,26 +324,29 @@ Inspired by Leonid Desyatnikov's polystylistic compositional language. Uses onse
 
 ## Desyatnikov: Lyricism
 
-**Type key:** `morpho_desyatnikov_lyricism`
+**Type key:** `morpho_lyricism`
 
-Inspired by Desyatnikov's characteristic warm, non-functional harmonic language. Adds two pitch-shifted copies of the audio under the main signal: one at +11 semitones (major 7th — a close, rich interval) and one at +17 semitones (a compound interval between a diminished 11th and a perfect 11th). Both are attenuated to sit underneath rather than above the melodic line.
-
-The result is a subtle harmonic haze — the source melody remains clear but surrounded by a warm, complex harmonic cloud.
+Inspired by Desyatnikov's warm, non-functional harmonic language. Two transposed copies of the audio shadow the line in parallel — by default a major 7th (+11 st) and a perfect 11th (+17 st, an octave plus a fourth) above it — colouring it without implying functional harmony. Both are attenuated so they blend into the timbre rather than sounding as separate lines.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `harm_gain_db` | −24–−6 dB | −18 | Volume of the added harmony layers |
+| `interval_1` | 1–24 st | 11 | First parallel interval |
+| `interval_2` | 0–24 st | 17 | Second parallel interval (0 = off) |
+| `placement` | above / below | above | Which side of the line the intervals go |
+| `harm_gain_db` | −24–−6 dB | −18 | Volume of the added layers |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Add a discreet harmonic richness to any melodic or tonal fragment. The layers should barely be audible as distinct pitches — they blend into the timbre of the source. Use `harm_gain_db: -24` for a very subtle effect; `-12` is more pronounced.
+**Typical use:** Add a discreet harmonic richness to any melodic or tonal fragment. Use `harm_gain_db: -24` for a very subtle effect; `-12` is more pronounced. `placement: below` puts the shadow under the line (a darker, organ-like support).
+
+*Changed in this version:* the description used to call +17 st a "diminished 11th" (it is a perfect 11th) and say the layers sit under the line (they were above). The defaults sound exactly as before.
 
 ---
 
 ## Desyatnikov: Glissandi
 
-**Type key:** `morpho_desyatnikov_glissandi`
+**Type key:** `morpho_glissandi`
 
-Inspired by Desyatnikov's portamento-inflected melodic language. Detects onsets in the audio, then randomly selects a percentage of them as glide targets. At each selected onset, a 50ms portamento slide (from +port_st down to 0) is added additively, creating the impression of the pitch gliding into the note from above.
+Inspired by Desyatnikov's portamento-inflected melodic language. Detects onsets in the audio, then randomly selects a percentage of them as glide targets. At each selected onset, a 50ms portamento slide (from +port_st down to 0) is added additively, creating the impression of the pitch gliding into the note from above. The slide is tape-style: pitch and speed glide together, like a real portamento.
 
 The portamento is Hanning-windowed and blended additively at 0.5× gain so it adds colour without overwhelming the original.
 
@@ -327,35 +362,40 @@ The portamento is Hanning-windowed and blended additively at 0.5× gain so it ad
 
 ## Spectral: Harmonic Stretch
 
-**Type key:** `morpho_spectral_harmonic`
+**Type key:** `morpho_harmonic_stretch`
 
-Stretches the upper partials outward by remapping STFT frequency bins. Each output bin `k` draws from input bin `k / stretch_ratio`. With `stretch_ratio: 2.0`, the content normally at bin 100 now appears at bin 200 — effectively spreading the harmonic series wider than natural.
+Stretches (or squeezes) the spacing of the partials while the fundamental stays put — like a stretched piano tuning or a bell. Partial *n* of a sound with fundamental *f0* moves from *n·f0* to *f0·n^β*, with *β = log2(octave_ratio)*: the "octave" between the first two partials becomes `octave_ratio` instead of 2, and higher partials are pushed out progressively. Below 2 the partials are squeezed together.
 
-Ratios > 1 stretch partials apart (makes harmonics sharper and more widely spaced). Ratios < 1 compress them inward. At exactly 1.0, the output is unchanged.
+Each partial is moved as a whole (its spectral peak and the bins around it) with its phase kept continuous, so the result is clean rather than phasey. The fundamental is detected from the sound; set `pivot_hz` to stretch around a different frequency instead.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `stretch_ratio` | 0.5–4.0 | 1.5 | How much to stretch the harmonic spacing |
+| `octave_ratio` | 1.5–3.0 | 2.2 | Size of the stretched "octave" (2.0 = unchanged) |
+| `pivot_hz` | 0–2000 | 0 | Frequency that stays fixed (0 = the sound's fundamental) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Give a pitched sound an inharmonic, bell-like or metallic quality by spreading its overtones. Subtle values (1.2–1.5) work well for metallic shimmer; extreme values (3.0–4.0) create very foreign-sounding textures.
+**Typical use:** 2.05–2.2 for a shimmering, slightly metallic colour; 2.5–3.0 for gong- and bell-like spectra; 1.6–1.9 for a squeezed, dark, out-of-tune timbre.
+
+*Changed in this version:* the old effect scaled every frequency by `stretch_ratio` with the original phases — a smeared transposition, not a stretch. `stretch_ratio` is replaced by `octave_ratio`.
 
 ---
 
 ## Spectral: Inharmonic
 
-**Type key:** `morpho_spectral_inharmonic`
+**Type key:** `morpho_inharmonic`
 
-Creates inharmonic spectra by mixing four copies of the magnitude spectrum, each remapped by a different ratio scaled by `inharmonic_factor`. The ratios are 1.0, 1.3, 2.7, and 4.5 (times the factor). This distributes energy to non-harmonic bin positions, destroying the harmonic series in favor of a deliberately inharmonic one.
+A frequency shifter: adds the same number of Hz to every partial. A harmonic sound has partials at *f0, 2·f0, 3·f0, …*; shifting all of them by the same amount (say +100 Hz) breaks those whole-number ratios, so the sound turns metallic and bell-like — the classic frequency-shifter (Bode) effect. A few Hz give slow beating and phasing; negative shifts pull partials down, and any pushed below 0 Hz fold back up.
 
-The four layers are averaged together and recombined with the original phase.
+Done exactly with the analytic signal (Hilbert transform), so there is no smearing.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `inharmonic_factor` | 1.0–3.0 | 1.5 | Scales all four remapping ratios. Higher = more inharmonic. |
+| `shift_hz` | −1000–1000 Hz | 100 | How far every partial moves |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Create bell, gong, or metallic percussion timbres from any source material. Works well on pitched sounds; on noise or percussion, it creates complex spectral textures.
+**Typical use:** 50–300 Hz on pitched material for bells, gongs and metallic timbres; 1–5 Hz mixed at 50% for a slow phasing shimmer; large negative shifts for growling, folded spectra.
+
+*Changed in this version:* the old effect averaged four copies of the spectrum scaled by ×1.3, ×2.7, ×4.5 (times a factor) with the original phases, which sounded smeared. `inharmonic_factor` is replaced by `shift_hz`.
 
 ---
 
@@ -376,7 +416,7 @@ Applies a uniform smoothing filter along the frequency axis of the STFT magnitud
 
 ## Wagner: Leitmotif
 
-**Type key:** `morpho_wagner_leitmotif`
+**Type key:** `morpho_leitmotif`
 
 Inspired by Wagner's leitmotif technique. Uses onset detection to find natural phrase segments, then applies a random transposition and time-stretch to each segment, and tiles it (repeats it within the segment boundary). Each segment gets its own random treatment, creating a theme-and-variation structure from any source material.
 
@@ -394,34 +434,40 @@ The time-stretch factor is drawn from three choices: 0.75×, 1.0×, or 1.25× (r
 
 ## Wagner: Tristan
 
-**Type key:** `morpho_wagner_tristan`
+**Type key:** `morpho_tristan_chord`
 
-Overlays the famous Tristan chord voicing on every Nth onset segment. The chord uses just-intonation ratios 4:5:6:7, expressed in semitones as 0, 3.86, 7.02, 9.69 — a harmonic 7th chord with natural (slightly flat) intonation. All four voices are summed and mixed under the original at a user-defined gain.
+Overlays the Tristan chord on every Nth onset segment, built on the sound itself as the chord's lowest note, in Wagner's voicing F–B–D♯–G♯: 0, +6, +10, +15 semitones (a half-diminished seventh, spread). All four voices are summed and mixed under the original at a user-defined gain.
+
+`voicing: harmonic 7th` gives the chord the previous version used instead: a just-intonation 4:5:6:7 stack (0, +3.86, +7.02, +9.69 st) — a natural, slightly flat dominant seventh rather than the Tristan chord.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
+| `voicing` | tristan / harmonic 7th | tristan | Which chord |
 | `tristan_interval` | 2–8 | 3 | Apply the chord overlay to every Nth detected onset segment |
 | `chord_gain_db` | −24–−6 dB | −12 | Volume of the chord overlay |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Add a Wagnerian harmonic weight to occasional segments. Use low `chord_gain_db` (−18 to −24 dB) for a subtle subliminal harmonic colour; −6 to −9 dB makes the chord clearly audible. Works on any source material — the chord will be transposed relative to whatever pitch is in the segment.
+**Typical use:** Add a Wagnerian harmonic weight to occasional segments. Use low `chord_gain_db` (−18 to −24 dB) for a subtle subliminal harmonic colour; −6 to −9 dB makes the chord clearly audible. Works on any source material — the chord is built on whatever pitch is in the segment.
 
 ---
 
 ## Wagner: Endless Melody
 
-**Type key:** `morpho_wagner_endless`
+**Type key:** `morpho_endless_melody`
 
-Inspired by Wagner's technique of seamlessly connecting melodic segments to create an unbroken melodic line. At each detected onset boundary, two things happen:
-1. **Crossfade**: the audio fades out before the boundary and fades in after it, removing hard cuts and creating a smooth transition
-2. **Passing tone**: a 50ms Hanning-windowed burst of the boundary region is pitch-shifted by ±1 semitone (randomly chosen) and added additively — a chromatic passing note connecting the two segments
+Inspired by Wagner's technique of joining melodic segments into an unbroken line. At each detected note boundary:
+1. **Bridge**: the previous note's last moment is held (a short spectral freeze) and rings on across the boundary, fading out over `crossfade_ms` — so the line never breaks, even when the source cuts each note off.
+2. **Soft entry**: the new note's attack comes in from half level and grows out of the held sound instead of cutting in.
+3. **Passing tone**: a 50 ms burst of the boundary region, a semitone up or down (random), is added — a chromatic grace note joining the two notes.
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
-| `crossfade_ms` | 50–300 ms | 200 | Length of the fade-out and fade-in regions around each boundary |
+| `crossfade_ms` | 50–300 ms | 200 | How long the previous note rings on (and the new attack takes to reach full level) |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-**Typical use:** Smooth out the transitions between short, choppy events or samples. Long `crossfade_ms` (200–300ms) creates flowing legato connections; short (50–80ms) just removes clicks while keeping the rhythm. The passing tone adds a brief chromatic grace note at each seam.
+**Typical use:** Turn short, choppy events or samples into a connected line. Long `crossfade_ms` (200–300 ms) gives flowing legato; short (50–80 ms) just smooths the joins while keeping the rhythm.
+
+*Changed in this version:* the old effect faded the audio to silence before every boundary and back in after it, which on dense material made the sound ~28 dB quieter and full of gaps — the opposite of legato.
 
 ---
 
@@ -433,23 +479,33 @@ Plugins live in `ProbabilisticMusic/plugins/`. When the server starts, `plugins/
 
 The `/plugins` endpoint returns the full schema as JSON — the editor uses this to generate parameter widgets on the fly.
 
+### Stereo
+
+In a stereo piece, every plugin except Spectral Smooth receives both channels at once. Analysis (onsets, pitch, brightness) is done on the mono sum, so both sides make the same decisions (the same notes are quoted, the same attacks frozen), and pitch shifts process both channels together, so the stereo image is kept. A mono sound on both sides with `spread: 0` gives exactly the mono result on each side.
+
+Five plugins can also place their material in the stereo field with `spread`: Cluster (voices from low-left to high-right), Textural (voices scattered), Grain Scatter (grains), Stochastic Cloud (bursts) and GENDY (independent random walks per side). In a mono piece `spread` has no effect.
+
+A plugin opts into this by setting `STEREO = True`; it then gets a `(frames, channels)` array (use `frames_io` and `mono` from `plugins`). Without it, a plugin is mono and runs on each channel separately with the same random draws.
+
 ### Processing requirements
 
-Most plugins use `librosa`. The spectral bin-remapping plugins (Harmonic Stretch, Inharmonic) additionally require `scipy`, which is listed in `requirements.txt`. Both are installed by `pip install -r requirements.txt`.
+Pitch shifting and time stretching go through `src/stretch.py` (Rubber Band, via the `pedalboard` package). Onset and pitch detection use `librosa`; the spectral bin-remapping plugins (Harmonic Stretch, Inharmonic) use `scipy`. All are installed by `pip install -r requirements.txt`.
 
 ### Performance
 
-Some plugins call `librosa.effects.pitch_shift` many times per clip — particularly granular plugins with many short grains. On a 10-second clip at default settings:
+Rubber Band costs more per call than a simple phase vocoder, so the plugins avoid calling it many times: effects that move pitch over time (Aleatoric, Textural, Glissando, Modes) pass one pitch curve for the whole clip; note-based effects (Minimalism, Tristan, Endless Melody) shift the whole clip once per interval and cut the notes out; independent voices and Leitmotif's per-note transforms run in parallel. Grain Scatter and Glissandi re-pitch tape-style, which is nearly free.
 
-| Plugin | Approximate processing time |
-|--------|----------------------------|
-| Saariaho: Spectral Freeze | ~0.5–1s |
-| Xenakis: Granular Cloud | ~5–15s (many pitch_shift calls) |
-| Penderecki: Cluster (8 voices) | ~3–5s |
-| Spectral: Harmonic Stretch | ~0.3–0.5s |
-| Xenakis: Stochastic Cloud | ~0.1–0.3s |
+Measured on a 4-second clip, per channel (a stereo clip takes about twice as long):
 
-Granular and cluster plugins are the slowest because they call `pitch_shift` once per grain or voice. Use shorter `grain_ms` values or fewer voices if rendering is slow.
+| Plugin | Time |
+|--------|------|
+| Leitmotif | ~0.6 s |
+| Textural | ~0.5 s |
+| Tristan, Lyricism, Endless Melody, Minimalism, Cluster, Glissando, Modes, Aleatoric | ~0.25–0.4 s |
+| Microtonal, Undertones | ~0.25 s |
+| Spectral plugins, Stochastic Cloud, GENDY, Grain Scatter, Glissandi | < 0.15 s |
+
+If you add a plugin, use `pitch_shift`, `time_stretch`, `transform`, `read_at_rate` and `parallel_map` from `src/stretch.py` rather than calling a pitch shifter directly.
 
 ### Adding your own plugin
 

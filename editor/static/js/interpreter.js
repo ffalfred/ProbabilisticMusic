@@ -39,7 +39,7 @@ async function _loadInterpScore() {
                       mark: t.mark || (t.factor > 1 ? 'accelerando' : 'ritardando') })),
       events:       (sc.events        || []),
       phrases:      (sc.phrases       || []),
-      fxRanges:     (sc.fx_ranges     || []),
+      fxRanges:     zonesFromScore(sc),
       noteRel:      (sc.note_rel      || []),
       articulations:(sc.articulations || []),
     };
@@ -52,7 +52,8 @@ async function _loadInterpScore() {
     state.noteRel       = sc.note_rel      || [];
     state.articulations = sc.articulations || [];
     state.baseFx        = sc.base_fx       || [];
-    state.fxRanges      = sc.fx_ranges     || [];
+    state.fxRanges      = zonesFromScore(sc);
+    outputSettingsFromScore(sc);
     state.lastScorePath = path;
     // Sync to Composer's import path input
     const _impIn = document.getElementById('import-path');
@@ -153,11 +154,13 @@ async function renderScoreAndPlay() {
       path:       audioPath,
       score_path: interpState.scorePath,
       interp:     { golems: [], v2config: {}, mix_dims: interpState.mix_dims },
+      loudness:   previewLoudness(),
     };
     const res  = await fetch('/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const data = await res.json();
     if (gen !== _renderGen) return;   // cancelled by stop or newer render
     if (data.error) { _setPlayStatus('error: ' + (data.detail || data.error)); return; }
+    showBrakeReport(data.loudness);
     _storeTempoMap(data);
     const audioRes = await fetch(data.url);
     if (!audioRes.ok) throw new Error(`Audio fetch failed (${audioRes.status})`);
@@ -191,11 +194,13 @@ async function renderInterpAndPlay() {
         v2config: interpState.v2config,
         mix_dims: interpState.mix_dims,
       },
+      loudness: previewLoudness(),
     };
     const res  = await fetch('/preview', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const data = await res.json();
     if (gen !== _renderGen) return;   // cancelled by stop or newer render
     if (data.error) { _setPlayStatus('error: ' + (data.detail || data.error)); return; }
+    showBrakeReport(data.loudness);
     _storeTempoMap(data);
     const audioRes = await fetch(data.url);
     if (!audioRes.ok) throw new Error(`Audio fetch failed (${audioRes.status})`);
@@ -350,6 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <div style="font-size:9px;color:#555;margin-top:2px;">Full duration: ${durStr}s. Leave as-is for whole audio.</div>
         </div>
+${loudnessOptionsHtml('exp-loud')}
         <div>
           <label style="font-size:11px;color:#888;">Audio quality:</label>
           <select id="exp-format" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
@@ -387,6 +393,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const expTo     = parseFloat(document.getElementById('exp-to')?.value)   || 0;
     const expPath   = document.getElementById('exp-path')?.value.trim() || '';
     const expFormat = document.getElementById('exp-format')?.value || 'wav24';
+    const expLoud   = readLoudnessOptions('exp-loud');
 
     exportWavBtn.disabled = true;
     setSaveStatus('rendering WAV…');
@@ -399,6 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
         out_path: expPath,   // full path chosen by user (empty = default output/ dir)
         export_mode: expMode,
         audio_format: expFormat,
+        loudness: expLoud,
         time_from: expFrom,
         time_to: expTo > expFrom ? expTo : 0,
         interp: { golems: interpState.golems, v2config: interpState.v2config, mix_dims: interpState.mix_dims },
@@ -409,8 +417,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const data = await res.json();
       if (data.error) { setSaveStatus('export error: ' + data.error); return; }
-      setSaveStatus('saved → ' + data.path);
-      setTimeout(() => setSaveStatus(''), 5000);
+      setSaveStatus('saved → ' + data.path + (data.loudness ? '  (' + describeLoudness(data.loudness) + ')' : ''));
+      setTimeout(() => setSaveStatus(''), 10000);
     } catch (e) {
       setSaveStatus('export failed: ' + e);
     } finally {

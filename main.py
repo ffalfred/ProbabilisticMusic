@@ -71,4 +71,4 @@ if __name__ == '__main__':
         events = get_events(score)
 
     out_path = _next_output_path(args.score, args.input)
-    render(score, bank, events, sr, base, wav_path=out_path)
+    render(score, bank, events, sr, base, wav_path=out_path, loudness=config.get('output'))

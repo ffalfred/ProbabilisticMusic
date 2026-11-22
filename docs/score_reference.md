@@ -39,7 +39,10 @@ This cuts a 1.5-second fragment from the source audio (from 0.5s to 2.0s), names
 | `tempo:` | no | Regions where timing is compressed or stretched |
 | `base_fx:` | no | Effects on the entire source track |
 | `fx_ranges:` | no | Effects on a specific time range of the source track |
-| `silence_start:` | no | Seconds of silence added before events are placed |
+| `fx_sections:` | no | Effects on a time range of the whole output (source + events) |
+| `fx_global:` | no | Effects on the whole output (source + events) |
+| `silence_start:` | no | Seconds of lead-in: events start this much later |
+| `silence_end:` | no | Seconds of silence added after the piece |
 | `tracks:` | no | Multiple source audio files mixed into one base |
 | `phrases:` | no | Per-phrase gain, fades, and local tempo changes |
 | `articulations:` | no | Staccato, accent, fermata, legato applied to events |
@@ -73,9 +76,11 @@ samples:
 
 | Field | Type | Default | What it does |
 |-------|------|---------|-------------|
-| `track` | int | `0` | Which track index to slice from (see `tracks:`) |
+| `track` | int | `0` | Which track index to slice from (see `tracks:`). `from`/`to` are timeline times, like everything else: on a track that starts at `from: 10`, a sample at 12–13 s is that track's own seconds 2–3. Parts of the range where the track isn't playing are silent. |
+| `include` | list / `all` / `none` | `[fx]` | What the sample carries over from its track, out of `fx` (the track's FX chain), `fx_regions`, `automation` and `gain` — applied in that order. `all` = exactly what you hear on the track there; `none` = the file as it is. A track's mute is never carried, so a muted track can still be sampled. |
 | `fade_in` | float | `0.05` | Fade-in as fraction of clip length (0–1) |
 | `fade_out` | float | `0.05` | Fade-out as fraction of clip length (0–1) |
+| `fade_curve` | string | `smooth` | Shape of the fades — see [Fade shapes](#fade-shapes) |
 
 `fade_in` and `fade_out` set defaults for every event that uses this sample. An event can override them with its own `fade_in`/`fade_out` fields.
 
@@ -189,7 +194,18 @@ Override the sample's default fades for this event. Values are fractions of clip
     gain_db: -9
 ```
 
-If omitted, the sample-level defaults apply (both default to `0.05`).
+If omitted, the sample-level defaults apply (both default to `0.05`). An event can also set its own `fade_curve` (otherwise the sample's is used).
+
+### Fade shapes
+
+Every fade — sample and event fades (`fade_curve`), phrase fades (`fade_curve`) and FX-zone fades (`fade_curve`) — can take one of these shapes:
+
+| `fade_curve` | Shape |
+|---|---|
+| `smooth` (default) | Equal-power (a quarter sine): sounds even, with no late drop. Two smooth fades crossing keep the total power steady. |
+| `linear` | A straight line in amplitude (the only shape before this version). A linear fade-out seems to hold on and then drop away at the end. |
+| `exponential` | A straight line in decibels over 60 dB: steady in loudness. A fade-in stays very quiet for a while, then rises; a fade-out falls away quickly, then lingers. |
+| `s-curve` | Slow at both ends, faster in the middle. |
 
 ---
 
@@ -273,9 +289,18 @@ base_fx:
 
 ---
 
+## Where effects go
+
+| | Source only (before events are added) | Whole output (source + events, after tempo changes) |
+|---|---|---|
+| Whole piece | `base_fx:` | `fx_global:` |
+| A time range | `fx_ranges:` | `fx_sections:` |
+
+Per-event effects go in the event's own `fx:`, and per-track effects in `tracks:`.
+
 ## `fx_ranges:`
 
-Effects on a specific time segment of the source audio.
+An FX zone on the source audio, before events are added (events play on top, unaffected).
 
 ```yaml
 fx_ranges:
@@ -284,17 +309,59 @@ fx_ranges:
     fx:
       - type: reverb
         reverberance: 80
+    fade: true          # optional: blend the effect in and out
+    fade_in_s: 0.5      # default: a tenth of the zone (0.01–1 s)
+    fade_curve: smooth  # fade shape: smooth (default), linear, exponential, s-curve
+    fade_out_s: 0.5
+```
+
+Without `fade`, the zone is replaced by its processed version, and any tail the effects add (reverb, delay) rings on past the zone. With `fade: true`, the original stays and the effect fades in and out over it.
+
+## `fx_sections:`
+
+An FX zone on the **whole output** — the source and every event — written exactly like `fx_ranges`. It is applied after tempo changes, but its times are score times (where you drew it), so it lands in the right place even after a ritardando.
+
+```yaml
+fx_sections:
+  - from: 20.0
+    to: 24.0
+    fx:
+      - type: filter
+        cutoff: 400
+    fade: true
+```
+
+The older form with one effect written flat in the section (`- {from: 20, to: 24, type: filter, cutoff: 400}`) still works; it gets short crossfades and no tail.
+
+## `fx_global:`
+
+An effect chain on the whole output, from start to end (a master chain). Applied after `fx_sections`.
+
+```yaml
+fx_global:
+  - type: compress
+    threshold: -18
 ```
 
 ---
 
 ## `silence_start:`
 
-Shifts all events later by the given number of seconds. Useful when you want a lead-in of pure source audio before your composition begins. Does not affect dynamics or phrase envelopes — those are still measured from time 0.
+A lead-in: shifts all events later by the given number of seconds, while the source still plays from 0. Does not affect dynamics or phrase envelopes — those are still measured from time 0.
 
 ```yaml
 silence_start: 2.0    # 2 seconds of source audio before the first event
 ```
+
+## `silence_end:`
+
+Seconds of silence added after the end of the piece (after any reverb tails), e.g. room before a video ends.
+
+```yaml
+silence_end: 3.0
+```
+
+Muted entries (`muted: true` — set by the editor's mute toggle) are left out of the render everywhere: events, dynamics, articulations, tempo ranges, phrases, note relations and FX zones.
 
 ---
 
@@ -357,6 +424,7 @@ phrases:
 | `gain_db` | float | `0` | Gain offset for the phrase |
 | `fade_in` | float | `0` | Fade-in as fraction of phrase length |
 | `fade_out` | float | `0` | Fade-out as fraction of phrase length |
+| `fade_curve` | string | `smooth` | Shape of the fades — see [Fade shapes](#fade-shapes) |
 | `tempo_factor` | float | `1.0` | Local time compression/expansion (merged into `tempo:`) |
 
 Phrase envelopes are applied after dynamics and after event mixing, so they shape the entire rendered result including the source track.
@@ -365,28 +433,51 @@ Phrase envelopes are applied after dynamics and after event mixing, so they shap
 
 ## `articulations:`
 
-Apply performance articulations to events. An articulation can match a specific event time or a time range.
+Performance marks: staccato, accent, legato and fermata. Each mark has a **target**:
+
+- **`event`** (default) — the mark shapes the events it covers, before they are mixed. A point mark (`t:`) covers the event starting nearest to `t` (within 0.5 s); a range mark (`from:`/`to:`) covers every event starting inside the range. The source audio and other events are untouched; a point mark with no event within 0.5 s does nothing.
+- **`mix`** — the mark shapes everything sounding at that time: the source plus all events. Over a range, staccato, accent and legato act at the **attacks detected in the mix** (moments where the sound suddenly gets louder), or on a regular grid every `every_s` seconds if you set it — useful on smooth material with no attacks.
 
 ```yaml
 articulations:
   - type: staccato
-    t: 4.0        # matches the event nearest to t=4.0 (within 0.5s)
+    t: 4.0          # the event starting nearest to 4.0 s
+    keep_s: 0.1     # plays only its first 0.1 s
 
   - type: accent
     from: 6.0
-    to: 10.0      # applies to all events in this range
+    to: 10.0        # every event starting between 6 and 10 s
+
+  - type: staccato
+    target: mix
+    from: 12.0
+    to: 14.0
+    every_s: 0.25   # chop everything into 250 ms pulses
+
+  - type: fermata
+    target: mix
+    t: 20.0
+    hold_s: 3.0     # the whole piece waits 3 s, holding the sound at 20 s
 ```
 
-Available types:
+| Type | On an event (`target: event`) | On the whole mix (`target: mix`) |
+|------|-------------------------------|----------------------------------|
+| `staccato` | Plays only its first `keep_s` (default 0.15 s), then a quick fade. Its effects (e.g. reverb) still ring after the cut. | Point: everything plays `keep_s`, then is silent for `silence_s` (default 0.07 s). Range: each attack plays `keep_s`, then silence until the next attack. |
+| `accent` | Its first 50 ms are louder by `boost_db` (default 6 dB), easing back. | Point: everything is boosted at `t`. Range: every attack in the range is boosted. |
+| `legato` | It rings on until the next event starts — if its sample runs out first, its last moment is held — then fades as the next event enters. With no later event, it ends on a long fade. | At `t` (point) or at each attack (range), the sound just before rings on across it while the new sound eases in. |
+| `fermata` | Its last moment is held for `hold_s` (default 2 s), then fades. Nothing else moves. | The whole piece waits: the sound at `t` (a range: at `to`) is held for `hold_s` and inserted into the timeline, then everything — source and events — resumes. The piece gets `hold_s` longer, and the editor's cursor stops during the hold. |
 
-| Type | Effect |
-|------|--------|
-| `staccato` | Shorten clip to ~30% of duration with a quick fade-out |
-| `accent` | Boost attack: ramp 2× → 1× gain over the first 50ms |
-| `fermata` | Extend duration: append two extra loops of the last 20% of the clip |
-| `legato` | Replace short fade-out with a smooth 500ms fade-out |
+| Field | Applies to | Default | What it does |
+|-------|------------|---------|-------------|
+| `target` | all | `event` | `event` or `mix` |
+| `keep_s` | staccato | 0.15 | How much of the start plays |
+| `silence_s` | staccato, mix point | 0.07 | Length of the cut |
+| `boost_db` | accent | 6 | How much louder the attack is |
+| `hold_s` | fermata | 2.0 | How long the hold lasts |
+| `every_s` | mix ranges (staccato, accent, legato) | — | Act on a grid of this period instead of detected attacks |
+| `freq_from` / `freq_to` | all | — | Limit the mark to a frequency band; the rest of the spectrum passes through |
 
-Point-form (`t:`) matches the first event within 0.5 seconds of that time. Range-form (`from:`/`to:`) matches every event in the range.
+Articulations are skipped in the performance-neutral ("Source / Raw") render.
 
 ---
 
@@ -467,19 +558,27 @@ With `mode: sqrt`, a region with N simultaneous events is scaled by `1 / √N`. 
 ## Effects reference
 
 ### `reverb`
-Adds room reverberation.
+Adds room reverberation on top of the sound. The reverb rings on after the sound ends until it dies away.
 ```yaml
 - type: reverb
-  reverberance: 60    # 0 = completely dry, 100 = maximum reverb
+  reverberance: 60    # default 50; how long it rings: 20 ≈ 0.3 s, 50 ≈ 2 s, 100 ≈ 11 s
+  damping: 50         # 0–100, higher = darker tail
+  room_scale: 100     # 0–100, room size
+  pre_delay: 0        # ms before the reverb starts
+  dry: 1.0            # level of the original (1 = full, 0 = reverb only)
+  wet: 0.5            # level of the reverb (1 = as loud as the original)
 ```
 
 ### `delay`
-Repeating echoes.
+Repeating echoes after the sound.
 ```yaml
 - type: delay
   delay_sec: 0.3    # time between echoes in seconds
-  feedback: 0.4     # 0 = one echo, 0.9 = many slowly-fading echoes
+  dry: 1.0          # level of the original (1 = full, 0 = echoes only)
+  wet: 0.5          # level of the first echo
+  feedback: 0.6     # each echo is this much of the previous one (0 = a single echo)
 ```
+With these values: the sound at full level, then echoes at 0.5, 0.3, 0.18, … until they fade below hearing.
 
 ### `overdrive`
 Adds distortion.
@@ -557,12 +656,12 @@ Any Morphogenics plugin can be used as an FX type directly in YAML. The type key
 
 ```yaml
 fx:
-  - type: morpho_saariaho_freeze
+  - type: morpho_spectral_freeze
+    mode: attacks
     n_partials: 20
-    freeze_rate: 0.1
     dry_wet: 80
 
-  - type: morpho_xenakis_granular
+  - type: morpho_grain_scatter
     grain_ms: 40
     pitch_spread: 6
     shuffle_pct: 30
@@ -571,6 +670,33 @@ fx:
 ```
 
 Any omitted parameter uses the plugin's default value. See [morphogenics.md](morphogenics.md) for the full list of plugins, their type keys, and all parameters.
+
+---
+
+## Automation — effect settings that change over time
+
+Any numeric effect setting can be a **curve** instead of a number: a list of `[seconds, value]` points, joined by straight lines. Before the first point and after the last, the value holds.
+
+```yaml
+fx:
+  - type: filter
+    cutoff: {curve: [[0, 200], [2, 3000], [5, 400]]}   # opens over 2 s, closes over 3 s
+  - type: reverb
+    wet: {curve: [[0, 0], [4, 0.8]]}                   # the reverb swells in
+```
+
+Times are seconds from the **start of the audio the effect processes**: the event's sound (for an event's `fx`), the zone (`fx_ranges` / `fx_sections`), the track (a track's `fx`), or the whole piece (`base_fx`, `fx_global`).
+
+**Exact** — every sample gets its own value:
+- `reverb`, `delay`: `dry`, `wet`. A delay's `wet` is a send level: an echo keeps the level its sound was sent at.
+- every Morphogenics plugin: `dry_wet`.
+- `filter`: `cutoff`, `resonance`.
+- `tremolo`: `rate`, `depth`.
+- `pitch`: `semitones` / `cents` (Rubber Band follows the pitch curve).
+
+**Approximated** — every other setting (e.g. `overdrive` drive, `reverberance`, `eq` gains, any Morphogenics setting): the effect is rendered with the values the curves have at a series of moments — every point, plus extra moments so they are at most 0.25 s apart, up to 12 — and the result moves smoothly from one render to the next. It is exact at those moments and blended in between: a sweep sounds like a crossfade of renders rather than one moving setting, and the effect costs one render per moment.
+
+In the editor, the **~** button next to any numeric setting in an effect chain switches it to a curve, written `0s: 200, 2s: 3000, 5s: 400`.
 
 ---
 

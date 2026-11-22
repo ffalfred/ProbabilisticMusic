@@ -101,7 +101,7 @@ After loading:
 ├──────────────┴───────────────────────────────┴───────────────────────┤
 │  view:  ⊕ Zoom  ↑ Pointer  |  ⌟ Quantize  |  ← Undo  → Redo         │  ← controls bar
 ├──────────────────────────────────────────────────────────────────────┤
-│  name: [untitled]  [Base FX]  |  [↓ Export YAML]  [⇓ Export MP4]    │
+│  name: [untitled]  [Base FX]  |  [↓ Export YAML]  [↓ Export audio]  │
 │        [path/to/score.yaml]  [↑ Import YAML]  |                      │  ← export bar
 │        [▶ Source]  [▶ Mix]   speed: [1.0]                            │
 └──────────────────────────────────────────────────────────────────────┘
@@ -121,6 +121,22 @@ The current time is shown in the overlay at the bottom of the video/image area.
 
 Pressing **▶ Mix** again while audio is playing will pause it. Pressing it again re-renders and plays from the start.
 
+### Loudness and the safety brake
+
+Renders keep the level the performance produced. Nothing turns a render up or down automatically, so a quiet interpretation sounds quiet and a loud one sounds loud, and you can compare takes directly.
+
+The **brake** switch next to the workspace tabs is the safety brake, a limiter that pulls down only the moments that would go above −1 dB so loud passages don't distort. Everything else is untouched. It is on by default and applies to everything you play in the editor. After a render, the number next to it shows how much it reduced the loudest moment (for example `−2.1 dB`). With the brake off, the indicator turns red (`clips +1.5 dB`) when a render goes over the maximum and will distort.
+
+Exports have their own **Loudness** setting:
+
+| Choice | What it does |
+|--------|--------------|
+| **Leave it** | The level as performed (default). |
+| **Match source** | As loud overall as the loaded audio. |
+| **Target loudness** | −14 LUFS (streaming), −16 (Apple Music, podcasts), −23 (broadcast), or a custom value. |
+
+An adjustment is one volume change for the whole piece. It is measured on the whole render, so exporting a time range gives that range the same level it has in the full piece. The export's **Safety brake** checkbox is ticked by default. The status line shows the result: the loudness, the adjustment, and how much the brake worked. If the brake had to work hard at a target, the target is too loud for this piece.
+
 > **About ▶ Source with stems:** When you use Stemize to split the audio into separate tracks, ▶ Source plays through the **Web Audio mixer** and plays all unmuted stems together. Muting/unmuting a stem takes effect immediately — you don't need to press play again.
 
 ---
@@ -135,9 +151,11 @@ Click a tool button to select it. The selected tool determines what happens when
 
 A popup will ask for:
 - **name** — what to call this sample (e.g. `kick`, `texture_a`)
-- **color** — just for visual identification in the editor
+- **track** — which track to cut it from (when there are several)
+- **fade in / fade out** — as a percentage of the sample's length
+- **carry from track** — which of the track's processing the sample keeps: its **FX chain** (ticked by default), **FX regions**, **automation** and **gain**. Tick all four to get exactly what you hear on the track there; untick all for the file as it is. A track's mute is never carried, so you can keep a track muted and still sample from it.
 
-The sample is stored as a start and end time. The name is what you use when placing events.
+The sample is stored as a start and end time on the timeline (so on a track that starts later, it is cut from the right place in that track). The name is what you use when placing events.
 
 ### ▶ Event
 
@@ -198,10 +216,16 @@ These are applied after placing events, to shape how consecutive notes relate:
 
 | Button | What it does |
 |--------|-------------|
-| **• Staccato** | Short, detached — the note ends before the next one begins |
-| **⌒ Legato** | Smooth and connected — notes flow into each other |
-| **𝄐 Fermata** | Hold the note longer than written |
-| **> Accent** | Emphasise the attack — play louder at the start |
+| **• Staccato** | Cut short: only the first `keep` seconds play |
+| **⌒ Legato** | Connected: the sound rings on into what comes next |
+| **𝄐 Fermata** | Held: the sound sustains for `hold` seconds |
+| **> Accent** | Emphasised: the attack is louder |
+
+Each mark's popup has a **target**:
+- **event** (default) — the mark shapes the event(s) it covers: a click covers the event starting nearest to it (within 0.5 s), a drag covers every event starting inside the range. The source audio is untouched.
+- **whole mix** — the mark shapes everything sounding then. Over a range it acts at the attacks detected in the sound, or every `every` seconds if you fill that in. A whole-mix fermata makes the whole piece wait: the sound is held, then everything resumes (the piece gets longer, and the cursor stops during the hold).
+
+Whole-mix marks are labelled "(mix)" on the score. Full details: [score_reference.md](score_reference.md#articulations).
 
 ---
 
@@ -277,17 +301,22 @@ Selecting a Morphogenics effect generates its parameter widgets automatically be
 ### Standard effects
 
 ### reverb
-Makes a sound feel like it's in a room.
+Makes a sound feel like it's in a room. The reverb is added on top of the sound and rings on after it ends.
 ```
-reverberance: 0–100    (0 = completely dry, 100 = maximum reverb)
+reverberance: 0–100   (how long it rings: 20 ≈ 0.3 s, 50 ≈ 2 s, 100 ≈ 11 s; default 50)
+dry:          0–1     (level of the original — 1 = full, 0 = reverb only)
+wet:          0–1     (level of the reverb — 1 = as loud as the original)
 ```
 
 ### delay
-Repeating echoes.
+Repeating echoes after the sound.
 ```
 delay_sec: 0.1–2.0    (time between echoes, in seconds)
-feedback:  0.0–1.0    (how many echoes — 0 = one echo, 0.9 = many echoes that fade out slowly)
+dry:       0–1        (level of the original — 1 = full, 0 = echoes only)
+wet:       0–1        (level of the first echo)
+feedback:  0.0–0.95   (each echo is this much of the previous one — 0 = a single echo)
 ```
+For example dry 1, wet 0.5, feedback 0.6: the sound at full level, then echoes at 0.5, 0.3, 0.18, …
 
 ### overdrive
 Adds distortion and warmth, like turning an amp up too loud.
@@ -355,30 +384,60 @@ See [morphogenics.md](morphogenics.md) for the full reference — every plugin, 
 Quick reference: the available plugins are:
 - **Nørgaard: Undertones** — synthetic harmonic undertones below the fundamental
 - **Messiaen: Modes** — pitch quantization to Messiaen's 7 modes of limited transposition
-- **Penderecki: Cluster** — dense chromatic tone clusters
+- **Penderecki: Cluster** — a band of every semitone or quarter tone, voices drifting, optional staggered entries
 - **Penderecki: Aleatoric** — random per-segment pitch displacement
-- **Penderecki: Textural** — cluster + aleatoric combined
+- **Penderecki: Textural** — a restless cluster: every voice jumps, swells and is scattered in stereo
 - **Penderecki: Glissando** — continuous pitch sweep through each segment
-- **Xenakis: Granular Cloud** — stochastic granular synthesis
+- **Xenakis: Grain Scatter** — stochastic granular resynthesis (shuffled, re-pitched grains)
 - **Xenakis: Stochastic Cloud** — dense probabilistic sine-burst layers
-- **Xenakis: GENDY** — Weibull-distributed amplitude envelope
-- **Saariaho: Spectral Freeze** — STFT-based spectral sustain (pad from any sound)
+- **Xenakis: GENDY** — Xenakis's dynamic stochastic synthesis: on the input, as a synth layer, or as a random envelope
+- **Saariaho: Spectral Freeze** — holds each attack's sound (or a slowly following one) as a sustained chord
 - **Saariaho: Microtonal** — brightness-driven microtonal detuning
 - **Desyatnikov: Minimalism** — polystylistic quote displacement at every Nth onset
-- **Desyatnikov: Lyricism** — non-functional maj7 + dim11 harmonic layers
+- **Desyatnikov: Lyricism** — two parallel non-functional intervals (default maj 7th + perfect 11th above)
 - **Desyatnikov: Glissandi** — portamento slides into random onset boundaries
-- **Spectral: Harmonic Stretch** — partial remapping to stretch the harmonic series
-- **Spectral: Inharmonic** — shift partials to inharmonic ratios
+- **Spectral: Harmonic Stretch** — stretches or squeezes the spacing of the partials (bell-like)
+- **Spectral: Inharmonic** — frequency shifter: every partial moves by the same Hz (metallic)
 - **Spectral: Smooth** — frequency-axis spectral envelope smoothing
 - **Wagner: Leitmotif** — onset-segmented motif transformation with transposition
-- **Wagner: Tristan** — Tristan chord overlay on onset segments
-- **Wagner: Endless Melody** — crossfades + passing tones at phrase boundaries
+- **Wagner: Tristan** — Tristan chord (F–B–D♯–G♯ voicing) overlay on onset segments
+- **Wagner: Endless Melody** — legato bridges (the previous note rings on) + passing tones at note boundaries
 
 ---
 
 ## Base FX
 
-The **Base FX** button in the export bar opens a panel to apply effects to the **entire base track** — not just a region. This runs before everything else, so your events and FX zones sit on top of the processed base. Useful for a global room reverb or a slight compression on the source.
+The **Base FX** buttons in the toolbar apply effects to the **entire base track** — not just a region. This runs before everything else, so your events and FX zones sit on top of the processed base. Useful for a global room reverb or a slight compression on the source.
+
+## Automation: effect settings that change over time
+
+In any effect chain (an event's FX, an FX zone, Base FX, Output FX, a track's FX), the **~** button next to a numeric setting switches it to a **curve**: type points as `seconds: value`, separated by commas — e.g. `0s: 200, 2s: 3000, 5s: 400` for a filter cutoff that opens and closes. Straight lines join the points; the value holds before the first and after the last. Times count from the start of what the effect processes (the event, the zone, the track, or the whole piece). Click **~** again to go back to a single value (the curve's first).
+
+Dry/wet levels, filter cutoff/resonance, tremolo rate/depth and pitch move exactly; other settings are approximated by blending renders taken along the curve (see [score_reference.md](score_reference.md#automation--effect-settings-that-change-over-time)).
+
+## Fade shapes
+
+Sample, event, slur and FX-zone popups have a **fade shape**: *smooth* (equal-power, the default), *linear*, *exponential* or *S-curve*. An event's shape defaults to its sample's.
+
+## Output FX, and FX zones on the whole output
+
+Base FX and FX zones work on the **source** only: events play on top, unaffected. To process **everything** — source and events together, after tempo changes — use:
+
+- **Output FX** (toolbar, next to Base FX): an effect chain on the whole output, start to end — a master chain (`fx_global`).
+- **FX zone → Applies to: the whole output**: in any FX zone's popup, switch *Applies to* from *the source* to *the whole output* (`fx_sections`). Output zones are drawn in orange and labelled `out:`; source zones stay purple.
+
+| | Source only | Whole output |
+|---|---|---|
+| Whole piece | Base FX | Output FX |
+| A time range | FX zone (applies to: the source) | FX zone (applies to: the whole output) |
+
+## Lead-in and tail
+
+**⏱ Lead / tail** in the toolbar sets:
+- **lead-in** — events start this many seconds later, while the source plays from 0 (`silence_start`);
+- **tail** — seconds of silence added after the piece (`silence_end`).
+
+The button shows the current values when either is set.
 
 ---
 
@@ -426,17 +485,21 @@ The exported score is a **clean composition file** — it does not include engin
 
 This file can then be used with the [command-line renderer](cli.md) to render without opening the editor.
 
-### Exporting as MP4 video
+### Exporting audio
 
-If you have loaded a score image (using the score image inputs below the video frame), you can export a **scrolling score video** — a video that shows the score scrolling as the music plays, with a red playhead cursor.
+Click the **save audio…** field or the **↓** next to it. A popup asks:
 
-1. Load a score image and set its start/end times (so the image aligns with the audio)
-2. Type a name in the **name:** field
-3. Click **⇓ Export MP4**
+- **What to export** — *the mix* (source + events: exactly what **▶ Mix** plays, including tempo changes, fermatas and the tail silence), *events only* (no source), or *the source only*.
+- **Save to** — type a path or **Browse**; left empty, the file goes to `output/composer_<audio>_<date-time>.wav`.
+- **Time range** — the whole piece by default, or a part of it. A part keeps the level it has in the whole piece.
+- **Loudness** — leave as performed, match the source, or reach a target (−14 / −16 / −23 LUFS or custom), plus the safety brake (see [Loudness and the safety brake](#loudness-and-the-safety-brake)).
+- **Audio quality** — 24-bit WAV (default), 32-bit float WAV, FLAC or 16-bit WAV.
 
-The resulting `.mp4` file is saved alongside your YAML in the `scores/` folder. The video shows the score image scrolling horizontally, centred on the playhead.
+The status line shows where the file went and its loudness. The Interpreter has the same export (**↓ WAV**) for its performances.
 
-> This requires `ffmpeg` to be installed. See [installation.md](installation.md).
+### Score videos
+
+Score videos (the score image scrolling with the music, with the rendered sound) are made with **Concerto → Download**, from the Composer or the Interpreter. (The Composer's old ⇓ MP4 button was removed: its video carried the raw source recording, not the composition.)
 
 ### Importing a previously exported score
 

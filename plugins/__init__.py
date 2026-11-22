@@ -32,7 +32,36 @@ def plugin_rng():
     """Random generator for plugins, drawn from the global numpy state so a
     render seeded with seed_everything() is reproducible."""
     import numpy as np
-    return np.random.default_rng(np.random.randint(0, 2**31 - 1))
+    from src.rand import rng
+    return np.random.default_rng(rng().randint(0, 2**31 - 1))
+
+
+def frames_io(clip):
+    """A plugin's input as float32 (frames, channels), plus a function that
+    returns a (frames, channels) result in the input's own layout (1-D in,
+    1-D out). Lets STEREO plugins also be called directly on mono arrays."""
+    import numpy as np
+    x = np.asarray(clip, dtype=np.float32)
+    if x.ndim == 1:
+        return x[:, None], lambda y: np.asarray(y, dtype=np.float32)[:, 0]
+    return x, lambda y: np.asarray(y, dtype=np.float32)
+
+
+def mono(x):
+    """Mono sum of a (frames, channels) signal, for analysis (onsets, pitch,
+    brightness), so every channel follows the same decisions."""
+    return x.mean(axis=1) if x.ndim == 2 else x
+
+
+def pan_gains(pos: float, n_ch: int):
+    """Equal-power balance gains for a position from -1 (left) to +1 (right).
+    Centre is (1, 1), hard left (√2, 0): the total power stays the same.
+    Mono signals are not panned."""
+    import numpy as np
+    if n_ch != 2:
+        return np.ones(n_ch, dtype=np.float32)
+    a = (float(np.clip(pos, -1, 1)) + 1) * np.pi / 4
+    return np.array([np.cos(a), np.sin(a)], dtype=np.float32) * np.sqrt(2)
 
 
 def _band_blend(original, processed, sr: int, low_hz: float, high_hz: float):
@@ -77,6 +106,9 @@ def _band_blend(original, processed, sr: int, low_hz: float, high_hz: float):
     return result
 
 
+_warned = set()   # unknown types already reported (once per run)
+
+
 def apply_plugin(clip, sr: int, fx: dict):
     """Dispatch an FX dict with type starting with 'morpho_' to the matching plugin.
 
@@ -89,6 +121,10 @@ def apply_plugin(clip, sr: int, fx: dict):
     t = fx.get("type", "")
     mod = plugins.get(t)
     if mod is None:
+        if t not in _warned:
+            _warned.add(t)
+            print(f"[plugins] unknown effect type '{t}' — left out. "
+                  f"Known: {', '.join(sorted(plugins))}", file=sys.stderr)
         return clip
     # Resolve concrete param values from fx dict (use plugin defaults for missing
     # keys). Ranges / distributions are drawn here, since fx outside events are
@@ -98,8 +134,16 @@ def apply_plugin(clip, sr: int, fx: dict):
     for key, spec in mod.PARAMS.items():
         params[key] = _resolve(fx.get(key, spec.get("default")))
 
-    original  = clip.copy() if hasattr(clip, 'copy') else clip
-    processed = mod.process(clip, sr, params)
+    # STEREO plugins get all channels at once (frames, channels): they analyse
+    # the mono sum, shift channels together and can place voices in the
+    # stereo field. Others are mono and run per channel; per_channel replays
+    # the same random draws, so both sides match.
+    from src.dsp import as_frames, per_channel
+    original  = as_frames(clip).copy()
+    if getattr(mod, "STEREO", False):
+        processed = as_frames(mod.process(original.copy(), sr, params))
+    else:
+        processed = per_channel(lambda c: mod.process(c, sr, params), original)
 
     # Band-limit the effect when the plugin has frequency-range params
     if "low_hz" in mod.PARAMS or "high_hz" in mod.PARAMS:

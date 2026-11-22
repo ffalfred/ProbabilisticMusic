@@ -2,6 +2,8 @@ numpy
 scipy
 soundfile
 librosa
+# pitch shifting / time stretching (Rubber Band). GPLv3: see docs/installation.md#licences
+pedalboard
 pyyaml
 flask
 pillow

@@ -1172,13 +1172,29 @@ async function startConcertoDownload() {
         <label style="font-size:11px;color:#ccc;display:block;">
           <input id="concerto-meta-video" type="checkbox"> Metadata video (no sound, meta canvas centered)
         </label>
-        <label style="font-size:11px;color:#ccc;display:block;">
-          <input id="concerto-out-audio" type="checkbox"> Audio (.wav)
-        </label>
+        <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+          <span style="font-size:11px;color:#ccc;">Sound:</span>
+          <select id="concerto-sound" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:10px;" onchange="_concertoSoundSync()">
+            <option value="together" selected>Together — in the score video (one file)</option>
+            <option value="apart">Apart — silent score video + sound file (two files)</option>
+            <option value="both">Both — in the score video and as a sound file</option>
+            <option value="none">None</option>
+          </select>
+          <select id="concerto-audio-format" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:10px;display:none;" title="Format of the sound file">
+            <option value="wav24" selected>24-bit WAV (studio standard)</option>
+            <option value="wav32f">32-bit float WAV (lossless)</option>
+            <option value="flac">FLAC (lossless, smaller file)</option>
+            <option value="wav16">16-bit WAV (CD quality)</option>
+          </select>
+        </div>
+        <div style="font-size:9px;color:#555;margin-top:2px;">A sound file is saved next to the video with the same name and the same lead-in/out, so the two stay in sync. With no video selected, "Apart" saves only the sound.</div>
         <div style="margin-top:6px;padding-left:4px;">
           <label style="font-size:10px;color:#888;display:block;margin-bottom:2px;">Individual videos (greyscale, no sound):</label>
 ${vizChoices.map(_vizOutputRowHtml).join('')}
         </div>
+      </div>
+      <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
+${loudnessOptionsHtml('concerto-loud')}
       </div>
       <div style="border-top:1px solid #333; padding-top:8px; margin-top:4px;">
         <label style="font-size:11px;color:#ccc;">
@@ -1230,9 +1246,15 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
   // Output selection — any combination; at least one must be checked.
   const wantScore   = !!document.getElementById('concerto-out-score')?.checked;
   const wantMeta    = !!document.getElementById('concerto-meta-video')?.checked;
-  const wantAudio   = !!document.getElementById('concerto-out-audio')?.checked;
+  // Sound: together = in the score video; apart = silent score video + a
+  // separate sound file; both = in the video and as a file; none.
+  const sound       = document.getElementById('concerto-sound')?.value || 'together';
+  const wantAudio   = sound === 'apart' || sound === 'both';     // separate sound file
+  const soundInVideo = sound === 'together' || sound === 'both';  // muxed into the score video
+  const audioFormat = document.getElementById('concerto-audio-format')?.value || 'wav24';
   const wantNeutral    = !!document.getElementById('concerto-neutral')?.checked;
   const wantSequential = !!document.getElementById('concerto-sequential')?.checked;
+  const loudness       = readLoudnessOptions('concerto-loud');
 
   // Individual video outputs — each with its own resolution (mode = id)
   const vizOutputs = vizChoices
@@ -1243,6 +1265,11 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
       h: parseInt(document.getElementById('concerto-viz-' + v.id + '-h')?.value) || v.h,
     }));
 
+  if (sound === 'together' && !wantScore) {
+    alert('Sound "Together" goes inside the score video, which is not selected. ' +
+          'Choose "Apart" to save the sound as its own file.');
+    return;
+  }
   const anyOutput = wantScore || wantMeta || wantAudio || vizOutputs.length > 0;
   if (!anyOutput) {
     alert('Select at least one output.');
@@ -1299,8 +1326,9 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
 
   try {
     // 0. Check if segments exist from a previous failed render.
-    //    If so, skip /preview to keep the same trace + audio.
+    //    If so, /preview below re-renders with that render's saved seed.
     let _isResume = false;
+    let loudNote = '';   // what the export loudness did, for the final status
     try {
       const chkRes = await fetch('/concerto_check_segments', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1340,6 +1368,7 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
         const body = {
           ...source.previewBody({ seed: _resumeSeed, audio: audioMode.value }),
           performance_neutral: wantNeutral,
+          loudness,   // export: adjustment + brake, applied to the audio this download uses
         };
         const pr = await fetch('/preview', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1347,6 +1376,7 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
         });
         const pd = await pr.json();
         if (pd.error) throw new Error('audio render: ' + (pd.detail || pd.error));
+        if (pd.loudness && sound !== 'none') loudNote = '  (audio ' + describeLoudness(pd.loudness) + ')';
 
         state.tempoMap = Array.isArray(pd.tempo_map) ? pd.tempo_map : [];
         if (pd.duration_real) state.durationReal = pd.duration_real;
@@ -1409,11 +1439,11 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
         const sr = await fetch('/save_preview_audio', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ out_path: outPath, lead_in: leadIn, lead_out: leadOut,
-                                 time_from: startTime, time_to: endTime }),
+                                 time_from: startTime, time_to: endTime, audio_format: audioFormat }),
         });
         const sd = await sr.json();
         if (sd.error) throw new Error(sd.error);
-        setStatus('saved → ' + sd.path);
+        setStatus('saved → ' + sd.path + loudNote);
       } catch (e) {
         setStatus('audio save failed: ' + e.message);
       }
@@ -1436,6 +1466,7 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
                              lead_in: leadIn, lead_out: leadOut,
                              wire_format: wireFormat,
                              ...(decodeThreads != null ? { decode_threads: decodeThreads } : {}),
+                             no_audio: !soundInVideo,
                              segment_index: 0 })
     });
     const startData = await startRes.json();
@@ -1491,7 +1522,7 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
     });
     var finishData = await finishRes.json();
     if (finishData.error) { setStatus('error: ' + finishData.error); }
-    else { setStatus('saved → ' + finishData.path); }
+    else { setStatus('saved → ' + finishData.path + loudNote); }
     }  // end of "if (wantScore)" branch
 
     // ── Meta video (metadata canvas centered, no sound) ──────────────────
@@ -1632,7 +1663,7 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
       else { setStatus(`saved → ${vizFinData.path}`); }
     }
 
-    // ── Audio (.wav) — save a copy of PREVIEW_TMP alongside the videos.
+    // ── Audio file — save PREVIEW_TMP alongside the videos, in the chosen format.
     //    Only reached when at least one video was rendered (otherwise the
     //    audio-only fast path above already handled and returned).
     if (wantAudio && _concertoDownloading) {
@@ -1641,11 +1672,11 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
         const sr = await fetch('/save_preview_audio', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ out_path: outPath, lead_in: leadIn, lead_out: leadOut,
-                                 time_from: startTime, time_to: endTime }),
+                                 time_from: startTime, time_to: endTime, audio_format: audioFormat }),
         });
         const sd = await sr.json();
         if (sd.error) setStatus('audio save error: ' + sd.error);
-        else setStatus('saved → ' + sd.path);
+        else setStatus('saved → ' + sd.path + loudNote);
       } catch (e) {
         setStatus('audio save failed: ' + e.message);
       }
@@ -1672,6 +1703,13 @@ ${vizChoices.map(_vizOutputRowHtml).join('')}
     if (cancelBtn) cancelBtn.style.display = 'none';
     if (_wakeLock) { try { await _wakeLock.release(); } catch (e) {} _wakeLock = null; }
   }
+}
+
+// Download popup: the format menu only matters when there is a sound file.
+function _concertoSoundSync() {
+  const s = document.getElementById('concerto-sound')?.value;
+  const f = document.getElementById('concerto-audio-format');
+  if (f) f.style.display = (s === 'apart' || s === 'both') ? '' : 'none';
 }
 
 function cancelConcertoDownload() {

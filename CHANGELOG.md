@@ -11,6 +11,63 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 
 ## [Unreleased]
 
+### Added — stereo
+- Audio keeps its channels from loading to output. Stereo sources (including video audio, previously extracted as mono) render in stereo; mono sources still render mono, and mono renders are bit-identical to before. Mixed mono and stereo tracks render stereo, with mono tracks on both sides.
+- All effects handle stereo. SoX effects process both channels together, so reverb and flanger now spread a stereo signal; chorus and spectral inversion run per channel with the same random choices on both sides. (Morphogenics: see "Morphogenics in stereo" below.)
+- Chorus is vectorised (it was a per-sample Python loop) — much faster.
+- Tracks at a different sample rate from the base are resampled to the base's rate (high-quality soxr) on load, before their track FX. Previously they played at the wrong speed and pitch (a 48 kHz stem on a 44.1 kHz base ran ~9% slow and flat). Video audio keeps its native rate instead of being forced to 44.1 kHz.
+- Stemize keeps the stereo image: every method (HPSS, NMF, frequency bands) analyses one shared spectrum and applies the same mask to each channel, so each stem keeps its sounds' left/right placement and the components line up across channels. Mono files separate exactly as before.
+
+### Changed — loudness
+- Renders keep the level the performance produced. Previously every render was scaled so its single loudest instant sat at 0.9. That made renders impossible to compare: a loud performance with one strong hit came out quieter than a calm one, and a deliberately quiet golem (e.g. *sparse*) was turned up to match the others. Concerto's Source/Raw audio now also plays at its real level.
+- Safety brake: a look-ahead limiter that pulls down only the moments that would go above −1 dBFS. Audio below that is untouched (bit-identical), and both channels get the same gain. In the editor it is a shared **brake** switch next to the workspace tabs (on by default), with an indicator showing how much it reduced peaks, or that a render clips with it off.
+- Export loudness (Interpreter **↓ WAV** and Concerto Download): leave as performed (default), match the source's loudness, or reach a target (−14 / −16 / −23 LUFS or custom), plus a Safety brake checkbox (ticked by default). Loudness is measured in LUFS (ITU-R BS.1770-4) on the whole render, so a range export has the same level it has in the full piece. The status line reports loudness, adjustment and brake.
+- CLI: an `output:` block in `config.yaml` (`brake`, `adjust`, `target_lufs`); each render prints its loudness.
+- The editor's preview audio is written as 32-bit float (the exact render) instead of 16-bit. Concerto's audio output and the videos' soundtracks are now converted once, from the full-quality render.
+- Concerto Download has a **Sound** choice: *Together* (in the score video, one file — the default), *Apart* (a silent score video plus a sound file, two files), *Both*, or *None*. It replaces the "Audio (.wav)" checkbox. The sound file sits next to the video with the same name and lead-in/out, so they stay in sync; with no video selected, *Apart* saves only the sound.
+- Concerto's sound file has the same format choice as the Interpreter export: 24-bit WAV (default), 32-bit float WAV, FLAC or 16-bit WAV. It was always 16-bit WAV.
+
+### Changed — reverb and delay (breaking: scores with reverb/delay sound different)
+- Reverb and delay have two level knobs: **dry** (the original, default 1 = kept in full) and **wet** (the effect). Previously one `wet` knob crossfaded the original away as the effect came in: at wet 1 the original disappeared entirely. The old behaviour is a setting of the new knobs (old wet 0.5 ≈ dry 0.71, wet 0.71).
+- Reverb `wet` 1 = the reverb as loud as the original while it sounds.
+- Delay: `wet` is the level of the first echo and `feedback` scales each next one (wet 0.5, feedback 0.6 → 0.5, 0.3, 0.18, …). Previously the echo train was rescaled as a whole, so echoes could be louder than the note (feedback 0.3, wet 0.5: first echo ~2× the note) and `feedback` didn't set echo levels. Echoes now continue until −60 dB (at most 30 s) instead of stopping after 8.
+- Default `reverberance` lowered from 100 to 50 (~2 s, a normal room). Now that tails ring out, 100 meant an ~11 s tail on every reverb.
+
+### Fixed — reverb tails
+- Reverb stopped dead at the end of each event's sample: SoX returns exactly as much audio as it's given, so there was no tail and the cut could click. The reverb now rings on until it dies away (−60 dB), e.g. ~2 s at reverberance 50 and ~11 s at 100. To keep this fast, each reverb setting's impulse response is recorded from SoX once and applied by FFT convolution (matches SoX to about −85 dB). Long audio (the whole mix, used by the golems' `reverb_wet`) still goes through SoX directly, and the golems' reverb is unchanged.
+
+### Changed — pitch and time (sound changes: pitched and stretched audio is cleaner)
+- Pitch shifting and time stretching use **Rubber Band** (R3 engine, via the new `pedalboard` dependency) instead of librosa's phase vocoder. This covers event pitch, `pitch_lock`, tempo steps and ramps (accelerando/ritardando), banded glissandi, the overtones effect and the Morphogenics. Attacks stay sharp: on drum-like hits, the smear in front of each hit dropped from about −2 to −17 dB below the hit to −14 to −35 dB, and hits stay close to their original length instead of spreading to 50–80 ms. Stereo channels are processed together, so the stereo image survives (they used to be shifted separately). Output is deterministic.
+- All of it goes through one module, `src/stretch.py`. Tempo ramps and banded glissandi are one pass with a rate or pitch curve, replacing the hand-built variable-rate phase vocoder and the 20 ms chunked glissando.
+- Morphogenics: effects that moved pitch in small overlapping pieces now follow one pitch curve (Aleatoric, Textural, Glissando, Modes). Note-based effects cut their notes from one whole-clip shift (Minimalism, Tristan, Endless Melody). Independent voices and Leitmotif's notes run in parallel. Grain Scatter and Glissandi's 50 ms slides re-pitch tape-style, the usual granular technique, because 10–100 ms is too short for any time-stretcher. Plugin speeds stay close to before.
+- The classic `pitch` effect still uses SoX, which measured as clean as Rubber Band on attacks.
+- Fixed: the docs gave the wrong `type:` key for 19 of the 20 Morphogenics (e.g. `morpho_penderecki_aleatoric` instead of `morpho_aleatoric`), and unknown keys were silently ignored, so a score written from the docs got no effect. Keys corrected; an unknown `morpho_` type now prints a warning listing the valid ones. (Scores made in the editor were not affected.)
+- Fixed: the tempo map (which keeps the editor's cursor on the music) ran 10 ms ahead of the audio at every tempo-range boundary, because the 10 ms crossfades between segments weren't subtracted.
+- **Licence:** Rubber Band and pedalboard are GPLv3; the project is Apache-2.0. This makes no difference to using the tool or to what it produces, but distributing the tool means GPL terms. Marked as an open question for later; options are in [docs/installation.md](docs/installation.md#licences).
+
+### Changed — Morphogenics do what their names say (breaking: these effects sound different)
+- **Tristan** uses the real Tristan chord, Wagner's voicing F–B–D♯–G♯ (0, +6, +10, +15 st), built on the sound. It used to stack a just 4:5:6:7 harmonic seventh, which is still available as `voicing: harmonic 7th`.
+- **Lyricism**: its two parallel intervals and their side are now settings (`interval_1`, `interval_2`, `placement: above/below`). The defaults sound as before (+11 and +17 above); the description wrongly called +17 a diminished 11th (it's a perfect 11th) and said the layers sat below the line.
+- **Harmonic Stretch** really stretches the partials: partial *n* moves to *f0·n^β*, set by `octave_ratio` (2 = unchanged), around the detected fundamental (or `pivot_hz`). It used to scale every frequency with the original phases, a smeared transposition. Partials are moved one by one with continuous phase (peak-based phase-vocoder shifting), so they stay clean. `stretch_ratio` → `octave_ratio`.
+- **Inharmonic** is a frequency shifter (`shift_hz`): every partial moves by the same number of Hz, so harmonic sounds turn metallic. Exact (Hilbert transform). It used to average four smeared, scaled copies of the spectrum. `inharmonic_factor` → `shift_hz`.
+- **Spectral Freeze** freezes: `mode: attacks` (default) holds the sound of each attack until the next one; `mode: follow` holds a sound that follows the original slowly (`freeze_rate`, 0 = hold the first moment). Held partials stay at their true frequencies. It used to keep the loudest bins of each frame and slow their phase down, which transposed everything down instead of holding it.
+- **GENDY** is built on Xenakis's GENDYN (second-order random walks between reflecting barriers) with three modes: `input` (default; the walks squeeze, stretch and re-level the input itself), `synth` (a real GENDYN oscillator following the input's pitch and loudness) and `envelope` (a smooth stochastic tremolo). It used to be a stepped Weibull envelope that clicked every 20 ms. `weibull_shape` → `randomness`, plus `breakpoints` and `pitch_hz` for the synth.
+- **Grain Scatter**'s grains overlap by half under Hann windows that add up to a constant. They used to sit end to end, so the sound dropped to silence between grains (a 25 Hz flutter).
+- **Endless Melody** is legato: at each note boundary the previous note's last moment rings on across it (a short spectral freeze) while the new attack grows in from half level. It used to fade to silence around every boundary, which on dense material made the sound ~28 dB quieter and full of gaps.
+
+### Changed — Morphogenics in stereo, and the Penderecki clusters
+- Morphogenics receive both channels at once (all but Spectral Smooth). They analyse the mono sum, so both sides make the same decisions — previously each channel detected its own onsets and pitches, so the two sides could be cut, quoted or frozen at different moments — and their pitch shifts process both channels together, so the stereo image is kept. Mono pieces are unaffected; a mono sound on both sides with `spread: 0` gives exactly the mono result on each side.
+- New `spread` setting on Cluster, Textural, Grain Scatter, Stochastic Cloud and GENDY places their voices, grains, bursts or random walks across the stereo field.
+- **Cluster** is a real band: every semitone (or quarter tone, `step`) across `cluster_width`, centred on the sound, up to 25 voices. Each voice drifts slowly and independently (`drift_cents`), voices can enter one by one (`entry_s`), and in stereo they run from low-left to high-right. It used to be `n_voices` static copies spread evenly (−2, −0.67, +0.67, +2 st by default). `n_voices` is gone.
+- **Textural** is the restless version: the same band, but each voice jumps to a new random detune every ~250 ms, swells on its own (`swell`) and is scattered in stereo. It used to be a static cluster plus one detuned copy. `n_voices` is gone.
+
+### Changed — articulations act on events, or on the whole mix by choice (breaking)
+- Staccato, accent, legato and fermata shape **the events they mark** (`target: event`, the default): a point mark covers the event starting nearest to it (within 0.5 s), a range every event starting inside it; the source and other events are untouched. Previously every mark acted on a time window of the whole mix, whatever was playing — and did not do what its name says: a staccato cut a 45 ms hole in everything (a range silenced the entire range), legato faded everything to silence, a fermata stacked six copies of a 70 ms snippet (a stutter), and an accent on a range boosted only its first moment.
+- On an event: **staccato** keeps its first `keep_s` (default 0.15 s, adjustable) with its effects still ringing; **accent** boosts its first 50 ms by `boost_db` (default 6); **legato** lets it ring on until the next event (holding its last moment if the sample runs out), then fade as the next enters; **fermata** holds its last moment for `hold_s`.
+- `target: mix` keeps a whole-mix version of each, now doing what the names say: over a range, staccato chops and accent boosts at each attack detected in the mix (or on an `every_s` grid), legato bridges each attack; a **whole-mix fermata makes the whole piece wait** — the sound is held for `hold_s` and inserted into the timeline, then everything resumes; the tempo map stands still there, so the editor's cursor stops during the hold.
+- The editor's articulation popup has the target choice and the new settings; whole-mix marks show "(mix)" on the score. A range mark's label used to read "legato" whatever its type.
+- The spectral helpers moved from `plugins/_spectral.py` to `src/spectral.py` (shared by the engine and the Morphogenics), with `hold_moment` and `legato_bridges`; Endless Melody uses the shared legato code.
+
 ### Changed — Concerto is a mode, not an Interpreter feature
 - The Concerto controls (View, Download, layout, lead-in/out) sit in the shared bar next to the workspace tabs and present whichever workspace is active.
 - Each workspace registers a Concerto source (how to render its audio, whether it has a performance trace). The Composer source renders the Composer's current state, saved or not, instead of the score file on disk; the Interpreter source renders the score with its golems. The Conductor has no source yet, so Concerto is disabled there.
@@ -25,7 +82,7 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 - `seed` now reproduces the whole render: score randomness, golem performance and plugins all draw from it. `/preview` returns the seed it used.
 - `filter_cutoff` is in Hz everywhere (it was Hz in the state but treated as 0–1 by the mixer, pinning the filter at 18 kHz).
 - Full-band `note_rel` glissandi re-pitch events only; band-limited ones act on the mix only (previously the mix pass was a silent no-op, and banded glissandi shifted events twice).
-- Brightness modulation hard-clipped the whole mix before normalisation.
+- Brightness modulation hard-clipped the whole mix.
 - Phrase gain/fades were dropped when golems were active.
 - Muted events no longer trigger `duck_base` / `duck_key` / auto-mix.
 - `skew_normal` sampling crashed; random-walk golems with 5-dim vectors or 5×5 correlations (older UIs) crashed.
@@ -33,6 +90,40 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 - Crackle at segment seams in the Glissando, Aleatoric, Textural, Minimalism and Leitmotif plugins and in band-limited glissandi (overlap-add with context instead of butted blocks).
 - Spectral Freeze advanced phase at 1/512 of the natural rate.
 - Undertones no longer saturates the dry signal.
+
+### Added — fade shapes and automation (fades sound different: smooth by default)
+- **Fade shapes**: every fade — sample and event fades, slur (phrase) fades, FX-zone fades — has a shape: `smooth` (equal-power, the new default), `linear` (the only shape before), `exponential` (straight in decibels) or `s-curve`. Set with `fade_curve:` in YAML or *fade shape* in the popups; an event follows its sample's shape unless it sets its own.
+- **Automation**: any numeric effect setting can change over time — a curve of `[seconds, value]` points (`cutoff: {curve: [[0, 200], [2, 3000]]}`), entered in the editor with the **~** button next to each setting (`0s: 200, 2s: 3000`). Times count from the start of what the effect processes (event, zone, track or whole piece).
+  - Exact: dry/wet of reverb and delay (delay's wet as a send level), every Morphogenics' dry/wet, filter cutoff and resonance, tremolo rate and depth, and pitch (via Rubber Band's pitch curve).
+  - Every other setting is approximated by rendering the effect at moments along the curves (every point plus extra moments ≤ 0.25 s apart, up to 12) and moving smoothly between the renders — exact at those moments, blended in between.
+- Fixed: editing a slur dropped its mute flag.
+
+### Added — audio export from the Composer
+- The Composer's **save audio…** field and **↓** button export the mix as an audio file, with the same choices as the Interpreter's export: the mix (exactly what Mix plays), events only, or the source only; a time range; loudness (as performed / match source / target LUFS) and the safety brake; 24-bit WAV, 32-bit float WAV, FLAC or 16-bit WAV. Previously the Composer had no audio export at all.
+- That field used to belong to a "scrolling score video" MP4 button whose video carried the **raw source recording**, not the composition. The button (and `/export_mp4`) is removed; score videos are made with Concerto → Download, which renders the mix.
+- Server: one export route, `/export_audio`, for both workspaces (the Composer sends its current state; the Interpreter its score file + interpretation). `/export_interp_wav` remains as an alias.
+
+### Changed — faster renders: parallel events and a render cache
+- Events are processed in parallel instead of one after another, and the processed source (base FX + source FX zones) and every event's clip are cached between renders. An event whose sound didn't change is reused — even if it was moved in time — so after an edit only the edited events are processed again. Decoded source files are kept too (a video's audio is extracted once).
+- With the default random seed, every Mix is still a new performance: anything that draws random numbers (probabilistic values, random effects such as most Morphogenics) is redrawn; everything else (pitch, speed, reverb, filter, delay, …) is reused. With a fixed seed, everything is reused.
+- Each event now has its own random stream, seeded in order from the render's seed: renders stay reproducible (same seed → identical audio, cached or not), but a given seed's random choices differ from earlier versions.
+- Measured on a 103 s stereo piece with 30 events (pitch shifts, reverb, delay, filter, Cluster) and a ritardando: a Mix took 8.4 s; now ~3.6 s cold and ~3.1–3.3 s after editing or moving an event (building the mix: 5.9 s → 0.7–1.0 s). What remains is mostly the tempo stretch and the loudness pass.
+- The safety brake computes its release only where it acts (identical output; ~3× faster when peaks are sparse), and loudness measurement filters in one pass.
+
+### Added — output effects and lead-in / tail in the editor
+- **Output FX** (toolbar, next to Base FX): an effect chain on the whole output, source and events together (`fx_global`).
+- **FX zones can apply to the whole output**: the zone popup's *Applies to* switches between the source (`fx_ranges`, as before) and the whole output (`fx_sections`). Output zones are drawn in orange (`out:`).
+- **⏱ Lead / tail**: the lead-in (`silence_start`, events start later) and new **tail silence** (`silence_end`, seconds of silence after the piece — it was accepted in scores but did nothing).
+- `fx_sections` work like FX zones: a full effect chain instead of a single effect, tails ring past the zone, optional fades, and times are score times mapped through the tempo map (they used to be applied at unmapped times, so after a ritardando they landed in the wrong place, and their tails were cut). The older single-effect form still works.
+- Source FX zones, track FX regions and output sections share one implementation (`src.fx.apply_zone`); the first two render bit-identically to before.
+
+### Fixed — the editor dropped score settings it didn't show
+- Opening a score in the editor and saving it again silently deleted `fx_sections`, `fx_global`, `silence_start` and `silence_end`, and the editor's Mix ignored them, so a score sounded different in the editor and from the command line. All four are now loaded, played, saved and undoable.
+- Muted tempo ranges, phrases, note relations and FX zones were left out by the editor's Mix but played by a command-line render of the saved score (the engine ignored their `muted` flag, and phrases lost it on saving). The engine now leaves out every muted entry, and saving keeps the flag.
+
+### Fixed — samples on tracks that start later
+- A sample was cut from its track as if the track started at 0 s, ignoring the track's `from`: on a track starting at 10 s, a sample marked at 12–13 s took the track's own 12–13 s instead of 2–3 s — the wrong sound, or nothing at all if the track was shorter (its events were then silent). Samples are now cut on the timeline, like the track's FX regions and automation already were. Parts of a sample's range where its track isn't playing are silent, so a sample is always as long as its marked range. Tracks starting at 0 s (including stems) are unaffected.
+- New: each sample chooses what it carries over from its track — any of the track's **FX chain**, **FX regions**, **volume automation** and **gain** (`include:` in YAML, checkboxes "carry from track" in the sample popup). Default: the FX chain only, as before. `all` gives exactly what you hear on the track there, `none` the file as it is. Mute is never carried, so a muted track can still be a source. The mixed base is unchanged (bit-identical).
 
 ### Fixed — editor and export
 - Composer Mix used the Kalman engine; it now renders with v1 like the concerto export.

@@ -4,48 +4,93 @@ function _defaultName(ext) {
   return state.filePath.split('/').pop().replace(/\.[^.]+$/, '') + '.' + ext;
 }
 
-// ─── Export MP4 ───────────────────────────────────────────────────────────────
-async function _doExportMp4(outputPath) {
-  const btn = document.getElementById("export-mp4-btn");
-  btn.textContent = "⏳ rendering…"; btn.disabled = true;
-  try {
-    const res = await fetch("/export_mp4", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        audioPath:   state.filePath,
-        imagePath:   scoreView.path,
-        scoreStart:  scoreView.start,
-        scoreEnd:    scoreView.end,
-        output_path: outputPath,
-      })
+// ─── Export audio ─────────────────────────────────────────────────────────────
+// Renders the Composer's current state — exactly what Mix plays — and saves it
+// (/export_audio), with the same choices as the Interpreter's export.
+async function _openAudioExport(pathHint) {
+  if (!state.filePath) { alert("Load an audio file first."); return; }
+  const fld = 'style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;"';
+  const durStr = (state.durationReal || state.duration || 0).toFixed(1);
+  const html = `
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div>
+          <label style="font-size:11px;color:#888;">What to export:</label>
+          <select id="cexp-mode" ${fld}>
+            <option value="mix" selected>The mix (source + events — what Mix plays)</option>
+            <option value="score_only">Events only (no source)</option>
+            <option value="raw">The source only</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">Save to:</label>
+          <div style="display:flex;gap:4px;margin-top:3px;">
+            <input id="cexp-path" type="text" value="${escapeHtml(pathHint || '')}" placeholder="click Browse to choose… (empty: output/)"
+                   style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;" />
+            <button id="cexp-browse-btn" type="button" style="padding:4px 8px;font-size:11px;">Browse</button>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">Time range (seconds):</label>
+          <div style="display:flex;gap:6px;margin-top:3px;">
+            <input id="cexp-from" type="number" value="0" min="0" step="0.1" ${fld.replace('width:100%;', 'flex:1;')} />
+            <span style="color:#555;align-self:center;">→</span>
+            <input id="cexp-to" type="number" value="${durStr}" min="0" step="0.1" ${fld.replace('width:100%;', 'flex:1;')} />
+          </div>
+          <div style="font-size:9px;color:#555;margin-top:2px;">Leave as-is for the whole piece (including tempo changes, fermatas and the tail).</div>
+        </div>
+${loudnessOptionsHtml('cexp-loud')}
+        <div>
+          <label style="font-size:11px;color:#888;">Audio quality:</label>
+          <select id="cexp-format" ${fld}>
+            <option value="wav24" selected>24-bit WAV (studio standard)</option>
+            <option value="wav32f">32-bit float WAV (lossless)</option>
+            <option value="flac">FLAC (lossless, smaller file)</option>
+            <option value="wav16">16-bit WAV (CD quality)</option>
+          </select>
+        </div>
+      </div>`;
+  const ok = await showPopup('Export audio', html, () => {
+    document.getElementById('cexp-browse-btn')?.addEventListener('click', () => {
+      const ext = document.getElementById('cexp-format')?.value === 'flac' ? '.flac' : '.wav';
+      const cur = document.getElementById('cexp-path').value.trim();
+      openSaveBrowser(p => { document.getElementById('cexp-path').value = p; },
+                      cur || _defaultName(ext.slice(1)), ['.wav', '.flac']);
     });
+  });
+  if (!ok) return;
+
+  const from = parseFloat(document.getElementById('cexp-from').value) || 0;
+  const to   = parseFloat(document.getElementById('cexp-to').value) || 0;
+  const full = Math.abs(to - parseFloat(durStr)) < 0.05 && from === 0;
+  const body = {
+    path:         state.filePath,
+    score:        buildComposerScore(),
+    engine:       'v1',
+    export_mode:  document.getElementById('cexp-mode').value,
+    out_path:     document.getElementById('cexp-path').value.trim(),
+    audio_format: document.getElementById('cexp-format').value,
+    loudness:     readLoudnessOptions('cexp-loud'),
+    time_from:    full ? 0 : from,
+    time_to:      full ? 0 : (to > from ? to : 0),
+  };
+  const btn = document.getElementById("export-audio-btn");
+  const status = document.getElementById("export-status");
+  btn.disabled = true; status.textContent = "rendering audio…";
+  try {
+    const res = await fetch("/export_audio", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
     const data = await res.json();
-    if (data.error) { alert("MP4 error: " + data.error); }
-    else { document.getElementById("export-status").textContent = "MP4 → " + data.path; }
-  } catch(e) { alert("MP4 failed: " + e); }
-  finally { btn.textContent = "\u21D3 MP4"; btn.disabled = false; }
+    if (data.error) { status.textContent = ""; alert("Export error: " + data.error); return; }
+    document.getElementById("export-audio-path").value = data.path;
+    status.textContent = "audio → " + data.path + (data.loudness ? "  (" + describeLoudness(data.loudness) + ")" : "");
+  } catch (e) { status.textContent = ""; alert("Export failed: " + e); }
+  finally { btn.disabled = false; }
 }
 
-document.getElementById("export-mp4-path").addEventListener("click", () => {
-  if (!scoreView.path) { alert("Load a score image first."); return; }
-  if (!state.filePath) { alert("Load an audio file first."); return; }
-  const pathEl = document.getElementById("export-mp4-path");
-  openSaveBrowser(p => { pathEl.value = p; _doExportMp4(p); },
-    pathEl.value || _defaultName('mp4'));
-});
-
-document.getElementById("export-mp4-btn").addEventListener("click", () => {
-  if (!scoreView.path) { alert("Load a score image first."); return; }
-  if (!state.filePath) { alert("Load an audio file first."); return; }
-  const pathEl = document.getElementById("export-mp4-path");
-  const path = pathEl.value.trim();
-  if (!path) {
-    openSaveBrowser(p => { pathEl.value = p; _doExportMp4(p); }, _defaultName('mp4'));
-    return;
-  }
-  _doExportMp4(path);
-});
+document.getElementById("export-audio-path").addEventListener("click", () =>
+  _openAudioExport(document.getElementById("export-audio-path").value.trim()));
+document.getElementById("export-audio-btn").addEventListener("click", () =>
+  _openAudioExport(document.getElementById("export-audio-path").value.trim()));
 
 // ─── Stemize ─────────────────────────────────────────────────────────────────
 let _sepBands = [
@@ -223,7 +268,9 @@ async function _doExportYaml(outputPath) {
   for (const [k, v] of Object.entries(state.samples)) {
     samplesClean[k] = { from: v.from, to: v.to,
       fade_in: v.fade_in ?? 0.05, fade_out: v.fade_out ?? 0.05,
-      ...(v.track ? { track: v.track } : {}) };
+      ...(v.fade_curve ? { fade_curve: v.fade_curve } : {}),
+      ...(v.track ? { track: v.track } : {}),
+      ...(v.include ? { include: v.include } : {}) };
   }
   const score = {
     output_path: outputPath,
@@ -235,12 +282,15 @@ async function _doExportYaml(outputPath) {
     }),
     tempo: state.tempo,
     base_fx: state.baseFx,
-    fx_ranges: state.fxRanges,
+    ...zonesToScore(state.fxRanges),
+    ...outputSettingsToScore(),
     events: state.events,
     phrases: state.phrases.map(p => ({
       from: p.from, to: p.to, label: p.label,
       gain_db: p.gain_db ?? 0, fade_in: p.fade_in ?? 0,
       fade_out: p.fade_out ?? 0, tempo_factor: p.tempo_factor ?? 1.0,
+      ...(p.fade_curve ? { fade_curve: p.fade_curve } : {}),
+      ...(p.muted ? { muted: true } : {}),
     })),
     ...(state.noteRel.length ? { note_rel: state.noteRel } : {}),
     ...(state.articulations.length ? { articulations: state.articulations } : {}),
@@ -331,7 +381,8 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     state.noteRel       = sc.note_rel || [];
     state.articulations = sc.articulations || [];
     state.baseFx        = sc.base_fx || [];
-    state.fxRanges      = sc.fx_ranges || [];
+    state.fxRanges      = zonesFromScore(sc);
+    outputSettingsFromScore(sc);
     Object.assign(state.duckBase, { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 }, sc.duck_base || {});
     Object.assign(state.duckKey,  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 }, sc.duck_key || {});
     Object.assign(state.autoMix,  { enabled: false, mode: "sqrt" }, sc.auto_mix || {});
