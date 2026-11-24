@@ -1,9 +1,11 @@
-"""Penderecki: Glissando — linear pitch slides spanning each segment."""
+"""Penderecki: Glissando Sweeps — the pitch sweeps up through each ~200 ms segment, again and again.
+
+(Displayed as "Glissando" before; the type key morpho_glissando is unchanged.)"""
 import numpy as np
 from plugins import frames_io
 from src.stretch import pitch_shift, steps_to_curve
 
-NAME     = "Penderecki: Glissando"
+NAME     = "Penderecki: Glissando Sweeps"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissando"
 STEREO   = True   # gets (frames, channels); see plugins.apply_plugin

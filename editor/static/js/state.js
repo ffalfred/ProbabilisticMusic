@@ -2,6 +2,7 @@
 const state = {
   waveform: [],       // 2000 peak values
   duration: 0,
+  channels: 1,        // of the loaded audio (1 mono, 2 stereo)
   filePath: "",
   currentTime: 0,
   samples: {},        // name → {from, to, color}

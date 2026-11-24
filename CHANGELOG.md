@@ -91,9 +91,24 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 - Spectral Freeze advanced phase at 1/512 of the natural rate.
 - Undertones no longer saturates the dry signal.
 
+### Changed — three more Morphogenics
+- **Undertones** uses the exact undertone series (f/2 … f/8: −12, −19.02, −24, −27.86, −31.02, −33.69, −36 st) instead of rounding to semitones (the 5th–7th undertones were up to 31 cents off).
+- **Microtonal** bends the pitch with the sound's brightness moment by moment (smoothed over ~150 ms) instead of applying one fixed detune from the clip's average brightness.
+- Clearer names: *Desyatnikov: Glissandi* → **Desyatnikov: Portamento**, *Penderecki: Glissando* → **Penderecki: Glissando Sweeps** (type keys unchanged, so scores keep working).
+
+### Fixed — Concerto's .ts videos were silent
+- The "2" presets (A2, B2, T2, H2, H2Q) put 16-bit PCM in MPEG-TS, which ffmpeg writes as an unnamed data stream: the videos had no audio track, so players (and probably the BrightSign) played them silently. They now carry AC-3 (Dolby Digital) at 640 kbps, 48 kHz — the formats BrightSign documents for `.ts`.
+- New "3" presets (A3, B3, T3, H3, H3Q): the same video with lossless 24-bit PCM in a QuickTime `.mov`, to test on the BrightSign (its documentation only hints at PCM in video files).
+- HEVC videos in `.mp4` / `.mov` are tagged `hvc1`, so QuickTime and Safari open them (`hev1`, ffmpeg's default, they refuse).
+
+### Changed — golems: stereo width, reverb on top (golem performances sound different)
+- The golems' `stereo_width` is applied (Interpreter → mix dims → **width**): mid/side width, 0 = mono, 0.5 = as recorded, 1 = twice as wide. It follows each character's own width and wanders with it, moving together with the reverb (as the model already linked them); stereo pieces only — the checkbox is dimmed for mono audio.
+- The golems' `reverb_wet` adds the reverb on top of the original (like the Composer's reverb) instead of crossfading the original away: previously a golem at 0.65 left the original at 35 %. Its tail now rings past the end of the piece instead of being cut.
+- The editor learns the loaded audio's channel count (`/load` returns `channels`).
+
 ### Added — fade shapes and automation (fades sound different: smooth by default)
 - **Fade shapes**: every fade — sample and event fades, slur (phrase) fades, FX-zone fades — has a shape: `smooth` (equal-power, the new default), `linear` (the only shape before), `exponential` (straight in decibels) or `s-curve`. Set with `fade_curve:` in YAML or *fade shape* in the popups; an event follows its sample's shape unless it sets its own.
-- **Automation**: any numeric effect setting can change over time — a curve of `[seconds, value]` points (`cutoff: {curve: [[0, 200], [2, 3000]]}`), entered in the editor with the **~** button next to each setting (`0s: 200, 2s: 3000`). Times count from the start of what the effect processes (event, zone, track or whole piece).
+- **Automation**: any numeric effect setting can change over time — a curve of `[seconds, value]` points (`cutoff: {curve: [[0, 200], [2, 3000]]}`), entered in the editor with the **~** button next to each setting: a graph to draw on (click to add, drag to move, right-click to delete; spanning the zone / event / track / piece with its waveform behind) and the same points as text (`0s: 200, 2s: 3000`). Times count from the start of what the effect processes (event, zone, track or whole piece).
   - Exact: dry/wet of reverb and delay (delay's wet as a send level), every Morphogenics' dry/wet, filter cutoff and resonance, tremolo rate and depth, and pitch (via Rubber Band's pitch curve).
   - Every other setting is approximated by rendering the effect at moments along the curves (every point plus extra moments ≤ 0.25 s apart, up to 12) and moving smoothly between the renders — exact at those moments, blended in between.
 - Fixed: editing a slur dropped its mute flag.

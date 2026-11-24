@@ -148,6 +148,26 @@ class GrainAndGendyTests(unittest.TestCase):
 
 
 
+class PitchCopyTests(unittest.TestCase):
+
+    def test_undertones_are_exact(self):
+        mod = sys.modules[P['morpho_undertones'].__name__]
+        np.testing.assert_allclose(mod._UNDERTONE_STEPS, [12 * np.log2(n) for n in range(2, 9)])
+
+    def test_microtonal_follows_brightness(self):
+        t = np.arange(2 * SR) / SR
+        dark = 0.3 * np.sin(2 * np.pi * 300 * t[:SR])
+        bright = 0.15 * sum(np.sin(2 * np.pi * f * t[SR:]) for f in (300, 6000, 7000, 8000))
+        y = _run('morpho_microtonal', np.concatenate([dark, bright]).astype(np.float32), max_cents=50)
+
+        def partial(seg):
+            S = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+            f = np.fft.rfftfreq(len(seg), 1 / SR)
+            return f[np.argmax(S * ((f > 250) & (f < 350)))]
+        self.assertLess(partial(y[int(0.3 * SR):int(0.9 * SR)]), 296)       # dark: flat
+        self.assertGreater(partial(y[int(1.3 * SR):int(1.9 * SR)]), 304)    # bright: sharp
+
+
 class PendereckiTests(unittest.TestCase):
 
     def test_band_has_every_step(self):

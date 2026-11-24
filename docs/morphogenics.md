@@ -69,7 +69,7 @@ The undertones decay in gain with each step: the second undertone is half the ga
 | `gain_db` | −24–0 dB | −12 | Gain of the first (closest) undertone. Subsequent ones are proportionally quieter. |
 | `dry_wet` | 0–100% | 80 | Dry/wet mix |
 
-Undertone intervals (in semitones below the source): −12, −19, −24, −28, −31, −34, −36. These correspond to the first seven subharmonics.
+Undertone intervals: the exact undertone series f/2 … f/8 — −12, −19.02, −24, −27.86, −31.02, −33.69, −36 semitones below the source. (They used to be rounded to whole semitones, which put the 5th–7th undertones up to 31 cents off.)
 
 **Typical use:** Enrich a sparse texture with a low-frequency halo. Add weight under a high-pitched fragment.
 
@@ -177,9 +177,9 @@ The result is a seething sound mass rather than a chord.
 
 ---
 
-## Penderecki: Glissando
+## Penderecki: Glissando Sweeps
 
-**Type key:** `morpho_glissando`
+**Type key:** `morpho_glissando` *(shown as "Glissando" in earlier versions)*
 
 Creates continuous pitch slides through each segment of the audio — a linear sweep from −gliss_range/2 to +gliss_range/2 semitones over each ~200ms chunk.
 
@@ -293,9 +293,7 @@ Two modes:
 
 **Type key:** `morpho_microtonal`
 
-Inspired by Saariaho's microtonal language tied to spectral brightness. Analyzes the spectral centroid of the input (a measure of brightness), maps it to a detune value, and applies a small pitch shift in the range ±max_cents.
-
-Bright audio (high centroid → near 5000 Hz) is detuned upward (sharpened). Dark audio (low centroid → near 500 Hz) is detuned downward (flattened). The relationship is linear between these anchor points.
+Inspired by Saariaho's microtonal language tied to spectral brightness: timbre steers pitch. The spectral centroid (brightness) is followed **moment by moment**, and the pitch bends with it, up to ±`max_cents`: brighter moments (centroid toward 5000 Hz) go sharp, darker ones (toward 500 Hz) go flat, linearly in between. The bend is smoothed over ~150 ms so it glides rather than jitters, and silent moments don't swing it. (It used to apply one fixed detune from the clip's average brightness.)
 
 | Parameter | Range | Default | What it does |
 |-----------|-------|---------|-------------|
@@ -342,9 +340,9 @@ Inspired by Desyatnikov's warm, non-functional harmonic language. Two transposed
 
 ---
 
-## Desyatnikov: Glissandi
+## Desyatnikov: Portamento
 
-**Type key:** `morpho_glissandi`
+**Type key:** `morpho_glissandi` *(shown as "Glissandi" in earlier versions)*
 
 Inspired by Desyatnikov's portamento-inflected melodic language. Detects onsets in the audio, then randomly selects a percentage of them as glide targets. At each selected onset, a 50ms portamento slide (from +port_st down to 0) is added additively, creating the impression of the pitch gliding into the note from above. The slide is tape-style: pitch and speed glide together, like a real portamento.
 

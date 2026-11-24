@@ -118,7 +118,8 @@
     <label style="font-size:10px;color:#8b8;cursor:pointer;" title="Amplitude envelope"><input type="checkbox" class="mix-dim-cb" data-dim="gain_db" checked> gain</label>
     <label style="font-size:10px;color:#8ab;cursor:pointer;" title="Time-varying high-shelf EQ"><input type="checkbox" class="mix-dim-cb" data-dim="brightness"> brightness</label>
     <label style="font-size:10px;color:#aa8;cursor:pointer;" title="Time-varying lowpass sweep"><input type="checkbox" class="mix-dim-cb" data-dim="filter_cutoff"> filter</label>
-    <label style="font-size:10px;color:#a8a;cursor:pointer;" title="Time-varying reverb send"><input type="checkbox" class="mix-dim-cb" data-dim="reverb_wet"> reverb</label>
+    <label style="font-size:10px;color:#a8a;cursor:pointer;" title="Reverb added on top, at the golem's level"><input type="checkbox" class="mix-dim-cb" data-dim="reverb_wet"> reverb</label>
+    <label id="mixdim-width-label" style="font-size:10px;color:#8aa;cursor:pointer;" title="Stereo width from the golem (0 mono, 0.5 as recorded, 1 twice as wide)"><input type="checkbox" class="mix-dim-cb" data-dim="stereo_width"> width</label>
     <span style="font-size:10px;color:#444;">|</span>
     <label style="font-size:10px;color:#555;" title="How strongly brightness/filter/reverb track the score dynamics (0=free, 1=strict)">pull</label>
     <input id="interp-timbral-pull" type="number" value="0.25" min="0" max="1" step="0.05"
@@ -931,6 +932,7 @@
 <script src="js/playback.js"></script>
 <script src="js/draw.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/curve-editor.js"></script>
 <script src="js/tracks.js"></script>
 <script src="js/ui-helpers.js"></script>
 <script src="js/image-view.js"></script>

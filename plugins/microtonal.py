@@ -1,4 +1,10 @@
-"""Saariaho: Microtonal — detune by ±cents driven by spectral brightness of the source."""
+"""Saariaho: Microtonal — the pitch bends with the sound's brightness, moment by moment.
+
+The spectral centroid (brightness) is followed over time: brighter moments
+are detuned sharp, darker ones flat, up to ±`max_cents` (500 Hz = fully
+flat, 5 kHz = fully sharp), smoothed over ~150 ms so the pitch glides rather
+than jitters. Timbre steers pitch, as in Saariaho's timbre–harmony thinking.
+(It used to apply one fixed detune from the clip's average brightness.)"""
 import numpy as np
 from plugins import frames_io, mono
 from src.stretch import pitch_shift
@@ -24,16 +30,25 @@ def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:
     if max_cents < 0.5:
         return back(audio)
 
-    # Spectral centroid → brightness measure
-    centroid      = librosa.feature.spectral_centroid(y=mono(audio), sr=sr)
-    mean_centroid = float(np.mean(centroid))
+    # Brightness (spectral centroid) over time, weighted towards the louder
+    # frames so silence doesn't swing the pitch
+    hop = 512
+    m = mono(audio)
+    centroid = librosa.feature.spectral_centroid(y=m, sr=sr, hop_length=hop)[0]
+    rms = librosa.feature.rms(y=m, hop_length=hop)[0][:len(centroid)]
+    loud = rms > rms.max() * 0.05 if rms.size and rms.max() > 0 else np.ones(len(centroid), bool)
+    if loud.any():
+        centroid = np.where(loud, centroid, np.interp(np.arange(len(centroid)),
+                                                      np.flatnonzero(loud), centroid[loud]))
 
-    # Normalize to [-1, 1]: 500 Hz = −1 (dark/flat), 5000 Hz = +1 (bright/sharp)
-    normalized = float(np.clip((mean_centroid - 500) / (5000 - 500) * 2 - 1, -1.0, 1.0))
-
-    detune_semitones = normalized * max_cents / 100.0
-    if abs(detune_semitones) < 0.001:
+    # 500 Hz → fully flat, 5 kHz → fully sharp; smoothed over ~150 ms
+    norm = np.clip((centroid - 500.0) / (5000.0 - 500.0) * 2 - 1, -1.0, 1.0)
+    k = max(1, int(0.15 * sr / hop))
+    norm = np.convolve(np.pad(norm, (k // 2, k - 1 - k // 2), mode='edge'), np.ones(k) / k, mode='valid')
+    detune = norm * max_cents / 100.0                          # semitones per frame
+    if np.abs(detune).max() < 0.001:
         return back(audio)
+    curve = np.interp(np.arange(len(audio)), np.arange(len(detune)) * hop, detune)
 
-    wet = pitch_shift(audio, sr, float(detune_semitones))
+    wet = pitch_shift(audio, sr, curve)
     return back(audio * (1.0 - dw) + wet * dw)

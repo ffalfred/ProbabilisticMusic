@@ -387,15 +387,15 @@ Quick reference: the available plugins are:
 - **Penderecki: Cluster** — a band of every semitone or quarter tone, voices drifting, optional staggered entries
 - **Penderecki: Aleatoric** — random per-segment pitch displacement
 - **Penderecki: Textural** — a restless cluster: every voice jumps, swells and is scattered in stereo
-- **Penderecki: Glissando** — continuous pitch sweep through each segment
+- **Penderecki: Glissando Sweeps** — the pitch sweeps up through each ~200 ms segment, again and again
 - **Xenakis: Grain Scatter** — stochastic granular resynthesis (shuffled, re-pitched grains)
 - **Xenakis: Stochastic Cloud** — dense probabilistic sine-burst layers
 - **Xenakis: GENDY** — Xenakis's dynamic stochastic synthesis: on the input, as a synth layer, or as a random envelope
 - **Saariaho: Spectral Freeze** — holds each attack's sound (or a slowly following one) as a sustained chord
-- **Saariaho: Microtonal** — brightness-driven microtonal detuning
+- **Saariaho: Microtonal** — the pitch bends with the sound's brightness, moment by moment
 - **Desyatnikov: Minimalism** — polystylistic quote displacement at every Nth onset
 - **Desyatnikov: Lyricism** — two parallel non-functional intervals (default maj 7th + perfect 11th above)
-- **Desyatnikov: Glissandi** — portamento slides into random onset boundaries
+- **Desyatnikov: Portamento** — a short slide into a random subset of the notes
 - **Spectral: Harmonic Stretch** — stretches or squeezes the spacing of the partials (bell-like)
 - **Spectral: Inharmonic** — frequency shifter: every partial moves by the same Hz (metallic)
 - **Spectral: Smooth** — frequency-axis spectral envelope smoothing
@@ -411,7 +411,13 @@ The **Base FX** buttons in the toolbar apply effects to the **entire base track*
 
 ## Automation: effect settings that change over time
 
-In any effect chain (an event's FX, an FX zone, Base FX, Output FX, a track's FX), the **~** button next to a numeric setting switches it to a **curve**: type points as `seconds: value`, separated by commas — e.g. `0s: 200, 2s: 3000, 5s: 400` for a filter cutoff that opens and closes. Straight lines join the points; the value holds before the first and after the last. Times count from the start of what the effect processes (the event, the zone, the track, or the whole piece). Click **~** again to go back to a single value (the curve's first).
+In any effect chain (an event's FX, an FX zone, Base FX, Output FX, a track's FX or FX region), the **~** button next to a numeric setting switches it to a **curve**. A small graph appears under it:
+
+- **click** to add a point, **drag** a point to move it, **right-click** a point to delete it;
+- across, it spans the time the effect covers — the zone, the event's sound, the track or the whole piece — with that stretch's waveform behind it where it is known; up, the setting's range (frequencies on a log scale);
+- the text above shows the same points as `seconds: value` (e.g. `0s: 200, 2s: 3000, 5s: 400`) and can be typed directly — the graph follows.
+
+Straight lines join the points; the value holds before the first and after the last. Times count from the start of what the effect processes. Click **~** again to go back to a single value (the curve's first).
 
 Dry/wet levels, filter cutoff/resonance, tremolo rate/depth and pitch move exactly; other settings are approximated by blending renders taken along the curve (see [score_reference.md](score_reference.md#automation--effect-settings-that-change-over-time)).
 
@@ -500,6 +506,16 @@ The status line shows where the file went and its loudness. The Interpreter has 
 ### Score videos
 
 Score videos (the score image scrolling with the music, with the rendered sound) are made with **Concerto → Download**, from the Composer or the Interpreter. (The Composer's old ⇓ MP4 button was removed: its video carried the raw source recording, not the composition.)
+
+Concerto's **Quality** presets come in three families, by how the sound is stored:
+
+| Presets | File | Sound |
+|---|---|---|
+| A1, B1, T1, H1, H1Q | `.mp4` | AAC 256–320 kbps — plays everywhere |
+| A2, B2, T2, H2, H2Q | `.ts` | AC-3 (Dolby Digital) 640 kbps, 48 kHz — the formats BrightSign documents for `.ts` |
+| A3, B3, T3, H3, H3Q | `.mov` | Lossless 24-bit PCM — plays in VLC / QuickTime; **test on the BrightSign first** (its documentation only hints at PCM in video files) |
+
+For lossless sound that works everywhere, use **Sound: Apart** (or Both): the video plus a separate WAV/FLAC file in sync with it.
 
 ### Importing a previously exported score
 

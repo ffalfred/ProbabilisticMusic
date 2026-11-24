@@ -517,6 +517,7 @@ async function _openTrackFxRegionAtRange(trackIdx, t1, t2) {
   if (!tk) return;
   if (!tk.fx_regions) tk.fx_regions = [];
 
+  setCurveContext(t2 - t1, t1);
   var res = await showPopup("New FX Region \u2014 " + escapeHtml(tk.name),
     _fxRegionPopupHTML(t1, t2, null),
     function() { _initFxChain([]); });
@@ -546,6 +547,7 @@ async function _editTrackFxRegion(trackIdx, regionIdx) {
 
   // "Delete this region" sets a flag and closes the popup via OK
   var deleteRequested = false;
+  setCurveContext(r.to - r.from, r.from);
   var popupPromise = showPopup("Edit FX Region \u2014 " + escapeHtml(tk.name), html, function() {
     _initFxChain(r.fx || []);
     var delBtn = document.getElementById("p-fxr-delete");
@@ -723,6 +725,7 @@ async function openTrackFxPopup(i) {
     + '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>'
     + '</div></div>'
     + (tk.fx && tk.fx.length ? '<button type="button" onclick="_initFxChain([])" style="font-size:10px;padding:2px 6px;color:#f66;">Clear all FX</button>' : '');
+  setCurveContext((tk.to || state.duration || 10) - (tk.from || 0), tk.from || 0);
   var res = await showPopup("FX \u2014 " + escapeHtml(tk.name), html, function() { _initFxChain(tk.fx || []); });
   if (!res) return;
   var fx = collectFxChain();

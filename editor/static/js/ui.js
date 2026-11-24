@@ -312,6 +312,7 @@ function _renderFxChain() {
     return;
   }
   container.innerHTML = _fxChain.map((fx, i) => _fxRowHTML(fx, i)).join('');
+  if (typeof _initCurveCanvases === "function") _initCurveCanvases(container);
 }
 
 // Render a single editable FX row
@@ -351,7 +352,8 @@ function _fxRowHTML(fx, idx) {
     return `<div style="display:flex;gap:4px;align-items:center;margin:1px 0;">
       <span style="font-size:10px;color:#666;width:90px;flex:none;">${spec.label}</span>
       ${input}
-    </div>`;
+    </div>` + (spec.type !== "select" && _isCurve(val) && typeof _curveCanvasHTML === "function"
+               ? _curveCanvasHTML(id, spec) : "");
   }).join("");
 
   // Freq targeting — global to all FX types, rendered outside per-type params
@@ -532,6 +534,8 @@ async function openEventPopup(t) {
           <button type="button" onclick="_addFxToChain('morpho')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>
         </div></div>`
     + row("time (s)", `<input id="p-t" type="number" value="${t.toFixed(3)}" step="0.01" style="width:90px;" />`);
+  { const s0 = state.samples[Object.keys(state.samples)[0]];
+    setCurveContext(s0 ? s0.to - s0.from : 2, s0 ? s0.from : null); }
   const res = await showPopup("▶ Event — place playback", html, () => _initFxChain([]));
   if (!res) return;
   const sample = document.getElementById("p-sample").value;
@@ -620,6 +624,9 @@ async function editEventAt(i) {
           <button type="button" onclick="_addFxToChain('morpho')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>
         </div></div>`
     + row("time (s)", `<input id="p-t" type="number" value="${ev.t.toFixed(3)}" step="0.01" style="width:90px;" />`);
+  { const s0 = state.samples[ev.sample], sp = (typeof ev.speed === "number" && ev.speed > 0) ? ev.speed : 1;
+    const len = s0 ? (s0.to - s0.from) / sp * ((ev.loop || 0) + 1) : 2;
+    setCurveContext(len, s0 && sp === 1 && !ev.loop && !ev.reverse ? s0.from : null); }
   const res = await showPopup("✎ Edit Event", html, () => _initFxChain(ev.fx || []));
   if (!res) return;
   const sample = document.getElementById("p-sample").value;
@@ -848,6 +855,7 @@ function _collectFxZoneFade() {
 // ─── Edit FX zone ─────────────────────────────────────────────────────────────
 async function editFxZoneAt(i) {
   const fz = state.fxRanges[i];
+  setCurveContext(fz.to - fz.from, fz.from);
   const res = await showPopup("✎ Edit FX Zone",
     _fxZoneBodyHTML(fz.from, fz.to, fz, 'all'),
     () => _initFxChain(fz.fx || []));
@@ -1256,6 +1264,7 @@ async function openFxZonePopup(t1, t2, scope) {
   const title = scope === 'morpho'  ? '✦ Morpho Zone'
               : scope === 'classic' ? '◆ Classic FX Zone'
               : '◆ FX Zone';
+  setCurveContext(t2 - t1, t1);
   const res = await showPopup(title,
     _fxZoneBodyHTML(t1, t2, null, scope),
     () => _initFxChain([]));
@@ -1292,6 +1301,7 @@ async function openBaseFxPopup(scope, which) {
         ${scope !== 'morpho' ? '<button type="button" onclick="_addFxToChain(\'classic\')" style="font-size:10px;padding:2px 6px;">+ Classic FX</button>' : ''}
         ${scope !== 'classic' ? '<button type="button" onclick="_addFxToChain(\'morpho\')" style="font-size:10px;padding:2px 6px;">+ Morpho FX</button>' : ''}
       </div></div>`;
+  setCurveContext(state.durationReal || state.duration || 10, 0);
   const res = await showPopup(title, html, () => _initFxChain(state[key] || []));
   if (!res) return;
   pushHistory();

@@ -14,8 +14,10 @@ PARAMS = {
     "dry_wet":      {"label": "dry/wet %",  "type": "float", "min": 0,   "max": 100, "default": 80},
 }
 
-# Undertone intervals below the fundamental (semitones down)
-_UNDERTONE_STEPS = [12, 19, 24, 28, 31, 34, 36]
+# The undertone series: f/2, f/3, … f/8, as exact intervals below the sound
+# (12·log2 n semitones: 12, 19.02, 24, 27.86, 31.02, 33.69, 36). They used to
+# be rounded to semitones, which put 1/5, 1/6 and 1/7 up to 31 cents off.
+_UNDERTONE_STEPS = [float(12 * np.log2(n)) for n in range(2, 9)]
 
 
 def process(clip: np.ndarray, sr: int, params: dict) -> np.ndarray:

@@ -1097,15 +1097,20 @@ async function startConcertoDownload() {
         <label style="font-size:11px;color:#888;">Quality:</label>
         <select id="concerto-quality" style="width:100%;margin-top:3px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:4px 6px;font-size:11px;">
           <option value="h1" selected>H1: Hardware HEVC QP 22 + AAC 320k (.mp4) — fast, good quality</option>
-          <option value="h2">H2: Hardware HEVC QP 22 + lossless WAV (.ts)</option>
+          <option value="h2">H2: Hardware HEVC QP 22 + AC-3 640k (.ts)</option>
+          <option value="h3">H3: Hardware HEVC QP 22 + lossless PCM (.mov) — BrightSign: test first</option>
           <option value="h1q">H1Q: Hardware HEVC QP 16 + AAC 320k (.mp4) — higher quality, larger file</option>
-          <option value="h2q">H2Q: Hardware HEVC QP 16 + lossless WAV (.ts)</option>
+          <option value="h2q">H2Q: Hardware HEVC QP 16 + AC-3 640k (.ts)</option>
+          <option value="h3q">H3Q: Hardware HEVC QP 16 + lossless PCM (.mov) — BrightSign: test first</option>
           <option value="b1">B1: Software HEVC CRF 16 + AAC 320k (.mp4) — best for fine detail / mesh, slow</option>
-          <option value="b2">B2: Software HEVC CRF 16 + lossless WAV (.ts) — best for fine detail / mesh, slow</option>
+          <option value="b2">B2: Software HEVC CRF 16 + AC-3 640k (.ts) — best for fine detail / mesh, slow</option>
+          <option value="b3">B3: Software HEVC CRF 16 + lossless PCM (.mov) — BrightSign: test first</option>
           <option value="a1">A1: Maximum Quality — HEVC CRF 14, very slow (.mp4)</option>
-          <option value="a2">A2: Maximum Quality — HEVC CRF 14, very slow (.ts)</option>
+          <option value="a2">A2: Maximum Quality — HEVC CRF 14, very slow + AC-3 640k (.ts)</option>
+          <option value="a3">A3: Maximum Quality — HEVC CRF 14, very slow + lossless PCM (.mov)</option>
           <option value="t1">T1: Test 1080p — HEVC 8-bit CRF 22 + AAC 256k (.mp4)</option>
-          <option value="t2">T2: Test 1080p — HEVC 8-bit CRF 22 + lossless WAV (.ts)</option>
+          <option value="t2">T2: Test 1080p — HEVC 8-bit CRF 22 + AC-3 640k (.ts)</option>
+          <option value="t3">T3: Test 1080p — HEVC 8-bit CRF 22 + lossless PCM (.mov)</option>
         </select>
       </div>
       <div>
@@ -1221,9 +1226,10 @@ ${loudnessOptionsHtml('concerto-loud')}
         const name = source.defaultName();
         const selQ = document.getElementById('concerto-quality')?.value || 'a1';
         // All *2 quality presets (a2/b2/h2/t2) use the .ts container.
-        const ext  = (selQ === 'a2' || selQ === 'b2' || selQ === 'h2' || selQ === 'h2q' || selQ === 't2') ? '.ts' : '.mp4';
+        // "2" presets: AC-3 in .ts; "3" presets: lossless PCM in .mov; else .mp4
+        const ext  = /2q?$/.test(selQ) ? '.ts' : /3q?$/.test(selQ) ? '.mov' : '.mp4';
         openSaveBrowser((fullPath) => { pathInput.value = fullPath; },
-                        name + '_concerto' + ext, ['.mp4', '.ts']);
+                        name + '_concerto' + ext, ['.mp4', '.ts', '.mov']);
       });
     }
   });

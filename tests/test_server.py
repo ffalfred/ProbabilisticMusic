@@ -175,6 +175,24 @@ class ServerTests(unittest.TestCase):
         # silence should remain if the base was dropped.
         self.assertLess(float(np.max(np.abs(audio[int(2.6 * SR):]))), 1e-4)
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'needs ffmpeg')
+    def test_concerto_presets_carry_real_audio(self):
+        # The "2" presets used to put PCM in MPEG-TS, which ffmpeg writes as a
+        # data stream: no audio. Now AC-3 in .ts; the "3" presets PCM in .mov.
+        import subprocess, json
+        vid = os.path.join(self.tmp, 'v.mkv')
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=10:duration=1',
+                        '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', 'log-level=error', vid],
+                       check=True)                              # the segments are HEVC, as in a render
+        for key, codec in (('t2', 'ac3'), ('t3', 'pcm_s24le'), ('t1', 'aac')):
+            preset = server._CONCERTO_PRESETS[key]
+            out = os.path.join(self.tmp, 'out_' + key + preset['ext'])
+            subprocess.run(server._concerto_mux_cmd(preset, vid, self.audio, out), check=True, capture_output=True)
+            streams = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type,codec_name',
+                                                 '-of', 'json', out], capture_output=True).stdout)['streams']
+            with self.subTest(key):
+                self.assertIn({'codec_type': 'audio', 'codec_name': codec}, streams)
+
     def test_save_preview_audio_trims_and_pads(self):
         self._post('/preview', {'path': self.audio, 'score': dict(self.score), 'engine': 'v1'})
         full, _ = sf.read(server.PREVIEW_TMP, dtype='float32')

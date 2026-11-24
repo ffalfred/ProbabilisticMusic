@@ -488,3 +488,17 @@ ${loudnessOptionsHtml('exp-loud')}
   drawGolemTimeline();
   loadCustomChars();
 });
+
+
+// The golem's stereo width only acts on stereo audio: say so when the loaded
+// audio is mono (the checkbox still works, so a score can carry the setting).
+function _syncWidthDimHint() {
+  const lab = document.getElementById("mixdim-width-label");
+  if (!lab) return;
+  const mono = (state.channels || 1) < 2 && !(state.tracks || []).some(t => (t.channels || 1) > 1);
+  lab.style.opacity = mono ? "0.45" : "1";
+  lab.title = mono
+    ? "Stereo width — no effect here: the loaded audio is mono"
+    : "Stereo width from the golem (0 mono, 0.5 as recorded, 1 twice as wide)";
+}
+document.addEventListener("DOMContentLoaded", _syncWidthDimHint);

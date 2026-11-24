@@ -63,6 +63,8 @@ async function loadFile() {
     if (data.error) { alert(data.error); return; }
     state.waveform = data.waveform;
     state.duration = data.duration;
+    state.channels = data.channels || 1;
+    if (typeof _syncWidthDimHint === "function") _syncWidthDimHint();
     state.currentTime = 0;
     state.filePath = path;
     state.tracks = [{ name: "base", path, gain_db: 0, muted: false, waveform: data.waveform }];

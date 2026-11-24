@@ -1,9 +1,11 @@
-"""Desyatnikov: Glissandi — portamento slides at a random subset of onset boundaries."""
+"""Desyatnikov: Portamento — a short slide into a random subset of the notes.
+
+(Displayed as "Glissandi" before; the type key morpho_glissandi is unchanged.)"""
 import numpy as np
 from plugins import plugin_rng, frames_io, mono
 from src.stretch import read_at_rate
 
-NAME     = "Desyatnikov: Glissandi"
+NAME     = "Desyatnikov: Portamento"
 GROUP    = "morphogenics"
 TYPE_KEY = "morpho_glissandi"
 STEREO   = True   # gets (frames, channels); see plugins.apply_plugin

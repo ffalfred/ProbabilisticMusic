@@ -121,9 +121,12 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
     Wired dimensions:
       dim 0  gain_db         — amplitude envelope
       dim 1  brightness      — time-varying high-shelf EQ via _apply_seg_shelf
-      dim 5  reverb_wet      — time-varying reverb send (full-wet pass + blend)
+      dim 5  reverb_wet      — reverb added on top of the mix, at this level
+                               (1 = as loud as the original); its tail rings on
       dim 6  filter_cutoff   — time-varying lowpass via _apply_seg_filter
       dim 7  filter_resonance— paired with filter_cutoff
+      dim 8  stereo_width    — mid/side width: 0 mono, 0.5 as recorded, 1 twice
+                               as wide (stereo pieces only)
 
     Per-event dimensions (applied in event loop, not here):
       dim 2  timing_offset_ms
@@ -131,8 +134,7 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
       dim 4  release_shape
 
     Not yet wired (future):
-      dim 8  stereo_width, dim 9  overdrive_drive,
-      dim 10 pitch_dev_cents, dim 11 dynamic_center
+      dim 9  overdrive_drive, dim 10 pitch_dev_cents, dim 11 dynamic_center
     """
     if mix is None or not trace:
         return mix
@@ -159,16 +161,26 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
         res_env    = _interp_dim_envelope(trace, n, sr, 7)
         mix = _apply_seg_filter(mix, sr, cutoff_env, res_env)
 
-    # dim 5: reverb_wet — time-varying reverb send
+    # dim 5: reverb_wet — reverb added on top of the mix (the original stays
+    # at full level, like the Composer's reverb); the tail rings past the end
     if 'reverb_wet' in mix_dims:
-        wet_env = _interp_dim_envelope(trace, n, sr, 5)
-        dry = mix.copy()
+        wet_env = np.clip(_interp_dim_envelope(trace, n, sr, 5), 0.0, 1.0).astype(np.float32)
         try:
-            wet_full = fit_frames(reverb_wet(mix, sr, {'room': 0.7}), n)   # the reverb alone
-            w = np.clip(wet_env, 0.0, 1.0).astype(np.float32)
-            mix = env_mul(dry, 1.0 - w) + env_mul(wet_full, w)
+            wet_full = reverb_wet(mix, sr, {'room': 0.7})      # the reverb alone, as loud as the mix
+            w = np.concatenate([wet_env, np.full(max(0, len(wet_full) - n), wet_env[-1] if n else 0.0,
+                                                 dtype=np.float32)])[:len(wet_full)]
+            out = pad_frames(mix, len(wet_full))
+            mix = out + env_mul(wet_full, w)
         except Exception:
             pass  # reverb failed; leave mix unchanged
+
+    # dim 8: stereo_width — mid/side width (stereo pieces only)
+    if 'stereo_width' in mix_dims and mix.ndim == 2 and mix.shape[1] == 2:
+        width = np.clip(_interp_dim_envelope(trace, len(mix), sr, 8), 0.0, 1.0)
+        side_gain = (2.0 * width).astype(np.float32)          # 0.5 → 1: as recorded
+        mid  = (mix[:, 0] + mix[:, 1]) * 0.5
+        side = (mix[:, 0] - mix[:, 1]) * 0.5 * side_gain
+        mix = np.stack([mid + side, mid - side], axis=1).astype(np.float32)
 
     return mix
 

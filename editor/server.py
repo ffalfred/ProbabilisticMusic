@@ -153,7 +153,8 @@ def _load_single(path: str) -> dict:
         except Exception:
             frame = None
 
-    return {"waveform": peaks, "duration": duration, "frame": frame}
+    return {"waveform": peaks, "duration": duration, "frame": frame,
+            "channels": int(min(2, audio_data.shape[1]))}
 
 
 @app.route("/load", methods=["POST"])
@@ -349,8 +350,11 @@ _concerto_lock      = threading.Lock()
 _concerto_write_lock = threading.Lock()
 _concerto_seg_path  = None  # segment file the current ffmpeg is writing
 
-# Two quality presets (from Toke's ffmpeg research)
-# 4 presets optimised for BrightSign gallery playback
+# Presets from Toke's ffmpeg research, for BrightSign gallery playback.
+# Audio: "1" presets AAC in .mp4; "2" presets AC-3 640k in .ts — MPEG-TS can't
+# carry plain PCM (ffmpeg writes it as an unnamed data stream, so players are
+# silent), and BrightSign documents MPEG audio, AAC and AC-3 for .ts; "3"
+# presets lossless 24-bit PCM in .mov (BrightSign support to be tested).
 _CONCERTO_PRESETS = {
     # A1: Top Quality HEVC 10-bit + near-lossless AAC 320k (MP4) — SLOW
     'a1': {
@@ -363,14 +367,14 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # A2: Top Quality HEVC 10-bit + lossless WAV (TS) — SLOW
+    # A2: Top Quality HEVC 10-bit + AC-3 640k (TS) — SLOW
     'a2': {
         'ext': '.ts',
         'args': [
             '-c:v', 'libx265', '-preset', 'veryslow', '-crf', '14',
             '-x265-params', 'profile=main10:ref=6:bframes=8:rc-lookahead=60',
             '-pix_fmt', 'yuv420p10le',
-            '-c:a', 'pcm_s16le',
+            '-c:a', 'ac3', '-b:a', '640k', '-ar', '48000',
             '-f', 'mpegts',
         ],
     },
@@ -385,14 +389,14 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # B2: High Quality 4K HEVC 10-bit + lossless WAV (TS) — 5-10× faster than A2
+    # B2: High Quality 4K HEVC 10-bit + AC-3 640k (TS) — 5-10× faster than A2
     'b2': {
         'ext': '.ts',
         'args': [
             '-c:v', 'libx265', '-preset', 'medium', '-crf', '16',
             '-x265-params', 'profile=main10:ref=4:bframes=4',
             '-pix_fmt', 'yuv420p10le',
-            '-c:a', 'pcm_s16le',
+            '-c:a', 'ac3', '-b:a', '640k', '-ar', '48000',
             '-f', 'mpegts',
         ],
     },
@@ -407,14 +411,14 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # T2: Test HEVC 8-bit + lossless WAV (TS)
+    # T2: Test HEVC 8-bit + AC-3 640k (TS)
     't2': {
         'ext': '.ts',
         'args': [
             '-c:v', 'libx265', '-preset', 'fast', '-crf', '22',
             '-x265-params', 'profile=main',
             '-pix_fmt', 'yuv420p',
-            '-c:a', 'pcm_s16le',
+            '-c:a', 'ac3', '-b:a', '640k', '-ar', '48000',
             '-f', 'mpegts',
         ],
     },
@@ -429,14 +433,14 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # H2: Hardware HEVC 10-bit (Intel VAAPI / iHD) QP 22 + lossless WAV (TS)
+    # H2: Hardware HEVC 10-bit (Intel VAAPI / iHD) QP 22 + AC-3 640k (TS)
     'h2': {
         'ext':  '.ts',
         'hw':   'vaapi',
         'args': [
             '-c:v', 'hevc_vaapi', '-qp', '22',
             '-profile:v', 'main10',
-            '-c:a', 'pcm_s16le',
+            '-c:a', 'ac3', '-b:a', '640k', '-ar', '48000',
             '-f', 'mpegts',
         ],
     },
@@ -451,18 +455,61 @@ _CONCERTO_PRESETS = {
             '-movflags', '+faststart',
         ],
     },
-    # H2Q: Hardware HEVC 10-bit QP 16 (higher quality) + lossless WAV (TS)
+    # H2Q: Hardware HEVC 10-bit QP 16 (higher quality) + AC-3 640k (TS)
     'h2q': {
         'ext':  '.ts',
         'hw':   'vaapi',
         'args': [
             '-c:v', 'hevc_vaapi', '-qp', '16',
             '-profile:v', 'main10',
-            '-c:a', 'pcm_s16le',
+            '-c:a', 'ac3', '-b:a', '640k', '-ar', '48000',
             '-f', 'mpegts',
         ],
     },
 }
+
+# "3" presets: the "2" presets' video with lossless 24-bit PCM in a QuickTime .mov
+for _k2, _k3 in (('a2', 'a3'), ('b2', 'b3'), ('t2', 't3'), ('h2', 'h3'), ('h2q', 'h3q')):
+    _p = _CONCERTO_PRESETS[_k2]
+    _video = _p['args'][:_p['args'].index('-c:a')]
+    _CONCERTO_PRESETS[_k3] = {
+        **{k: v for k, v in _p.items() if k != 'args'},
+        'ext': '.mov',
+        'args': _video + ['-c:a', 'pcm_s24le', '-f', 'mov', '-movflags', '+faststart'],
+    }
+
+
+def _preset_audio_args(args: list) -> list:
+    """The audio options of a preset (codec, bitrate, sample rate)."""
+    out, i = [], 0
+    while i < len(args):
+        if args[i] in _AUDIO_OPTS:
+            out.extend([args[i], args[i + 1]])
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+_AUDIO_OPTS = ('-c:a', '-b:a', '-ar')
+
+
+def _concerto_mux_cmd(preset: dict, video_path: str, audio_path: str, out_path: str,
+                      audio_trim: list = (), audio_filter: list = ()) -> list:
+    """ffmpeg command that joins a rendered video with its sound, encoding the
+    sound as the preset says."""
+    args = preset['args']
+    audio_args = _preset_audio_args(args) or ['-c:a', 'copy']
+    if audio_filter and audio_args == ['-c:a', 'copy']:
+        audio_args = ['-c:a', 'aac', '-b:a', '320k']    # filters need re-encoding
+    fmt_args = ['-f', args[args.index('-f') + 1]] if '-f' in args else []
+    # HEVC in .mov / .mp4 needs the hvc1 tag for Apple players (QuickTime, Safari)
+    hevc = any(a in args for a in ('libx265', 'hevc_vaapi'))
+    tag = ['-tag:v', 'hvc1'] if hevc and preset.get('ext') in ('.mov', '.mp4') else []
+    return ['ffmpeg', '-y', '-i', video_path, *audio_trim, '-i', audio_path,
+            '-c:v', 'copy', *tag, *audio_args, *audio_filter,
+            *(['-movflags', '+faststart'] if '-movflags' in args else []),
+            *fmt_args, '-shortest', out_path]
 
 def _discard_current_segment():
     """Delete the segment file the killed/failed ffmpeg was writing, so a
@@ -617,7 +664,7 @@ def concerto_start():
             if skip_next:
                 skip_next = False
                 continue
-            if a in ('-c:a', '-b:a', '-f'):
+            if a in ('-c:a', '-b:a', '-ar', '-f'):
                 skip_next = True
                 continue
             if a in ('-movflags', '+faststart'):
@@ -913,23 +960,6 @@ def concerto_finish():
             shutil.move(_concerto_video_tmp, _concerto_out)
         else:
             # Pass 2: mux video + audio into final output
-            audio_args = []
-            args = _concerto_preset['args']
-            i = 0
-            while i < len(args):
-                if args[i] in ('-c:a', '-b:a'):
-                    audio_args.extend([args[i], args[i + 1]])
-                    i += 2
-                else:
-                    i += 1
-            if not audio_args:
-                audio_args = ['-c:a', 'copy']
-
-            fmt_args = []
-            if '-f' in args:
-                fi = args.index('-f')
-                fmt_args = ['-f', args[fi + 1]]
-
             audio_trim = []
             if _concerto_time_from > 0 or _concerto_time_to > 0:
                 if _concerto_time_from > 0:
@@ -949,23 +979,9 @@ def concerto_finish():
                 if _concerto_lead_out > 0:
                     parts.append(f'apad=pad_dur={_concerto_lead_out}')
                 audio_filter = ['-af', ','.join(parts)]
-                # adelay/apad require re-encoding; can't use -c:a copy
-                if audio_args == ['-c:a', 'copy']:
-                    audio_args = ['-c:a', 'aac', '-b:a', '320k']
 
-            mux_cmd = [
-                'ffmpeg', '-y',
-                '-i', _concerto_video_tmp,
-                *audio_trim,
-                '-i', PREVIEW_TMP,
-                '-c:v', 'copy',
-                *audio_args,
-                *audio_filter,
-                *(['-movflags', '+faststart'] if '-movflags' in args else []),
-                *fmt_args,
-                '-shortest',
-                _concerto_out,
-            ]
+            mux_cmd = _concerto_mux_cmd(_concerto_preset, _concerto_video_tmp, PREVIEW_TMP,
+                                        _concerto_out, audio_trim, audio_filter)
             subprocess.run(mux_cmd, check=True, capture_output=True, timeout=120)
 
         # Clean up temps: stitched video tmp and segment files. The render
