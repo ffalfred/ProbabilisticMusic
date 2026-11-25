@@ -41,8 +41,9 @@ v2:
 
   # Baseline process noise — how much each state dimension can drift per step
   # [gain_db, brightness, timing_ms, attack, release, reverb_wet,
-  #  filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center]
-  Q_base: [0.5, 0.04, 40.0, 0.04, 0.04, 0.04, 4000.0, 0.05, 0.04, 0.05, 8.0, 1.0]
+  #  filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center, tempo]
+  # (a 12-value list from older versions still works: tempo gets 0.5)
+  Q_base: [0.5, 0.04, 250.0, 0.04, 0.04, 0.04, 4000.0, 0.05, 0.04, 0.05, 8.0, 1.0, 0.5]
 
   # Future familiarity decay λ ∈ (0, 1)
   # 0.9 = knows the piece well; 0.3 = essentially sight-reading
@@ -84,3 +85,4 @@ v2:
     overdrive_drive: 0.0
     pitch_dev_cents: 0.0
     dynamic_center: -12.0
+    tempo: 0.0

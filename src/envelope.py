@@ -5,6 +5,17 @@ DYNAMIC_LEVELS = {
     'mf':  0.65, 'f':  0.85, 'ff': 1.00, 'fff': 1.20,
 }
 
+# Structural markings as levels: subito p / subito f are p / f arriving at
+# once (no approach); fp settles at p after its accent. sfz is an accent, not
+# a new level: it keeps the level it lands in (marking_level → None).
+_MARK_LEVEL_ALIAS = {'subito_p': 'p', 'subito_f': 'f', 'fp': 'p'}
+
+
+def marking_level(mark: str):
+    """The loudness level a point marking sets, or None (sfz, unknown)."""
+    m = str(mark or '')
+    return DYNAMIC_LEVELS.get(_MARK_LEVEL_ALIAS.get(m.lower(), m))
+
 # Smooth transition time between adjacent dynamic marks, based on gap duration.
 # Prevents jarring volume jumps.
 def _transition_samples(gap_sec: float, sr: int) -> int:
@@ -57,7 +68,7 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
         if 't' not in d:
             continue
         mark = d.get('mark') or d.get('marking') or ''
-        level = DYNAMIC_LEVELS.get(mark)
+        level = marking_level(mark)
         if level is None:
             continue  # skip invalid/unknown point marks
         events.append((int(d['t'] * sr), 'set', level))
@@ -65,8 +76,8 @@ def build_dynamics_envelope(n_samples: int, sr: int, dynamics: list) -> np.ndarr
     # Range markings (crescendo / decrescendo)
     # Sort point marks by time for next-point lookups
     sorted_points = sorted(
-        [(d['t'], DYNAMIC_LEVELS.get(d.get('mark') or d.get('marking') or '', None))
-         for d in active if 't' in d and DYNAMIC_LEVELS.get(d.get('mark') or d.get('marking') or '')],
+        [(d['t'], marking_level(d.get('mark') or d.get('marking') or ''))
+         for d in active if 't' in d and marking_level(d.get('mark') or d.get('marking') or '')],
         key=lambda p: p[0]
     )
 
@@ -187,11 +198,15 @@ def fade_ramp(n: int, curve: str = DEFAULT_FADE_CURVE) -> np.ndarray:
 
 def apply_fade(clip: np.ndarray, sr: int,
                fade_in_pct: float = 0.0, fade_out_pct: float = 0.0,
-               ms: float = 10.0, curve: str = DEFAULT_FADE_CURVE) -> np.ndarray:
+               ms: float = 10.0, curve: str = DEFAULT_FADE_CURVE,
+               in_power: float = 1.0, out_power: float = 1.0) -> np.ndarray:
     """Apply fade in/out to a clip, shaped by `curve` (see fade_ramp).
 
     If fade_in_pct / fade_out_pct > 0, use them as a fraction of clip length.
     Otherwise fall back to a fixed ms fade.
+    in_power / out_power bend the curve (ramp ** power; 1 = unchanged). Above
+    1 a fade-in swells in late and a fade-out drops early into a long quiet
+    tail; below 1 a fade-in jumps up quickly and a fade-out holds, then drops.
     """
     n = len(clip)
     fi = int(n * fade_in_pct)  if fade_in_pct  > 0 else int(ms * sr / 1000)
@@ -201,9 +216,11 @@ def apply_fade(clip: np.ndarray, sr: int,
     # Ramps broadcast over channels for (frames, channels) clips
     shape = (-1, 1) if clip.ndim == 2 else (-1,)
     if fi > 0:
-        clip[:fi]  *= fade_ramp(fi, curve).reshape(shape)
+        r = fade_ramp(fi, curve)
+        clip[:fi]  *= (r if in_power == 1.0 else r ** np.float32(in_power)).reshape(shape)
     if fo > 0:
-        clip[-fo:] *= fade_ramp(fo, curve)[::-1].reshape(shape)
+        r = fade_ramp(fo, curve)
+        clip[-fo:] *= (r if out_power == 1.0 else r ** np.float32(out_power))[::-1].reshape(shape)
     return clip
 
 

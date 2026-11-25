@@ -84,6 +84,10 @@ def _build_H(h_row: list, N: int, d: int, augmented_d: int) -> np.ndarray:
     The first d columns of H address x(t); columns d..2d address x(t-1).
     We only use the x(t) slot — H[:, d:] = 0.
     """
+    # A list of rows: each row may be shorter than d (written for fewer
+    # dimensions) — missing dims don't observe the marking (0)
+    if h_row and isinstance(h_row[0], (list, tuple)):
+        h_row = [(list(r) + [0.0] * d)[:d] for r in h_row]
     # Flatten list-of-lists to a 1-D array
     arr = np.array(h_row, dtype=float).flatten()
     H = np.zeros((N, augmented_d))

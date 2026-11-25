@@ -26,7 +26,7 @@ config.yaml     score.yaml  +  source audio/video
      │     ├── src/kalman.py      AR(2) predict / update
      │     ├── src/observation.py marking window → H, R (transition_table.yaml)
      │     └── enriched events    (timing offset, attack/release shape)
-     │         + trace            (12-dim state per step → applied to the mix)
+     │         + trace            (13-dim state per step → applied to the mix)
      │           │
      └───────────▼
             src/mixer.py
@@ -315,12 +315,14 @@ Only active when `config.yaml` has `engine: v2` (or a request passes `engine: 'v
 | Module | Role |
 |--------|------|
 | `src/interpreter.py` | Entry point: `interpret(score, config, return_trace)`. Steps the state at every marking, event, element boundary and every `trace_step` s; each step = AR(2) predict → pull toward the current/next marking's target → Kalman update → sample. Simultaneous events share one sample. |
-| `src/character.py` | The 12 state dimensions, their limits/defaults, and the built-in Kalman and random-walk characters; blends overlapping golems. |
+| `src/character.py` | The 13 state dimensions, their limits/defaults, and the built-in Kalman and random-walk characters; blends overlapping golems. |
 | `src/kalman.py` | Augmented AR(2) state, `predict` / `update`. |
 | `src/drama.py` | Per-marking salience ω and look-ahead pull φ. |
 | `src/observation.py` | Encodes the marking window as an observation and looks up H / R in `src/transition_table.yaml`. |
+| `src/golem_fx.py` | Mix processing for the golems' drive (saturation) and dynamic centre (compressor). |
+| `src/resfilter.py` | The resonant low/high-pass shared by the golems' filter dims and the Composer's filter effect. |
 
-In practice the target pull dominates; the Kalman update's corrections are small with the current table — see [v2.md](v2.md#how-the-engine-behaves-in-practice).
+In practice the target pull dominates; the Kalman update's corrections are small with the current table — see [v2.md](v2.md#how-a-kalman-golem-moves).
 
 ## Seeding and shared rendering
 

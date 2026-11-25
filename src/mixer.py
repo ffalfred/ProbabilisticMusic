@@ -7,6 +7,8 @@ from src.pitch    import resolve_event_pitch, apply_pitch_shift, apply_noterel_t
 from src.stretch  import time_stretch
 from src.articulations import match_events, next_gaps, shape_event, accent_event, apply_mix_marks
 from src import render_cache
+from src.resfilter import resonant_filter
+from src.golem_fx  import saturate, compress
 from src.dsp      import as_frames, to_channels, pad_frames, fit_frames, env_mul, per_channel
 
 
@@ -20,68 +22,6 @@ def _interp_dim_envelope(trace: list, n: int, sr: int, dim_idx: int) -> np.ndarr
     x_full   = np.arange(n, dtype=np.float64)
     vals     = np.array([float(s['sample'][dim_idx]) for s in trace], dtype=np.float64)
     return np.interp(x_full, anchor_x, vals).astype(np.float32)
-
-
-def _apply_seg_filter(base: np.ndarray, sr: int, cutoff_env: np.ndarray,
-                      res_env: np.ndarray = None, n_segments: int = 16) -> np.ndarray:
-    """Apply a time-varying lowpass filter to the base via chunked crossfades.
-    cutoff_env: per-sample Hz values (will be sampled at segment midpoints).
-    res_env:    optional per-sample resonance 0..1 (mapped to Q 0.5..10).
-    """
-    from scipy.signal import butter, sosfilt
-    n = len(base)
-    if n < sr // 10:
-        return base
-    seg_len = max(1, n // n_segments)
-    xfade = min(int(0.03 * sr), seg_len // 4)
-    if base.ndim == 1:
-        out = np.zeros_like(base)
-    else:
-        out = np.zeros_like(base)
-
-    def _process(clip, cut, q):
-        cut = max(20.0, min(cut, sr / 2 - 1))
-        # Simple 2nd-order LP; resonance adjusts Q via a series resonant shelf (approx)
-        sos = butter(2, cut, btype='low', fs=sr, output='sos')
-        y = sosfilt(sos, clip).astype(np.float32) if clip.ndim == 1 \
-            else np.stack([sosfilt(sos, clip[:, ch]) for ch in range(clip.shape[1])], axis=1).astype(np.float32)
-        if q is not None and q > 0.05:
-            # Add a mild resonant peak at the cutoff by EQ boost
-            try:
-                from scipy.signal import iirpeak
-                b, a = iirpeak(cut / (sr / 2.0), 1.0 + q * 8.0)
-                from scipy.signal import tf2sos, sosfilt as _sf
-                sos_p = tf2sos(b, a)
-                if clip.ndim == 1:
-                    y = (y + 0.3 * q * _sf(sos_p, clip).astype(np.float32)).astype(np.float32)
-                else:
-                    peak = np.stack([_sf(sos_p, clip[:, ch]) for ch in range(clip.shape[1])], axis=1).astype(np.float32)
-                    y = (y + 0.3 * q * peak).astype(np.float32)
-            except Exception:
-                pass
-        return y
-
-    for i in range(n_segments):
-        s = i * seg_len
-        e = n if i == n_segments - 1 else s + seg_len
-        if s >= n:
-            break
-        mid = (s + e) // 2
-        cut = float(cutoff_env[min(mid, n - 1)])
-        q   = float(res_env[min(mid, n - 1)]) if res_env is not None else None
-        seg = _process(base, cut, q)
-        if i == 0:
-            out[s:e] = seg[s:e]
-        else:
-            xf_end = min(s + xfade, e)
-            ramp = np.linspace(0, 1, xf_end - s, dtype=np.float32)
-            if base.ndim == 1:
-                out[s:xf_end] = out[s:xf_end] * (1 - ramp) + seg[s:xf_end] * ramp
-                out[xf_end:e] = seg[xf_end:e]
-            else:
-                out[s:xf_end] = out[s:xf_end] * (1 - ramp)[:, None] + seg[s:xf_end] * ramp[:, None]
-                out[xf_end:e] = seg[xf_end:e]
-    return out
 
 
 def _apply_seg_shelf(base: np.ndarray, sr: int, bright_env: np.ndarray,
@@ -123,18 +63,18 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
       dim 1  brightness      — time-varying high-shelf EQ via _apply_seg_shelf
       dim 5  reverb_wet      — reverb added on top of the mix, at this level
                                (1 = as loud as the original); its tail rings on
-      dim 6  filter_cutoff   — time-varying lowpass via _apply_seg_filter
-      dim 7  filter_resonance— paired with filter_cutoff
+      dim 6  filter_cutoff   — resonant lowpass whose cutoff follows the trace
+      dim 7  filter_resonance— its resonance (peak at the cutoff), src/resfilter.py
       dim 8  stereo_width    — mid/side width: 0 mono, 0.5 as recorded, 1 twice
                                as wide (stereo pieces only)
+      dim 9  overdrive_drive — tanh saturation mixed in by drive (golem_fx)
+      dim 11 dynamic_center  — compressor threshold in dBFS, 2:1 (golem_fx)
 
-    Per-event dimensions (applied in event loop, not here):
+    Per-event dimensions (applied to each event's clip, not here):
       dim 2  timing_offset_ms
       dim 3  attack_shape
       dim 4  release_shape
-
-    Not yet wired (future):
-      dim 9  overdrive_drive, dim 10 pitch_dev_cents, dim 11 dynamic_center
+      dim 10 pitch_dev_cents — only with 'pitch_dev_cents' in mix_dims
     """
     if mix is None or not trace:
         return mix
@@ -149,17 +89,26 @@ def _apply_state_to_mix(mix: np.ndarray, sr: int, trace: list,
         gain_lin = (10.0 ** (gain_db / 20.0)).astype(np.float32)
         mix = env_mul(mix, gain_lin)
 
+    # dim 11: dynamic_center — compressor threshold (dBFS) following the golem
+    if 'dynamic_center' in mix_dims:
+        thr = np.clip(_interp_dim_envelope(trace, n, sr, 11), -30.0, 0.0)
+        mix = compress(mix, sr, thr)
+
+    # dim 9: overdrive_drive — saturation mixed in by the golem's drive
+    if 'overdrive_drive' in mix_dims:
+        mix = saturate(mix, sr, np.clip(_interp_dim_envelope(trace, n, sr, 9), 0.0, 1.0))
+
     # dim 1: brightness — time-varying high-shelf EQ
     if 'brightness' in mix_dims:
         bright_env = _interp_dim_envelope(trace, n, sr, 1)
         mix = _apply_seg_shelf(mix, sr, bright_env)
 
-    # dims 6+7: filter_cutoff (Hz) + filter_resonance — time-varying lowpass
+    # dims 6+7: filter_cutoff (Hz) + filter_resonance — a resonant lowpass
+    # that follows the trace continuously (updated every 32 samples)
     if 'filter_cutoff' in mix_dims:
-        cutoff_env = np.clip(_interp_dim_envelope(trace, n, sr, 6),
-                             20.0, 0.45 * sr).astype(np.float32)
-        res_env    = _interp_dim_envelope(trace, n, sr, 7)
-        mix = _apply_seg_filter(mix, sr, cutoff_env, res_env)
+        cutoff_env = np.clip(_interp_dim_envelope(trace, n, sr, 6), 20.0, 0.45 * sr)
+        res_env    = np.clip(_interp_dim_envelope(trace, n, sr, 7), 0.0, 1.0)
+        mix = resonant_filter(mix, sr, cutoff_env, res_env, 'low', block=32)
 
     # dim 5: reverb_wet — reverb added on top of the mix (the original stays
     # at full level, like the Composer's reverb); the tail rings past the end
@@ -215,7 +164,7 @@ def _concat_with_xfade(chunks: list, xf: int) -> np.ndarray:
     return out
 
 
-def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
+def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list, rate_curve=None):
     """
     Stretch sections of the mix by tempo factor. Length may change.
 
@@ -229,11 +178,17 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
     Returns (stretched_mix, tempo_map) where tempo_map is
     [(score_t, real_t), ...] monotonically increasing, used by the editor to
     translate between score time (musical position) and real time (wall clock).
+
+    rate_curve: optional per-sample rate multiplier in score time (the golem's
+    tempo dimension, 1 = as written). With it, the whole mix is stretched in
+    one pass with the product of both, and the tempo map follows it.
     """
     if mix is None or len(mix) == 0:
         return mix, [(0.0, 0.0)]
 
     duration = len(mix) / sr
+    if rate_curve is not None:
+        return _stretch_with_curve(mix, sr, tempo_ranges, rate_curve)
 
     # 1. Resolve ranges
     resolved = []
@@ -327,6 +282,44 @@ def _stretch_mix_by_tempo(mix: np.ndarray, sr: int, tempo_ranges: list):
     return _concat_with_xfade(out_chunks, xf), tempo_map
 
 
+def _score_rate_curve(tempo_ranges: list, n: int, sr: int) -> np.ndarray:
+    """The score's tempo ranges as a per-sample rate (score time), the same
+    rule as _stretch_mix_by_tempo: overlapping ranges multiply; a ramp goes
+    from 1 to its factor, a step holds its factor."""
+    rate = np.ones(n)
+    for rng in tempo_ranges or []:
+        i0 = max(0, int(float(rng.get('from', 0.0)) * sr))
+        i1 = min(n, int(float(rng.get('to', 0.0)) * sr))
+        if i1 <= i0:
+            continue
+        f = _resolve_tempo_factor(rng.get('factor', 1.0))
+        if rng.get('shape', 'ramp') == 'ramp':
+            local = 1.0 + np.linspace(0.0, 1.0, i1 - i0, endpoint=False) * (f - 1.0)
+        else:
+            local = f
+        rate[i0:i1] *= np.maximum(local, 0.01)
+    return np.maximum(rate, 0.01)
+
+
+def _stretch_with_curve(mix: np.ndarray, sr: int, tempo_ranges: list, rate_curve) -> tuple:
+    """One Rubber Band pass with the score's tempo × the golem's rubato."""
+    n = len(mix)
+    rc = np.asarray(rate_curve, dtype=np.float64)[:n]
+    if len(rc) < n:
+        rc = np.concatenate([rc, np.full(n - len(rc), rc[-1] if len(rc) else 1.0)])
+    rate = _score_rate_curve(tempo_ranges, n, sr) * np.maximum(rc, 0.01)
+    if np.all(np.abs(rate - 1.0) < 1e-4):
+        d = n / sr
+        return mix.astype(np.float32, copy=False), [(0.0, 0.0), (d, d)]
+    out = time_stretch(mix, sr, rate)
+    # score → real: real time is the running sum of 1/rate; a point every 50 ms
+    real = np.concatenate([[0.0], np.cumsum(1.0 / rate)]) / sr
+    step = max(1, int(0.05 * sr))
+    idx = np.unique(np.concatenate([np.arange(0, n + 1, step), [n]]))
+    tempo_map = [(float(i / sr), float(real[i])) for i in idx]
+    return out, tempo_map
+
+
 def _apply_speed(clip: np.ndarray, speed: float, sr: int, pitch_lock: bool = False) -> np.ndarray:
     """Varispeed (or time-stretch with pitch_lock) a (frames, channels) clip."""
     if abs(speed - 1.0) < 1e-3:
@@ -345,6 +338,10 @@ def mix_events(events: list, bank: dict, sr: int, score: dict = None, base: np.n
     _state_trace   = (score or {}).get('_state_trace', None)
     # Muted events neither sound nor trigger ducking / density scaling.
     events = [e for e in events if not e.get('muted')]
+    # The golem's per-event pitch deviation is heard only when its mix dim is on
+    if 'pitch_dev_cents' not in ((score or {}).get('mix_dims') or ()) or not (score or {}).get('golems'):
+        events = [{k: v for k, v in e.items() if k != 'pitch_dev_cents'} if 'pitch_dev_cents' in e else e
+                  for e in events]
 
     # All audio is (frames, channels); the piece's channel count comes from
     # the base (or, without one, from the samples).
@@ -515,13 +512,20 @@ def _event_clip(event, sample, sr, channels, marks, gap, sample_spec, semitones)
 
     # --- speed / layered transpositions ---
     pitch_lock = bool(event.get('pitch_lock', False))
+    # golem pitch deviation (cents): a slight speed change, tape-style, like a
+    # player a little sharp or flat; pitch-locked events are re-pitched instead
+    dev = float(event.get('pitch_dev_cents') or 0.0)
+    dev = dev if abs(dev) >= 0.5 else 0.0
+    vari = 2.0 ** (dev / 1200.0) if (dev and not pitch_lock) else 1.0
     speeds = event.get('speeds')
     if speeds:
-        layers  = [_apply_speed(base_clip.copy(), s, sr, pitch_lock) for s in speeds]
+        layers  = [_apply_speed(base_clip.copy(), s * vari, sr, pitch_lock) for s in speeds]
         max_len = max(len(l) for l in layers)
         clip    = sum(pad_frames(l, max_len) for l in layers)
     else:
-        clip = _apply_speed(base_clip, event.get('speed', 1.0), sr, pitch_lock)
+        clip = _apply_speed(base_clip, event.get('speed', 1.0) * vari, sr, pitch_lock)
+    if dev and pitch_lock:
+        clip = apply_pitch_shift(clip, sr, dev / 100.0)
 
     # --- reverse ---
     if event.get('reverse', False):
@@ -537,17 +541,24 @@ def _event_clip(event, sample, sr, channels, marks, gap, sample_spec, semitones)
     if marks:
         clip = shape_event(clip, sr, marks, gap)
 
-    # --- fade edges shaped by golem's attack/release ---
+    # --- fade edges shaped by golem's attack/release (0.5 = as written):
+    #     length ×0…×2, and the curve bent by a power 4^(2·(shape − 0.5)),
+    #     i.e. ¼…4. Low attack = short and percussive, high = a slow swell;
+    #     low release = held then cut, high = a long decaying tail. ---
     fade_in_pct  = event.get('fade_in',  sample_spec.get('fade_in',  0.05))
     fade_out_pct = event.get('fade_out', sample_spec.get('fade_out', 0.05))
+    in_power = out_power = 1.0
     attack_shape = event.get('attack_shape')
     if attack_shape is not None:
         fade_in_pct = min(0.8, fade_in_pct * (attack_shape * 2.0))
+        in_power = 4.0 ** (2.0 * (float(attack_shape) - 0.5))
     release_shape = event.get('release_shape')
     if release_shape is not None:
         fade_out_pct = min(0.9, fade_out_pct * (release_shape * 2.0))
+        out_power = 4.0 ** (2.0 * (float(release_shape) - 0.5))
     clip = apply_fade(clip, sr, fade_in_pct=fade_in_pct, fade_out_pct=fade_out_pct,
-                      curve=event.get('fade_curve', sample_spec.get('fade_curve', DEFAULT_FADE_CURVE)))
+                      curve=event.get('fade_curve', sample_spec.get('fade_curve', DEFAULT_FADE_CURVE)),
+                      in_power=in_power, out_power=out_power)
     if marks:
         clip = accent_event(clip, sr, marks)
 

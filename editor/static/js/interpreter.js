@@ -54,6 +54,7 @@ async function _loadInterpScore() {
     state.baseFx        = sc.base_fx       || [];
     state.fxRanges      = zonesFromScore(sc);
     outputSettingsFromScore(sc);
+    state.scoreExtras   = scoreExtrasFrom(sc);
     state.lastScorePath = path;
     // Sync to Composer's import path input
     const _impIn = document.getElementById('import-path');
@@ -130,6 +131,13 @@ function _syncInterpConfigFromUI() {
     interpState.v2config.seed = parseInt(seedEl.value);
   else
     interpState.v2config.seed = null;
+  // The trace step changes the performance (the filter steps on that grid),
+  // so every render uses the box's value, not only Trace
+  const stepEl = document.getElementById('interp-trace-step');
+  if (stepEl) {
+    if (!interpState.v2config.v2) interpState.v2config.v2 = {};
+    interpState.v2config.v2.trace_step = parseFloat(stepEl.value) || 0;
+  }
   if (typeof _syncGlobalSettings === 'function') _syncGlobalSettings();
 }
 
@@ -153,6 +161,9 @@ async function renderScoreAndPlay() {
     const body = {
       path:       audioPath,
       score_path: interpState.scorePath,
+      // The score as written: the plain (v1) engine — no golems, and no
+      // random per-note timing / attack / release from a default character
+      engine:     'v1',
       interp:     { golems: [], v2config: {}, mix_dims: interpState.mix_dims },
       loudness:   previewLoudness(),
     };
@@ -212,7 +223,8 @@ async function renderInterpAndPlay() {
     _mixBufKey = renderKey;
     // Fetch trace after audio starts — updateVizPanel self-animates while isMixPlaying()
     if (typeof fetchAndDrawTrace === 'function') {
-      fetchAndDrawTrace().then(() => {
+      // The trace of the performance just played: the seed this render used
+      fetchAndDrawTrace({ seed: data.seed }).then(() => {
         // The trace echoes its effective seed into the seed box; that alone
         // shouldn't invalidate the buffer we just rendered.
         const now   = _mixRenderKey('interp');
@@ -262,15 +274,21 @@ async function loadInterp() {
     const data = await res.json();
     if (data.error) { statusEl.textContent = 'error: ' + data.error; return; }
     const interp = data.interp;
+    // Load its score first (overlays, duration, images, the score's golems)…
     if (interp.score_path) {
-      interpState.scorePath = interp.score_path;
       document.getElementById('interp-score-path').value = interp.score_path;
-      document.getElementById('interp-score-status').textContent = interp.score_path.split('/').pop();
+      await _loadInterpScore();
     }
+    // …then the interpretation on top of it
     if (interp.golems) { interpState.golems = interp.golems; _selectedGolemIdx = null; clearHistory(); }
     if (interp.v2config) {
-      Object.assign(interpState.v2config, interp.v2config);
+      // Replace, don't merge: nothing lingers from the previous session
+      interpState.v2config = { engine: 'v2', seed: null, ...interp.v2config,
+                               v2: { ...(interp.v2config.v2 || {}) } };
+      const v2 = interpState.v2config.v2;
       _setInput('interp-seed', interp.v2config.seed != null ? interp.v2config.seed : '');
+      if (v2.timbral_pull != null) _setInput('interp-timbral-pull', v2.timbral_pull);
+      if (v2.trace_step != null)   _setInput('interp-trace-step', v2.trace_step);
       if (typeof _populateGlobalSettings === 'function') _populateGlobalSettings();
     }
     if (Array.isArray(interp.mix_dims)) {
@@ -298,17 +316,21 @@ document.addEventListener('DOMContentLoaded', () => {
   // Mix dimension toggles
   document.querySelectorAll('.mix-dim-cb').forEach(cb => {
     cb.addEventListener('change', () => {
+      pushHistory();                       // undoable, and re-renders while playing
       const dims = [];
       document.querySelectorAll('.mix-dim-cb').forEach(el => {
         if (el.checked) dims.push(el.dataset.dim);
       });
       interpState.mix_dims = dims;
+      // the trace shows the dims you hear
+      if (typeof _lastTraceData !== 'undefined' && _lastTraceData) drawKalmanTrace(_lastTraceData);
     });
   });
 
   // Timbral pull slider
   const tpInput = document.getElementById('interp-timbral-pull');
   if (tpInput) tpInput.addEventListener('change', () => {
+    pushHistory();
     if (!interpState.v2config.v2) interpState.v2config.v2 = {};
     interpState.v2config.v2.timbral_pull = _numOr(tpInput.value, 0.25);
   });
@@ -408,7 +430,9 @@ ${loudnessOptionsHtml('exp-loud')}
         audio_format: expFormat,
         loudness: expLoud,
         time_from: expFrom,
-        time_to: expTo > expFrom ? expTo : 0,
+        // The whole piece unless a part was chosen: the source's duration as
+        // the end would cut the reverb tail and any stretched ending
+        time_to: (expFrom === 0 && Math.abs(expTo - dur) < 0.05) ? 0 : (expTo > expFrom ? expTo : 0),
         interp: { golems: interpState.golems, v2config: interpState.v2config, mix_dims: interpState.mix_dims },
       };
       const res  = await fetch('/export_interp_wav', {
@@ -502,3 +526,18 @@ function _syncWidthDimHint() {
     : "Stereo width from the golem (0 mono, 0.5 as recorded, 1 twice as wide)";
 }
 document.addEventListener("DOMContentLoaded", _syncWidthDimHint);
+
+
+// Global Settings and the trace step are undoable and re-render while
+// playing. The snapshot is taken first, then the new values are copied into
+// v2config, so v2config always holds what the inputs showed before an edit.
+document.addEventListener('DOMContentLoaded', () => {
+  const g = document.getElementById('ge-global-body');
+  if (g) g.addEventListener('change', () => { pushHistory(); _syncGlobalSettings(); });
+  const step = document.getElementById('interp-trace-step');
+  if (step) step.addEventListener('change', () => {
+    pushHistory();
+    if (!interpState.v2config.v2) interpState.v2config.v2 = {};
+    interpState.v2config.v2.trace_step = parseFloat(step.value) || 0;
+  });
+});

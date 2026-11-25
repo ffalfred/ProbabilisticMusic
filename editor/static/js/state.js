@@ -59,52 +59,33 @@ function realToScore(t) {
   return sL + (t - rL);
 }
 
-// ─── 12D state dimension metadata ────────────────────────────────────────────
+// ─── 13D state dimension metadata (src/character.py DIM_NAMES) ───────────────
 const DIM_NAMES = [
   'gain_db','brightness','timing_offset_ms','attack_shape','release_shape',
   'reverb_wet','filter_cutoff','filter_resonance','stereo_width',
-  'overdrive_drive','pitch_dev_cents','dynamic_center',
+  'overdrive_drive','pitch_dev_cents','dynamic_center','tempo',
 ];
 const DIM_LABELS = [
   'Gain dB','Brightness','Timing ms','Attack','Release',
   'Reverb','Filter Cutoff','Filter Q','Stereo Width',
-  'Overdrive','Pitch Cents','Dyn Center',
+  'Overdrive','Pitch Cents','Dyn Center','Tempo %',
 ];
 const DIM_RANGES_DEFAULT = [
   [-40,6],[0,1],[-50,50],[0,1],[0,1],
   [0,1],[20,20000],[0,1],[0,1],
-  [0,1],[-50,50],[-30,0],
+  [0,1],[-50,50],[-30,0],[-30,30],
 ];
 const DIM_DEFAULTS = {
   gain_db:0, brightness:0.5, timing_offset_ms:0, attack_shape:0.5,
   release_shape:0.5, reverb_wet:0.3, filter_cutoff:5000, filter_resonance:0,
   stereo_width:0.5, overdrive_drive:0, pitch_dev_cents:0, dynamic_center:-12,
+  tempo:0,
 };
 
-// Character cold-start biases (mirror of src/character.py BUILTIN.cold_start_bias)
-// Used by the golem editor's "Starting values" section to show per-character defaults.
-const CHAR_COLD_START_BIAS = {
-  dramatic: {
-    gain_db:3.0, brightness:0.25, timing_offset_ms:0.0, attack_shape:0.35,
-    release_shape:0.3, reverb_wet:0.65, filter_cutoff:3000.0, filter_resonance:0.2,
-    stereo_width:0.7, overdrive_drive:0.15, pitch_dev_cents:0.0, dynamic_center:-6.0,
-  },
-  lyrical: {
-    gain_db:0.0, brightness:0.75, timing_offset_ms:0.0, attack_shape:0.75,
-    release_shape:0.7, reverb_wet:0.40, filter_cutoff:8000.0, filter_resonance:0.0,
-    stereo_width:0.5, overdrive_drive:0.0, pitch_dev_cents:0.0, dynamic_center:-12.0,
-  },
-  sparse: {
-    gain_db:-4.0, brightness:0.50, timing_offset_ms:0.0, attack_shape:0.10,
-    release_shape:0.4, reverb_wet:0.05, filter_cutoff:5000.0, filter_resonance:0.0,
-    stereo_width:0.3, overdrive_drive:0.0, pitch_dev_cents:0.0, dynamic_center:-18.0,
-  },
-  turbulent: {
-    gain_db:4.0, brightness:0.55, timing_offset_ms:0.0, attack_shape:0.20,
-    release_shape:0.2, reverb_wet:0.55, filter_cutoff:2000.0, filter_resonance:0.4,
-    stereo_width:0.8, overdrive_drive:0.3, pitch_dev_cents:0.0, dynamic_center:-4.0,
-  },
-};
+// Each preset's resting values (src/character.py cold_start_bias), filled
+// from /golem_presets by golems.js. Used by the golem editor's "Starting
+// values" section.
+const CHAR_COLD_START_BIAS = {};
 
 // ─── Interpreter state (V2 engine + Golems) ──────────────────────────────────
 const interpState = {
@@ -113,10 +94,12 @@ const interpState = {
   scoreDynamics: [],    // dynamics from the loaded score YAML (for trace overlay)
   golems: [],           // [{from, to, character, type, state, dimension_config}]
   mix_dims: ['gain_db'],// which golem dimensions to apply to the mix
+  // Only what the user changes in the editor: everything else comes from
+  // config.yaml (a hard-coded set here used to override it on every render)
   v2config: {
     engine: 'v2',
     seed: null,
-    v2: { lambda: 0.7, A1: 0.7, A2: 0.2, eta: 0.3, xi: 0.05, window_size: 3, trace_step: 0.5 },
+    v2: {},
   },
 };
 
@@ -188,3 +171,21 @@ function outputSettingsFromScore(sc) {
   if (typeof _updateOutputFxLabel === "function") _updateOutputFxLabel();
   if (typeof _updateBaseFxLabel === "function") _updateBaseFxLabel();
 }
+
+
+// ─── Score keys the Composer doesn't manage ──────────────────────────────────
+// A score can hold things the Composer doesn't edit (golems, mix_dims, …).
+// They are kept as loaded and written back on save, so saving from the
+// Composer never deletes them.
+const _COMPOSER_KEYS = new Set([
+  'output_path', 'base_track', 'samples', 'dynamics', 'tempo', 'base_fx', 'fx_ranges',
+  'fx_sections', 'fx_global', 'silence_start', 'silence_end', 'events', 'phrases',
+  'note_rel', 'articulations', 'tracks', 'duck_base', 'duck_key', 'auto_mix',
+  'score_image', 'score_start', 'score_end', 'score2_image', 'score2_start', 'score2_end',
+]);
+function scoreExtrasFrom(sc) {
+  const out = {};
+  for (const [k, v] of Object.entries(sc || {})) if (!_COMPOSER_KEYS.has(k)) out[k] = v;
+  return out;
+}
+state.scoreExtras = {};

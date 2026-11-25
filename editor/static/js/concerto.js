@@ -125,6 +125,7 @@ registerConcertoSource('interpreter', {
     if (seed != null) v2config = { ...(v2config || {}), v2: { ...((v2config || {}).v2 || {}), seed } };
     return {
       path: _interpAudioPath(), score_path: interpState.scorePath,
+      ...(audio === 'score' ? { engine: 'v1' } : {}),   // the score as written, no golem randomness
       interp: { golems, v2config, mix_dims: interpState.mix_dims },
     };
   },

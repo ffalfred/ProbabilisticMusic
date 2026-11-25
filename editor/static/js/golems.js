@@ -22,7 +22,6 @@ const GOLEM_LABEL_COLORS = {
 };
 const KALMAN_CHARS  = ['dramatic','lyrical','sparse','turbulent','disciplined','impressionist','impulsive','volatile','sight_reading','memorised'];
 const RW_CHARS      = ['rw_free','rw_drift_up','rw_reverting','drift_down','breathing','free_improv','anchored','dream','erratic'];
-const CHARS_BY_TYPE = { kalman: KALMAN_CHARS, random_walk: RW_CHARS };
 
 const DIST_LABELS = {
   '':         'char default',
@@ -36,6 +35,8 @@ const DIST_LABELS = {
   mixture:    'Bursting',
 };
 
+// The presets are defined once, in the engine (src/character.py): the table
+// below is only a fallback until /golem_presets has been loaded.
 const PRESET_PARAMS = {
   // Kalman presets
   dramatic:     { A1:0.80, A2:0.10, Q_scale:2.0, R_scale:1.5,  lam:0.70, obs_weight:1.2, drama_curve:'exp',    distribution:'laplace'  },
@@ -99,11 +100,11 @@ let _geVec = {
   dist_config: {},
 };
 
-// RW default vectors (12D) — mirror of the backend _RW_DEFAULT
-const _RW_SS_DEF  = [1.5,0.05,20,0.05,0.05,0.05,200,0.05,0.05,0.05,5,1];
-const _RW_ZERO    = [0,0,0,0,0,0,0,0,0,0,0,0];
+// RW default vectors (13D) — mirror of the backend _RW_DEFAULT
+const _RW_SS_DEF  = [1.5,0.05,20,0.05,0.05,0.05,200,0.05,0.05,0.05,5,1,0.6];
+const _RW_ZERO    = DIM_NAMES.map(() => 0);
 
-// Pad/trim a vector to 12 dims, filling missing entries from `def`
+// Pad/trim a vector to all dims, filling missing entries from `def`
 function _pad12(v, def) {
   const out = def.slice();
   if (Array.isArray(v)) v.slice(0, out.length).forEach((x, i) => {
@@ -149,6 +150,7 @@ function _readRwVector(kind, prefix) {
 const DIM_COLORS = [
   '#c8922a','#2ac8c8','#c82ac8','#2ac85a','#8a2ac8','#c85a2a',
   '#5ac82a','#2a5ac8','#c82a5a','#aac82a','#2aaac8','#c8c82a',
+  '#c87a9a',
 ];
 
 // ─── Vector display helpers ───────────────────────────────────────────────────
@@ -166,9 +168,24 @@ function _updateVecDisplay(key, displayId) {
 function _geVecKey(key) { return key.replace(/^ge-/, ''); }
 
 // ─── Vector editor popup (number inputs) ─────────────────────────────────────
+// What an unset vector means to the engine, shown when its editor opens
+// (opening one and pressing OK used to save zeros — e.g. inflation 0 removed
+// all randomness, Q base 0 froze the golem)
+const _VEC_NEUTRAL = {
+  a1dims:         () => DIM_NAMES.map(() => _numOr(document.getElementById('ge-A1')?.value, 0.7)),
+  a2dims:         () => DIM_NAMES.map(() => _numOr(document.getElementById('ge-A2')?.value, 0.2)),
+  qbase:          () => [0.5, 0.04, 250, 0.04, 0.04, 0.04, 4000, 0.05, 0.04, 0.05, 8, 1, 0.5].slice(0, DIM_NAMES.length),
+  obswtdims:      () => DIM_NAMES.map(() => 1),
+  fpscale:        () => DIM_NAMES.map((_, i) => (i === 0 ? 7 : 1)),
+  mrtarget:       () => DIM_NAMES.map(d => (typeof DIM_DEFAULTS !== 'undefined' && d in DIM_DEFAULTS ? DIM_DEFAULTS[d] : 0)),
+  inflatedims:    () => DIM_NAMES.map(() => _numOr(document.getElementById('ge-inflate')?.value, 1)),
+  clipsigmadims:  () => DIM_NAMES.map(() => 0),
+};
+
 function _editVector(key, title, range, step) {
   key = _geVecKey(key);
-  const vals = _geVec[key] || Array(DIM_NAMES.length).fill(0);
+  const unset = !_geVec[key];
+  const vals = _geVec[key] || (_VEC_NEUTRAL[key] ? _VEC_NEUTRAL[key]() : Array(DIM_NAMES.length).fill(0));
   const [lo, hi] = range || [-Infinity, Infinity];
   const body = DIM_NAMES.map((d, i) =>
     `<div class="ve-row">
@@ -180,10 +197,13 @@ function _editVector(key, title, range, step) {
   ).join('');
   showPopup(title, `<div class="vector-editor">${body}</div>`).then(res => {
     if (!res) return;   // Cancel
-    _geVec[key] = DIM_NAMES.map((_, i) => {
+    const edited = DIM_NAMES.map((_, i) => {
       const v = parseFloat(document.getElementById(`ve-${i}`)?.value);
-      return isNaN(v) ? 0 : v;
+      return isNaN(v) ? vals[i] : v;
     });
+    // OK without changes leaves an unset vector unset (the engine's default)
+    if (unset && edited.every((v, i) => v === +vals[i])) return;
+    _geVec[key] = edited;
     _updateVecDisplay(key, `ge-${key}-display`);
   });
 }
@@ -252,9 +272,9 @@ function _applyCorrelationPreset(name) {
   });
 }
 
-// ─── Physical limits matrix popup (12×2) ─────────────────────────────────────
+// ─── Physical limits matrix popup (one row per dimension) ────────────────────
 function _editPhysicalLimits() {
-  const DEFAULTS = [[-40,6],[0,1],[-50,50],[0,1],[0,1],[0,1],[20,20000],[0,1],[0,1],[0,1],[-50,50],[-30,0]];
+  const DEFAULTS = DIM_RANGES_DEFAULT;
   const vals = (interpState.v2config.v2 || {}).physical_limits || null;
   const header = '<tr><th></th><th style="font-size:9px;color:#555;">min</th><th style="font-size:9px;color:#555;">max</th></tr>';
   const rows = DIM_NAMES.map((d, i) =>
@@ -516,6 +536,8 @@ function _applyPreset(name, engineType) {
     _setSlider('ge-A1',         params.A1         ?? 0.70, 'ge-A1-val');
     _setSlider('ge-A2',         params.A2         ?? 0.20, 'ge-A2-val');
     _setSlider('ge-Q-scale',    params.Q_scale    ?? 1.00, 'ge-Q-scale-val');
+    _setSlider('ge-timing-scale', params.timing_scale ?? 1.00, 'ge-timing-scale-val');
+    _setSlider('ge-rubato', params.rubato ?? 1.00, 'ge-rubato-val');
     _setSlider('ge-obs-weight', params.obs_weight ?? 1.00, 'ge-obs-weight-val');
     _setSlider('ge-R-scale',    params.R_scale    ?? 1.00, 'ge-R-scale-val');
     _setVal('ge-drama-curve', params.drama_curve ?? 'linear');
@@ -524,6 +546,8 @@ function _applyPreset(name, engineType) {
     _setSlider('ge-gamma-w', params.gamma_w ?? 1.0, 'ge-gamma-w-val');
     const xiEl = document.getElementById('ge-xi-regime');
     if (xiEl) xiEl.value = params.xi_regime != null ? params.xi_regime : '';
+    _setSlider('ge-trans-blend', params.transition_blend ?? 0.5, 'ge-trans-blend-val');
+    _setVal('ge-trans-shape', params.transition_shape || 'sigmoid');
     // Vector params from preset
     _geVec.a1dims    = params.A1_dims    || null;
     _geVec.a2dims    = params.A2_dims    || null;
@@ -611,6 +635,9 @@ function _applyPresetScaled(name, engineType, intensity, smoothness) {
     q  = Math.max(0.05, q);
     _setSlider('ge-A1',         a1,  'ge-A1-val');
     _setSlider('ge-Q-scale',    q,   'ge-Q-scale-val');
+    // timing looseness moves toward 1 on a log scale
+    _setSlider('ge-timing-scale', Math.pow(p.timing_scale ?? 1, intensity), 'ge-timing-scale-val');
+    _setSlider('ge-rubato', 1 + ((p.rubato ?? 1) - 1) * intensity, 'ge-rubato-val');
     _setSlider('ge-R-scale',    Math.max(0.1, r),   'ge-R-scale-val');
     _setSlider('ge-obs-weight', Math.max(0.1, ow),  'ge-obs-weight-val');
     _setSlider('ge-lam',        Math.min(0.99, Math.max(0.05, lam)), 'ge-lam-val');
@@ -678,6 +705,8 @@ function _readGolemEditor() {
     golem.A1          = parseFloat(document.getElementById('ge-A1')?.value)          ?? 0.70;
     golem.A2          = parseFloat(document.getElementById('ge-A2')?.value)          ?? 0.20;
     golem.Q_scale     = parseFloat(document.getElementById('ge-Q-scale')?.value)     ?? 1.00;
+    golem.timing_scale = _numOr(document.getElementById('ge-timing-scale')?.value, 1.0);
+    golem.rubato       = _numOr(document.getElementById('ge-rubato')?.value, 1.0);
     golem.R_scale     = parseFloat(document.getElementById('ge-R-scale')?.value)     ?? 1.00;
     golem.obs_weight  = parseFloat(document.getElementById('ge-obs-weight')?.value)  ?? 1.00;
     golem.drama_curve = document.getElementById('ge-drama-curve')?.value || 'linear';
@@ -689,6 +718,8 @@ function _readGolemEditor() {
     if (!isNaN(gammaW) && gammaW < 1) golem.gamma_w = gammaW;
     const xiEl = document.getElementById('ge-xi-regime');
     if (xiEl?.value !== '') golem.xi_regime = parseFloat(xiEl.value);
+    golem.transition_blend = _numOr(document.getElementById('ge-trans-blend')?.value, 0.5);
+    golem.transition_shape = document.getElementById('ge-trans-shape')?.value || 'sigmoid';
     // Vector params
     if (_geVec.a1dims)    golem.A1_dims           = _geVec.a1dims;
     if (_geVec.a2dims)    golem.A2_dims           = _geVec.a2dims;
@@ -751,6 +782,9 @@ function _populateEditorFromGolem(golem) {
     _setSlider('ge-A1',         golem.A1         ?? 0.70, 'ge-A1-val');
     _setSlider('ge-A2',         golem.A2         ?? 0.20, 'ge-A2-val');
     _setSlider('ge-Q-scale',    golem.Q_scale    ?? 1.00, 'ge-Q-scale-val');
+    _setSlider('ge-timing-scale', golem.timing_scale ?? (PRESET_PARAMS[golem.character] || {}).timing_scale ?? 1.00,
+               'ge-timing-scale-val');
+    _setSlider('ge-rubato', golem.rubato ?? (PRESET_PARAMS[golem.character] || {}).rubato ?? 1.00, 'ge-rubato-val');
     _setSlider('ge-obs-weight', golem.obs_weight ?? 1.00, 'ge-obs-weight-val');
     _setSlider('ge-R-scale',    golem.R_scale    ?? 1.00, 'ge-R-scale-val');
     _setSlider('ge-rw-scatter', golem.rw_scatter ?? 0.00, 'ge-rw-scatter-val');
@@ -760,6 +794,10 @@ function _populateEditorFromGolem(golem) {
     _setSlider('ge-gamma-w', golem.gamma_w ?? 1.0, 'ge-gamma-w-val');
     const xiEl = document.getElementById('ge-xi-regime');
     if (xiEl) xiEl.value = golem.xi_regime != null ? golem.xi_regime : '';
+    // A golem without its own transition settings uses its preset's
+    const _tp = PRESET_PARAMS[golem.character] || {};
+    _setSlider('ge-trans-blend', golem.transition_blend ?? _tp.transition_blend ?? 0.5, 'ge-trans-blend-val');
+    _setVal('ge-trans-shape', golem.transition_shape || _tp.transition_shape || 'sigmoid');
     // Vector params
     _geVec.a1dims    = golem.A1_dims           || null;
     _geVec.a2dims    = golem.A2_dims           || null;
@@ -1084,20 +1122,6 @@ function _golemFinalizeDrag(e) {
 }
 
 // ─── Custom character management ──────────────────────────────────────────────
-function _updateGCharOptions() {
-  const gTypeEl = document.getElementById('g-type');
-  const gCharEl = document.getElementById('g-char');
-  if (!gTypeEl || !gCharEl) return;
-  const chars = _allCharsForType(gTypeEl.value);
-  gCharEl.innerHTML = chars.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
-}
-
-function _allCharsForType(type) {
-  const builtin = CHARS_BY_TYPE[type] || KALMAN_CHARS;
-  const custom  = Object.keys(_customChars[type] || {});
-  return [...builtin, ...custom];
-}
-
 async function loadCustomChars() {
   try {
     const res  = await fetch('/characters');
@@ -1105,7 +1129,6 @@ async function loadCustomChars() {
     _customChars.kalman      = data.kalman      || {};
     _customChars.random_walk = data.random_walk || {};
     _renderCustomCharList();
-    _updateGCharOptions();
     _refreshPresets(_getActiveEngine());
   } catch (e) { /* server may not be running */ }
 }
@@ -1224,7 +1247,6 @@ async function ccDelete(name, type) {
   if (data.ok) {
     delete (_customChars[type] || {})[name];
     _renderCustomCharList();
-    _updateGCharOptions();
     _refreshPresets(_getActiveEngine());
     if (st) st.textContent = `Deleted "${name}"`;
   } else {
@@ -1245,7 +1267,7 @@ async function ccSave() {
   if (type === 'kalman') {
     const a1dims = [0,1,2,3,4].map(i => document.getElementById(`cc-a1d-${i}`)?.value.trim());
     const a2dims = [0,1,2,3,4].map(i => document.getElementById(`cc-a2d-${i}`)?.value.trim());
-    // Per-dim overrides exist for the first 5 dims; pad to 12 with the scalar
+    // Per-dim overrides exist for the first 5 dims; pad to all dims with the scalar
     const A1_dims = a1dims.some(v => v !== '') ? _pad12(a1dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A1')), _RW_ZERO.map(() => _n('cc-A1'))) : null;
     const A2_dims = a2dims.some(v => v !== '') ? _pad12(a2dims.map(v => v !== '' ? parseFloat(v) : _n('cc-A2')), _RW_ZERO.map(() => _n('cc-A2'))) : null;
     params = {
@@ -1262,7 +1284,7 @@ async function ccSave() {
   } else {
     const corrPreset = _s('cc-corr-preset') || 'none';
     params = {
-      // 12-D: dims without an input get the backend defaults
+      // all dims: those without an input get the backend defaults
       step_size:      _RW_SS_DEF.map((d, i) => _nz(`cc-step-${i}`,  d)),
       drift:          _RW_ZERO.map((d, i)   => _nz(`cc-drift-${i}`, d)),
       mr_dims:        _RW_ZERO.map((d, i)   => _nz(`cc-mr-${i}`,    d)),
@@ -1285,7 +1307,6 @@ async function ccSave() {
     if (!_customChars[type]) _customChars[type] = {};
     _customChars[type][name] = params;
     _renderCustomCharList();
-    _updateGCharOptions();
     _refreshPresets(_getActiveEngine());
     if (st) st.textContent = `Saved "${name}"`;
   } else {
@@ -1677,3 +1698,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // Custom character save
   document.getElementById('cc-save-btn')?.addEventListener('click', ccSave);
 });
+
+
+// Load the presets from the engine, so a golem made here is the same as one
+// written in a score.
+(async function _loadGolemPresets() {
+  try {
+    const res = await fetch('/golem_presets');
+    if (!res.ok) return;
+    const data = await res.json();
+    for (const group of ['kalman', 'random_walk'])
+      for (const [name, p] of Object.entries(data[group] || {})) {
+        PRESET_PARAMS[name] = p;
+        if (p.cold_start_bias) CHAR_COLD_START_BIAS[name] = p.cold_start_bias;
+      }
+  } catch (e) { /* keep the fallback table */ }
+})();

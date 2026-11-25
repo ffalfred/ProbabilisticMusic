@@ -31,10 +31,12 @@ function _mixRenderKey(mode) {
   const key = { mode, audioPath, scorePath: interpState.scorePath, mix_dims: interpState.mix_dims,
                 brake: audioBrakeOn() };
   if (mode === 'interp') {
-    // seed is tracked via the seed box; trace_step only affects the trace
+    // seed is tracked via the seed box. trace_step stays in the key: it
+    // changes the performance (the filter steps on that grid)
     const { seed, ...cfg } = interpState.v2config || {};
     const v2 = { ...(cfg.v2 || {}) };
-    delete v2.trace_step;
+    const stepEl = document.getElementById('interp-trace-step');
+    if (stepEl) v2.trace_step = parseFloat(stepEl.value) || 0;
     key.golems   = interpState.golems;
     key.v2config = { ...cfg, v2 };
     key.seed     = seedEl ? seedEl.value.trim() : '';

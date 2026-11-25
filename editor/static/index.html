@@ -120,6 +120,10 @@
     <label style="font-size:10px;color:#aa8;cursor:pointer;" title="Time-varying lowpass sweep"><input type="checkbox" class="mix-dim-cb" data-dim="filter_cutoff"> filter</label>
     <label style="font-size:10px;color:#a8a;cursor:pointer;" title="Reverb added on top, at the golem's level"><input type="checkbox" class="mix-dim-cb" data-dim="reverb_wet"> reverb</label>
     <label id="mixdim-width-label" style="font-size:10px;color:#8aa;cursor:pointer;" title="Stereo width from the golem (0 mono, 0.5 as recorded, 1 twice as wide)"><input type="checkbox" class="mix-dim-cb" data-dim="stereo_width"> width</label>
+    <label style="font-size:10px;color:#c98;cursor:pointer;" title="Overdrive: saturation mixed in by the golem's drive (0 = clean)"><input type="checkbox" class="mix-dim-cb" data-dim="overdrive_drive"> drive</label>
+    <label style="font-size:10px;color:#9bc;cursor:pointer;" title="Each event a few cents sharp or flat, following the golem (±50 cents)"><input type="checkbox" class="mix-dim-cb" data-dim="pitch_dev_cents"> pitch</label>
+    <label style="font-size:10px;color:#bb9;cursor:pointer;" title="Compressor (2:1) with its threshold at the golem's dynamic centre: low = dynamics squeezed together"><input type="checkbox" class="mix-dim-cb" data-dim="dynamic_center"> dynamics</label>
+    <label style="font-size:10px;color:#c8a;cursor:pointer;" title="Rubato: the golem's tempo (presses into crescendos, broadens into phrase ends) stretches the playback"><input type="checkbox" class="mix-dim-cb" data-dim="tempo"> tempo</label>
     <span style="font-size:10px;color:#444;">|</span>
     <label style="font-size:10px;color:#555;" title="How strongly brightness/filter/reverb track the score dynamics (0=free, 1=strict)">pull</label>
     <input id="interp-timbral-pull" type="number" value="0.25" min="0" max="1" step="0.05"
@@ -423,10 +427,24 @@
                     <input type="number" class="ge-val-num" id="ge-Q-scale-val" value="1.00" min="0.05" max="5" step="0.05"
                            oninput="const s=document.getElementById('ge-Q-scale');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
                   </div>
+                  <div class="ge-param-row">
+                    <label title="How loosely notes are placed in time (multiplies the timing noise). 1 ≈ 20 ms spread; disciplined 0.15 ≈ 9 ms, impulsive 4.5 ≈ 20 ms with a long tail. Heard on events when the timing is applied (Interp mode)">Timing looseness ×</label>
+                    <input type="range" id="ge-timing-scale" min="0" max="6" step="0.05" value="1.00"
+                           oninput="document.getElementById('ge-timing-scale-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-timing-scale-val" value="1.00" min="0" max="6" step="0.05"
+                           oninput="const s=document.getElementById('ge-timing-scale');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Rubato: how much the tempo presses forward in crescendos and broadens into phrase ends. 0 = strict, 1 ≈ +6 % / −15 %. Heard with the 'tempo' mix dim on">Rubato ×</label>
+                    <input type="range" id="ge-rubato" min="0" max="3" step="0.05" value="1.00"
+                           oninput="document.getElementById('ge-rubato-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-rubato-val" value="1.00" min="0" max="3" step="0.05"
+                           oninput="const s=document.getElementById('ge-rubato');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
                   <div class="ge-vec-row">
                     <label title="Baseline process noise per dimension">Q base (dim)</label>
                     <span id="ge-qbase-display" class="vec-display">—</span>
-                    <button class="vec-edit-btn" onclick="_editVector('ge-qbase','Q base per dimension',[0,5],0.01)">Edit</button>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-qbase','Q base per dimension',[0,100000],0.01)">Edit</button>
                   </div>
                   <div class="ge-param-row">
                     <label title="Drama curve: how expressive peaks scale the drift. Linear=proportional, Exp=dramatic peaks amplified">Drama curve (peak shape)</label>
@@ -506,6 +524,23 @@
                            oninput="const s=document.getElementById('ge-lam');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
                   </div>
                   <div class="ge-param-row">
+                    <label title="How early the performer starts moving toward the next dynamic marking: 0 = jumps at the marking, 1 = starts long before (window grows with the gap, up to a few seconds)">Transition lead (how early it moves to the next marking)</label>
+                    <input type="range" id="ge-trans-blend" min="0" max="1" step="0.05" value="0.5"
+                           oninput="document.getElementById('ge-trans-blend-val').value=parseFloat(this.value).toFixed(2);" />
+                    <input type="number" class="ge-val-num" id="ge-trans-blend-val" value="0.50" min="0" max="1" step="0.05"
+                           oninput="const s=document.getElementById('ge-trans-blend');if(!isNaN(+this.value))s.value=Math.min(Math.max(+this.value,+s.min),+s.max);" />
+                  </div>
+                  <div class="ge-param-row">
+                    <label title="Curve of the move toward the next marking. Sigmoid = smooth S, Ramp = even, Exponential = fast start then settles, Step = no move until the marking">Transition shape</label>
+                    <select id="ge-trans-shape" style="background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-family:inherit;font-size:10px;padding:2px 4px;">
+                      <option value="sigmoid">Sigmoid</option>
+                      <option value="ramp">Ramp</option>
+                      <option value="exponential">Exponential</option>
+                      <option value="step">Step</option>
+                    </select>
+                    <span></span>
+                  </div>
+                  <div class="ge-param-row">
                     <label title="ξ anticipation: how much the performer prepares for upcoming markings. Higher = starts moving before the marking arrives">ξ (anticipation strength)</label>
                     <input type="number" id="ge-xi-regime" placeholder="global" min="0" step="0.01"
                            style="width:55px;background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;font-size:10px;padding:2px 3px;" />
@@ -562,7 +597,7 @@
                   <div class="ge-vec-row">
                     <label title="Mean reversion resting level (default: 0)">MR target</label>
                     <span id="ge-mrtarget-display" class="vec-display">—</span>
-                    <button class="vec-edit-btn" onclick="_editVector('ge-mrtarget','Mean reversion target',[-20,20],0.1)">Edit</button>
+                    <button class="vec-edit-btn" onclick="_editVector('ge-mrtarget','Mean reversion target',[-100000,100000],0.1)">Edit</button>
                   </div>
                   <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
                     <label style="font-size:10px;color:#555;white-space:nowrap;">Boundary</label>

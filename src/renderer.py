@@ -26,6 +26,7 @@ def _neutralise_score(score: dict, events: list):
       - event['timing_offset_ms']  → 0.0 (no Kalman timing jitter)
       - event['attack_shape']      → 0.5 (neutral fade)
       - event['release_shape']     → 0.5 (neutral fade)
+      - event['pitch_dev_cents']   → removed (no golem pitch deviation)
 
     Does NOT touch pitch, gain, dynamics envelopes, FX, or any Kalman
     dimension other than timing.
@@ -44,6 +45,7 @@ def _neutralise_score(score: dict, events: list):
         e2['timing_offset_ms'] = 0.0
         e2['attack_shape']     = 0.5
         e2['release_shape']    = 0.5
+        e2.pop('pitch_dev_cents', None)
         events2.append(e2)
     return score2, events2
 
@@ -147,7 +149,18 @@ def render_mix(score: dict, bank: dict, events: list, sr: int,
 
     # 2. Stretch the rendered mix through tempo ranges. Length may grow/shrink.
     #    Returns a score→real tempo map used to remap everything else.
-    mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []))
+    #    With the golems' tempo mix dim on, their rubato (dim 12, % faster)
+    #    joins the same single stretch.
+    rate_curve = None
+    if (score.get('golems') and score.get('_state_trace')
+            and 'tempo' in (score.get('mix_dims') or ())):
+        from src.mixer import _interp_dim_envelope
+        # on the source's timeline, like the dynamics (the lead-in delays
+        # only the events)
+        tr = [s for s in score['_state_trace'] if len(s.get('sample', ())) > 12]
+        if tr:
+            rate_curve = 1.0 + _interp_dim_envelope(tr, len(mix), sr, 12).astype(np.float64) / 100.0
+    mix, tempo_map = _stretch_mix_by_tempo(mix, sr, score.get('tempo', []), rate_curve)
 
     # 2b. Whole-mix fermatas: the piece waits. Inserts the held sound and
     #     makes the tempo map stand still there, so everything below (and the

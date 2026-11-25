@@ -157,31 +157,8 @@ windows:
 # ────────��──────────────────────��────────────────────────────���────────────────
 # Piece characters
 # ───────────────────────────────────────────────��─────────────────────────────
-characters:
-  dramatic:
-    A1: 0.8
-    A2: 0.1
-    Q_scale: 2.0
-    R_scale: 2.0
-    lam: 0.7
-
-  lyrical:
-    A1: 0.6
-    A2: 0.3
-    Q_scale: 0.5
-    R_scale: 1.0
-    lam: 0.8
-
-  sparse:
-    A1: 0.9
-    A2: 0.0
-    Q_scale: 0.2
-    R_scale: 0.5
-    lam: 0.4
-
-  turbulent:
-    A1: 0.5
-    A2: 0.2
-    Q_scale: 3.0
-    R_scale: 2.0
-    lam: 0.3
+# Built-in characters (dramatic, lyrical, sparse, turbulent, disciplined,
+# impressionist, impulsive, volatile, sight_reading, memorised) are defined
+# once, in src/character.py (BUILTIN), and served to the editor. Characters
+# saved from the editor's "custom style" are added here.
+characters: {}

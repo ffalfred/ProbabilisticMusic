@@ -91,6 +91,62 @@ The version number follows [Semantic Versioning](https://semver.org/): `MAJOR.MI
 - Spectral Freeze advanced phase at 1/512 of the natural rate.
 - Undertones no longer saturates the dry signal.
 
+### Fixed — Interpreter model (golem performances sound different)
+- **Home values for every character.** Dimensions no marking pulls (width, overdrive, dynamic centre, attack, release…) relax toward each character's own resting value. Only the four original presets had one; with no golem, or the editor's other six presets, they drifted toward zero — width sank to ~0.09, nearly mono, as soon as the width mix dim was on.
+- **Gain follows the markings.** Each character's resting gain was absolute (e.g. 0 dB), so the model kept pulling quiet passages up and loud ones down — pp came out 2–6 dB too loud. Gain now rests at the marking's level plus the character's offset; measured within 0.5 dB of every marking.
+- **One definition of the presets.** The 10 Kalman and 9 random-walk presets are defined once (`src/character.py`, editor values) and served to the editor (`/golem_presets`); a "dramatic" golem is the same in the editor and in a score. The duplicate copy in `transition_table.yaml` is gone.
+- **Hairpins** (crescendo / decrescendo ranges) shape golem performances, following the same curve as the Composer's dynamics; they were ignored.
+- **Golems work on scores without events** (shaping the source audio through the mix dims). The piece's length counts every track.
+- **Score mode** (Interpreter and Concerto) renders the score as written, with the plain engine — it used to add random per-note timing, attack and release from a default character.
+- **Blending golems works**: each golem's own settings are blended by its faded weight instead of the dominant golem's replacing them; fades count when choosing the dominant golem; the per-golem λ (familiarity), Blend, φ mask (without φ scale), spike settings and the editor's distribution name take effect; starting values come from the golem(s) active at the start, not the first in the list; a blank per-dimension distribution follows the golem's.
+- **Random-walk mean reversion** pulls toward the home values instead of zero (the "reverting" presets pulled the filter cutoff to 20 Hz).
+- **Per-dimension distributions** crashed (numpy 2); fixed.
+
+### Fixed — the Interpreter's trace shows the performance you heard
+- With the seed box empty, Play rendered one random performance and the trace that followed drew another seed — the curves on screen belonged to a different performance than the audio. The trace now uses the seed the render used, and the audio that was played (its length sets the filter's time grid).
+- The trace step changes the performance (the filter steps on that grid) but was left out of the render's cache key and only applied by Trace; every render now uses it, and changing it re-renders.
+- Multi-walk traces start at your seed (walk k = seed + k) instead of seeds 0…N−1, and report their seeds.
+- An older, slower trace can no longer overwrite a newer one.
+
+### Fixed — Interpreter editor
+- **Load interpretation** loads its score too and restores everything saved: golems, engine settings (replacing the previous ones instead of mixing with them), timbral pull and trace step.
+- **Saving from the Composer** keeps a score's golems, mix dims and other settings the Composer doesn't show.
+- **WAV export** of the whole piece keeps the reverb/fade tail; it was cut at the score's last second.
+- **Vector editors** (per-dimension settings): pressing OK without changing anything leaves the setting unset instead of writing zeros; unset entries start from sensible values, not 0; the Q base and mean-reversion target accept their full ranges.
+- The global **physical limits and clip method** apply to random-walk and discrete golems too, not only Kalman.
+- The editor no longer sends its own hard-coded engine settings over `config.yaml`'s `v2:` block.
+- **Edits re-render while playing**: changing a golem, a mix dim, the timbral pull, a Global Setting, the trace step or anything in the Composer (including undo/redo) re-renders the playing Mix / Score / Interp half a second after the last edit. Previously only muting a track did.
+- **Undo covers the Interpreter's settings**: mix dims, timbral pull, Global Settings and trace step.
+- **Transition lead and shape** in the golem editor (section D): how early a golem starts moving toward the next dynamic marking, and along which curve (sigmoid, ramp, exponential, step). The engine had these per preset, but golems made or edited in the editor always got the default (0.5, sigmoid). Presets fill them in.
+- Removed dead code: `interp-media.js` (never loaded) and an unused character-list helper.
+
+### Changed — every golem dimension is heard (golem performances sound different)
+- **Filter**: the golems' filter is a resonant low-pass that follows the trace smoothly (updated every 32 samples). It used to jump between 16 fixed segments, and its "resonance" was a separate peak filter mixed in. Resonance 0 is the same Butterworth filter as before; 0.5 gives a +9 dB peak at the cutoff, 1 a +22 dB whistle. One filter (`src/resfilter.py`) now serves the golems and the Composer's filter effect.
+- **The Composer's filter resonance works** (sound change for filters with resonance above 0): on low-pass and high-pass it did nothing. Band-pass is unchanged.
+- **Attack and release** shape the curve of each event's fades as well as their length. A low attack is short and percussive, a high one swells in slowly. A low release holds and then drops, a high one decays into a long tail. 0.5 leaves the fade as written.
+- **Timing is audible.** Per-note timing offsets had a spread of 3–9 ms, below what is heard; now 9–20 ms, depending on the character. Each preset has its own **timing looseness** (disciplined is tight; impulsive, turbulent, dramatic and sight-reading are loose), which can be changed in the golem editor (section B). The default timing noise (`Q_base`) went from 40 to 250.
+- **New mix dims**, each with its own checkbox:
+  - **drive**: overdrive, a tanh saturation mixed in by the golem's drive. 0 is the dry signal untouched; 0.3 is clearly driven; 1 is fully saturated. Computed at twice the sample rate to avoid aliasing.
+  - **pitch**: each event a few cents sharp or flat, following the golem (up to ±50 cents, typically ±3–5). A tiny speed change, like a player slightly off; pitch-locked events are re-pitched instead.
+  - **dynamics**: a 2:1 compressor whose threshold is the golem's dynamic centre (−30 to 0 dBFS), with half make-up gain. A low centre squeezes loud and soft together.
+- **New 13th dimension, `tempo` (rubato)**, heard with the new **tempo** checkbox. It presses forward in crescendos and when approaching a louder marking, holds back in decrescendos, and broadens into each phrase end and the last note. Each preset has its own **rubato** amount (lyrical and impressionist free, disciplined nearly strict), changeable in the golem editor. Typical values are about +3 % in a crescendo and −8 % at a phrase end. It is combined with the score's own tempo changes into one time-stretch pass, so the editor's cursor and tempo map follow it.
+  - Golems and settings saved with 12 dimensions still work: their per-dimension vectors (Q base, A1/A2, φ mask, random-walk steps, correlations, physical limits…) are padded with neutral values. The transition table's observation rows are padded with zeros (the markings don't observe tempo).
+- The golem editor's "Starting values" use every preset's resting values from the server; it used to have a stale copy of four presets.
+
+### Fixed — subito and accent markings
+- `subito_p`, `subito_f`, `fp` and `sfz` (hand-written in a score) made golems aim at mezzo-forte: they weren't loudness levels, so the engine fell back to mf. The Composer's dynamics envelope ignored them. Now both follow one rule (`src/envelope.py: marking_level`):
+  - `subito_p` and `subito_f` are p and f arriving at once;
+  - `fp` settles at p;
+  - `sfz` is an accent that keeps the level it lands in.
+
+### Changed — the trace shows what you hear
+- Only the dimensions you hear are drawn: the ticked mix dims, plus filter resonance with the filter. Timing, attack and release appear only when the score has events; width only for stereo audio. The legend lists all 13 dimensions, with the others greyed out. Ticking a mix dim or undoing redraws it.
+- Each dimension is drawn on its full, fixed range (gain −40…+6 dB, filter 20 Hz–20 kHz on a log scale, tempo ±30 %, …), so a small wobble looks small. Each line used to be stretched to its own min and max, so a 0.01 change filled the whole height.
+- **walks** above 1 draws every walk (the first bold, the others faint). Only the first was drawn.
+
+### Docs
+- `docs/interpreter_guide.md` and `docs/v2.md` rewritten for the current Interpreter: 13 dimensions and how each is heard, mix dims, all 19 presets, rubato and timing, the trace, the seed, saving and exporting. Hairpins are written as `from`/`to` ranges; the old docs' `cresc` with `duration:` was never read. The Interpreter section of `docs/editor.md` is replaced with a short, current summary.
+
 ### Changed — three more Morphogenics
 - **Undertones** uses the exact undertone series (f/2 … f/8: −12, −19.02, −24, −27.86, −31.02, −33.69, −36 st) instead of rounding to semitones (the 5th–7th undertones were up to 31 cents off).
 - **Microtonal** bends the pitch with the sound's brightness moment by moment (smoothed over ~150 ms) instead of applying one fixed detune from the clip's average brightness.

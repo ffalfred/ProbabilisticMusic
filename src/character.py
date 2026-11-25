@@ -28,21 +28,24 @@ Golem-level envelope fields (used by interpreter, not stored in character bundle
     fade_in    — seconds over which the golem fades in from the start of its range
     fade_out   — seconds over which the golem fades out before the end of its range
 
-12D expressive state:
+13D expressive state:
   [gain_db, brightness, timing_offset_ms, attack_shape, release_shape,
    reverb_wet, filter_cutoff, filter_resonance, stereo_width,
-   overdrive_drive, pitch_dev_cents, dynamic_center]
+   overdrive_drive, pitch_dev_cents, dynamic_center, tempo]
+
+tempo is rubato: % faster (+) or slower (−) than written. Older 12-D
+vectors (Q base, A1 per dim, random-walk steps…) are padded with defaults.
 """
 
 import numpy as np
 
-D = 12   # expressive state dimensions
+D = 13   # expressive state dimensions
 
 # Dimension names in canonical order
 DIM_NAMES = (
     'gain_db', 'brightness', 'timing_offset_ms', 'attack_shape', 'release_shape',
     'reverb_wet', 'filter_cutoff', 'filter_resonance', 'stereo_width',
-    'overdrive_drive', 'pitch_dev_cents', 'dynamic_center',
+    'overdrive_drive', 'pitch_dev_cents', 'dynamic_center', 'tempo',
 )
 
 # Physical limits per dimension [lo, hi]
@@ -59,6 +62,7 @@ DIM_RANGES = [
     [  0.0,   1.0],      # overdrive_drive
     [-50.0,  50.0],      # pitch_dev_cents
     [-30.0,   0.0],      # dynamic_center (dB)
+    [-30.0,  30.0],      # tempo (% faster / slower than written)
 ]
 
 # Default cold-start values per dimension
@@ -67,6 +71,7 @@ DIM_DEFAULTS = {
     'attack_shape': 0.5, 'release_shape': 0.5, 'reverb_wet': 0.3,
     'filter_cutoff': 5000.0, 'filter_resonance': 0.0, 'stereo_width': 0.5,
     'overdrive_drive': 0.0, 'pitch_dev_cents': 0.0, 'dynamic_center': -12.0,
+    'tempo': 0.0,
 }
 
 # Default inertia per dimension (A1 diagonal values)
@@ -75,9 +80,23 @@ DIM_INERTIA = {
     'attack_shape': 0.7, 'release_shape': 0.7, 'reverb_wet': 0.85,
     'filter_cutoff': 0.7, 'filter_resonance': 0.7, 'stereo_width': 0.85,
     'overdrive_drive': 0.7, 'pitch_dev_cents': 0.4, 'dynamic_center': 0.92,
+    'tempo': 0.9,
 }
 
 # ── Kalman characters ─────────────────────────────────────────────────────────
+# timing_scale multiplies the timing noise (Q of timing_offset_ms): how loose
+# the character's note placement is. Spread of the note timing with the
+# default Q_base (std of the per-note offset, measured): disciplined 9 ms,
+# sparse 10, memorised 11, impressionist 14, lyrical 15, volatile 18,
+# impulsive / turbulent / sight_reading / dramatic ~20 (the last two with
+# heavy tails that reach the ±50 ms limit now and then).
+
+# rubato scales how much the tempo presses into crescendos and broadens at
+# phrase ends (tempo dimension; 0 = strict, 1 ≈ +6 % pressing / −15 % at a
+# phrase end, before the state's lag and noise).
+
+# Global Q base (process noise per dimension) when config.yaml gives none
+Q_BASE_DEFAULT = [0.5, 0.04, 250.0, 0.04, 0.04, 0.04, 4000.0, 0.05, 0.04, 0.05, 8.0, 1.0, 0.5]
 
 _DEFAULT: dict = dict(
     A1=0.7, A2=0.2, Q_scale=1.0, R_scale=1.0, lam=0.7,
@@ -86,78 +105,119 @@ _DEFAULT: dict = dict(
     obs_weight=1.0,
     sample_dist='gaussian',
     mixture_p=0.05, mixture_scale=4.0,
+    timing_scale=1.0, rubato=1.0,
 )
 
+# Each character's "home": where each dimension rests when nothing pulls it
+# (the AR(2) process relaxes toward it). gain_db is an OFFSET from the current
+# dynamic marking (sparse plays 4 dB under the marking, turbulent 4 dB over);
+# every other value is absolute. Missing dims fall back to DIM_DEFAULTS.
+def _home(**kw) -> dict:
+    out = dict(DIM_DEFAULTS)
+    out.update(kw)
+    return out
+
+
+# The presets — ONE definition, shared by the engine, scores and the editor
+# (served to it by /golem_presets). Values match what the editor has always
+# sent for its presets.
 BUILTIN: dict = {
     'dramatic': dict(
-        A1=0.8, A2=0.1, Q_scale=2.0, R_scale=2.0, lam=0.7,
-        A1_dims=None, A2_dims=None,
-        drama_curve='exp',
-        obs_weight=1.0,
-        sample_dist='mixture', mixture_p=0.08, mixture_scale=3.5,
-        cold_start_bias={
-            'gain_db': 3.0, 'brightness': 0.25, 'timing_offset_ms': 0.0,
-            'attack_shape': 0.35, 'release_shape': 0.3,
-            'reverb_wet': 0.65, 'filter_cutoff': 3000.0, 'filter_resonance': 0.2,
-            'stereo_width': 0.7, 'overdrive_drive': 0.15,
-            'pitch_dev_cents': 0.0, 'dynamic_center': -6.0,
-        },
+        A1=0.80, A2=0.10, Q_scale=2.0, R_scale=1.5, lam=0.70, obs_weight=1.2, timing_scale=1.0, rubato=1.3,
+        drama_curve='exp', sample_dist='laplace',
+        cold_start_bias=_home(gain_db=3.0, brightness=0.25, attack_shape=0.35, release_shape=0.3,
+                              reverb_wet=0.65, filter_cutoff=3000.0, filter_resonance=0.2,
+                              stereo_width=0.7, overdrive_drive=0.15, dynamic_center=-6.0),
     ),
     'lyrical': dict(
-        A1=0.6, A2=0.3, Q_scale=0.5, R_scale=1.0, lam=0.8,
-        A1_dims=None, A2_dims=None,
-        drama_curve='linear',
-        obs_weight=1.0,
-        sample_dist='gaussian', mixture_p=0.05, mixture_scale=2.0,
-        cold_start_bias={
-            'gain_db': 0.0, 'brightness': 0.75, 'timing_offset_ms': 0.0,
-            'attack_shape': 0.75, 'release_shape': 0.7,
-            'reverb_wet': 0.40, 'filter_cutoff': 8000.0, 'filter_resonance': 0.0,
-            'stereo_width': 0.5, 'overdrive_drive': 0.0,
-            'pitch_dev_cents': 0.0, 'dynamic_center': -12.0,
-        },
+        A1=0.65, A2=0.30, Q_scale=0.5, R_scale=0.8, lam=0.85, obs_weight=1.0, timing_scale=0.7, rubato=1.4,
+        drama_curve='linear', sample_dist='gaussian',
+        cold_start_bias=_home(gain_db=0.0, brightness=0.75, attack_shape=0.75, release_shape=0.7,
+                              reverb_wet=0.40, filter_cutoff=8000.0, stereo_width=0.5,
+                              dynamic_center=-12.0),
     ),
     'sparse': dict(
-        A1=0.9, A2=0.0, Q_scale=0.2, R_scale=0.5, lam=0.4,
-        A1_dims=None, A2_dims=None,
-        drama_curve='square',
-        obs_weight=0.6,
-        sample_dist='gaussian', mixture_p=0.02, mixture_scale=2.0,
-        cold_start_bias={
-            'gain_db': -4.0, 'brightness': 0.50, 'timing_offset_ms': 0.0,
-            'attack_shape': 0.10, 'release_shape': 0.4,
-            'reverb_wet': 0.05, 'filter_cutoff': 5000.0, 'filter_resonance': 0.0,
-            'stereo_width': 0.3, 'overdrive_drive': 0.0,
-            'pitch_dev_cents': 0.0, 'dynamic_center': -18.0,
-        },
+        A1=0.90, A2=0.00, Q_scale=0.2, R_scale=0.5, lam=0.40, obs_weight=1.5, timing_scale=0.9, rubato=0.5,
+        drama_curve='linear', sample_dist='gaussian',
+        cold_start_bias=_home(gain_db=-4.0, brightness=0.50, attack_shape=0.10, release_shape=0.4,
+                              reverb_wet=0.05, filter_cutoff=5000.0, stereo_width=0.3,
+                              dynamic_center=-18.0),
     ),
     'turbulent': dict(
-        A1=0.5, A2=0.2, Q_scale=3.0, R_scale=2.0, lam=0.3,
-        A1_dims=None, A2_dims=None,
-        drama_curve='exp',
-        obs_weight=1.0,
-        sample_dist='cauchy', mixture_p=0.15, mixture_scale=5.0,
-        cold_start_bias={
-            'gain_db': 4.0, 'brightness': 0.55, 'timing_offset_ms': 0.0,
-            'attack_shape': 0.20, 'release_shape': 0.2,
-            'reverb_wet': 0.55, 'filter_cutoff': 2000.0, 'filter_resonance': 0.4,
-            'stereo_width': 0.8, 'overdrive_drive': 0.3,
-            'pitch_dev_cents': 0.0, 'dynamic_center': -4.0,
-        },
+        A1=0.50, A2=0.20, Q_scale=3.0, R_scale=2.0, lam=0.30, obs_weight=0.6, timing_scale=2.2, rubato=1.0,
+        drama_curve='square', sample_dist='student_t', student_df=3.0,
+        cold_start_bias=_home(gain_db=4.0, brightness=0.55, attack_shape=0.20, release_shape=0.2,
+                              reverb_wet=0.55, filter_cutoff=2000.0, filter_resonance=0.4,
+                              stereo_width=0.8, overdrive_drive=0.3, dynamic_center=-4.0),
+    ),
+    'disciplined': dict(
+        A1=0.85, A2=0.10, Q_scale=0.3, R_scale=0.3, lam=0.80, obs_weight=2.0, timing_scale=0.15, rubato=0.3,
+        drama_curve='linear', sample_dist='gaussian',
+        cold_start_bias=_home(gain_db=0.0, brightness=0.5, attack_shape=0.5, release_shape=0.5,
+                              reverb_wet=0.2, filter_cutoff=8000.0, stereo_width=0.5,
+                              dynamic_center=-10.0),
+    ),
+    'impressionist': dict(
+        A1=0.60, A2=0.25, Q_scale=1.0, R_scale=2.5, lam=0.90, obs_weight=0.4, timing_scale=3.7, rubato=1.6,
+        drama_curve='linear', sample_dist='beta',
+        cold_start_bias=_home(gain_db=-1.0, brightness=0.6, attack_shape=0.8, release_shape=0.85,
+                              reverb_wet=0.6, filter_cutoff=6000.0, stereo_width=0.75,
+                              dynamic_center=-14.0),
+    ),
+    'impulsive': dict(
+        A1=0.40, A2=0.10, Q_scale=2.5, R_scale=0.8, lam=0.50, obs_weight=1.0, timing_scale=4.5, rubato=0.8,
+        drama_curve='exp', sample_dist='cauchy',
+        cold_start_bias=_home(gain_db=2.0, brightness=0.6, attack_shape=0.1, release_shape=0.3,
+                              reverb_wet=0.15, filter_cutoff=9000.0, stereo_width=0.6,
+                              overdrive_drive=0.2, dynamic_center=-5.0),
+    ),
+    'volatile': dict(
+        A1=0.70, A2=0.15, Q_scale=1.5, R_scale=1.2, lam=0.60, obs_weight=0.8, timing_scale=1.9, rubato=1.2,
+        drama_curve='square', sample_dist='bimodal', dist_config={'bimodal_sep': 0.75},
+        cold_start_bias=_home(gain_db=1.0, brightness=0.55, attack_shape=0.3, release_shape=0.4,
+                              reverb_wet=0.35, filter_cutoff=7000.0, stereo_width=0.7,
+                              overdrive_drive=0.15, dynamic_center=-6.0),
+    ),
+    'sight_reading': dict(
+        A1=0.75, A2=0.15, Q_scale=1.0, R_scale=1.0, lam=0.20, obs_weight=1.0, timing_scale=1.15, rubato=0.5,
+        drama_curve='linear', sample_dist='gaussian',
+        cold_start_bias=_home(gain_db=-1.0, brightness=0.5, attack_shape=0.5, release_shape=0.5,
+                              reverb_wet=0.25, filter_cutoff=6000.0, stereo_width=0.5,
+                              dynamic_center=-10.0),
+    ),
+    'memorised': dict(
+        A1=0.70, A2=0.20, Q_scale=1.0, R_scale=1.0, lam=0.95, obs_weight=1.0, timing_scale=0.3, rubato=1.0,
+        drama_curve='linear', sample_dist='gaussian',
+        cold_start_bias=_home(gain_db=0.0, brightness=0.55, attack_shape=0.6, release_shape=0.6,
+                              reverb_wet=0.3, filter_cutoff=8000.0, stereo_width=0.55,
+                              dynamic_center=-10.0),
     ),
 }
 
+
+def home_values(name: str, user_chars: dict | None = None, golem: dict | None = None) -> dict:
+    """A character's home values: defaults, then the preset's, then a user
+    character's, then the golem's own `cold_start_bias` (each overriding)."""
+    out = dict(DIM_DEFAULTS)
+    out.update(BUILTIN.get(name, {}).get('cold_start_bias', {}))
+    if user_chars and isinstance(user_chars.get(name), dict):
+        out.update(user_chars[name].get('cold_start_bias', {}) or {})
+    if golem and isinstance(golem.get('cold_start_bias'), dict):
+        out.update(golem['cold_start_bias'])
+    return out
+
 # Keys that blend by weighted average (scalar)
-_SCALAR_KEYS = ('A1', 'A2', 'Q_scale', 'R_scale', 'lam', 'obs_weight', 'mixture_p', 'mixture_scale')
+_SCALAR_KEYS = ('A1', 'A2', 'Q_scale', 'R_scale', 'lam', 'obs_weight', 'mixture_p', 'mixture_scale',
+                'timing_scale', 'rubato')
 # Keys where the dominant golem's value wins (strings)
 _STRING_KEYS = ('drama_curve', 'sample_dist')
 
 # ── Random Walk characters ────────────────────────────────────────────────────
 
 # step_size order: gain_db, brightness, timing_ms, attack, release, reverb,
-#                  filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center
+#                  filter_cutoff, filter_res, stereo_w, overdrive, pitch_cents, dyn_center, tempo
 _RW_DEFAULT: dict = dict(
-    step_size=[1.5, 0.05, 20.0, 0.05, 0.05, 0.05, 200.0, 0.05, 0.05, 0.05, 5.0, 1.0],
+    step_size=[1.5, 0.05, 20.0, 0.05, 0.05, 0.05, 200.0, 0.05, 0.05, 0.05, 5.0, 1.0, 0.6],
     drift=[0.0] * D,
     mean_reversion=0.0,
     mr_dims=None,
@@ -167,34 +227,37 @@ _RW_DEFAULT: dict = dict(
     mixture_p=0.05, mixture_scale=4.0,
 )
 
+def _rw(step, drift=None, mr=0.0, boundary='reflect', dist='gaussian', **extra):
+    step = list(step)
+    if len(step) < D:                 # tempo step in proportion to the gain step
+        step += [0.6 * step[0] / 1.5] * (D - len(step))
+    drift = (list(drift) + [0.0] * (D - len(drift))) if drift else [0.0] * D
+    d = dict(step_size=step, drift=drift,
+             mean_reversion=0.0, mr_dims=[float(mr)] * D if mr else None,
+             distribution=dist, boundary_mode=boundary, correlation=None,
+             mixture_p=0.05, mixture_scale=4.0)
+    d.update(extra)
+    return d
+
+
+# Random-walk presets — one definition, shared with the editor (/golem_presets).
+# Mean reversion pulls toward the home values (DIM_DEFAULTS unless mr_target
+# is given), not toward zero.
 RW_BUILTIN: dict = {
-    'rw_free': dict(
-        step_size=[1.5, 0.05, 20.0, 0.05, 0.05, 0.05, 200.0, 0.05, 0.05, 0.05, 5.0, 1.0],
-        drift=[0.0] * D,
-        mean_reversion=0.0, mr_dims=None,
-        distribution='gaussian',
-        boundary_mode='clip',
-        correlation=None,
-        mixture_p=0.05, mixture_scale=4.0,
-    ),
-    'rw_drift_up': dict(
-        step_size=[1.0, 0.03, 10.0, 0.03, 0.03, 0.03, 100.0, 0.03, 0.03, 0.03, 3.0, 0.5],
-        drift=[0.3, 0.01, 5.0, 0.01, 0.01, 0.01, 50.0, 0.01, 0.01, 0.01, 1.0, 0.2],
-        mean_reversion=0.0, mr_dims=None,
-        distribution='gaussian',
-        boundary_mode='reflect',
-        correlation=None,
-        mixture_p=0.05, mixture_scale=4.0,
-    ),
-    'rw_reverting': dict(
-        step_size=[1.2, 0.04, 15.0, 0.04, 0.04, 0.04, 150.0, 0.04, 0.04, 0.04, 4.0, 0.8],
-        drift=[0.0] * D,
-        mean_reversion=0.15, mr_dims=None,
-        distribution='gaussian',
-        boundary_mode='clip',
-        correlation=None,
-        mixture_p=0.05, mixture_scale=4.0,
-    ),
+    'rw_free':      _rw([1.5, 0.05, 20, 0.05, 0.05, 0.05, 200, 0.05, 0.05, 0.05, 5, 1]),
+    'rw_drift_up':  _rw([1.2, 0.04, 15, 0.04, 0.04, 0.04, 150, 0.04, 0.04, 0.04, 4, 0.8],
+                        drift=[0.3, 0.01, 2, 0.01, 0.01, 0.01, 50, 0.01, 0.01, 0.01, 1, 0.2], boundary='clip'),
+    'rw_reverting': _rw([1.5, 0.05, 20, 0.05, 0.05, 0.05, 200, 0.05, 0.05, 0.05, 5, 1], mr=0.12),
+    'drift_down':   _rw([1.0, 0.03, 12, 0.03, 0.03, 0.03, 100, 0.03, 0.03, 0.03, 3, 0.5],
+                        drift=[-0.2, -0.01, -1.5, -0.01, -0.01, -0.01, -30, -0.01, -0.01, -0.01, -0.5, -0.1],
+                        boundary='clip'),
+    'breathing':    _rw([0.5, 0.02, 8, 0.02, 0.02, 0.02, 80, 0.02, 0.02, 0.02, 2, 0.4], mr=0.05,
+                        breath_period=8.0, breath_amp=0.6),
+    'free_improv':  _rw([2.5, 0.08, 30, 0.08, 0.08, 0.08, 300, 0.08, 0.08, 0.08, 8, 1.5], dist='laplace'),
+    'anchored':     _rw([1.0, 0.03, 12, 0.03, 0.03, 0.03, 100, 0.03, 0.03, 0.03, 3, 0.5], mr=0.3),
+    'dream':        _rw([0.3, 0.01, 5, 0.01, 0.01, 0.01, 50, 0.01, 0.01, 0.01, 1, 0.2], mr=0.02, dist='beta'),
+    'erratic':      _rw([3.0, 0.10, 40, 0.10, 0.10, 0.10, 400, 0.10, 0.10, 0.10, 10, 2],
+                        boundary='clip', dist='cauchy'),
 }
 
 _RW_SCALAR_KEYS = ('mean_reversion', 'mixture_p', 'mixture_scale')
@@ -264,14 +327,11 @@ def _get_rw_char(name: str, user_chars: dict | None) -> dict:
 
 def _expand_dims(char: dict) -> dict:
     """Ensure A1_dims and A2_dims are always D-element float lists."""
-    if char.get('A1_dims') is None:
-        char['A1_dims'] = [float(char.get('A1', _DEFAULT['A1']))] * D
-    else:
-        char['A1_dims'] = [float(x) for x in char['A1_dims'][:D]]
-    if char.get('A2_dims') is None:
-        char['A2_dims'] = [float(char.get('A2', _DEFAULT['A2']))] * D
-    else:
-        char['A2_dims'] = [float(x) for x in char['A2_dims'][:D]]
+    for k in ('A1', 'A2'):
+        scalar = float(char.get(k, _DEFAULT[k]))
+        v = char.get(k + '_dims')
+        v = [] if v is None else [float(x) for x in v][:D]
+        char[k + '_dims'] = v + [scalar] * (D - len(v))      # older 12-D vectors padded
     return char
 
 
@@ -307,13 +367,16 @@ def character_at(t: float,
     # Build character bundle per golem: named lookup + inline param overrides
     _INLINE_KALMAN = ('A1','A2','Q_scale','R_scale','lam','obs_weight',
                       'drama_curve','sample_dist','mixture_p','mixture_scale',
-                      'A1_dims','A2_dims','student_df')
+                      'A1_dims','A2_dims','student_df','dist_blend','dist_config',
+                      'timing_scale', 'rubato')
     chars = []
     for g in active:
         c = _get_char(g.get('character', 'default'), user_chars)
         for k in _INLINE_KALMAN:
-            if k in g:
+            if k in g and g[k] is not None:
                 c[k] = g[k]
+        if g.get('distribution'):                  # the editor's name for sample_dist
+            c['sample_dist'] = g['distribution']
         chars.append(c)
 
     if len(active) == 1:
@@ -379,7 +442,17 @@ def rw_character_at(t: float,
         return dict(_RW_DEFAULT)
     weights = [w / total_w for w in weights]
 
-    chars = [_get_rw_char(g.get('character', 'rw_free'), user_chars) for g in active]
+    # Each golem's own settings (sent inline by the editor) override its preset
+    # before blending, so a crossfade blends what each golem really is
+    _INLINE_RW = ('step_size', 'drift', 'mean_reversion', 'mr_dims', 'distribution',
+                  'boundary_mode', 'mixture_p', 'mixture_scale')
+    chars = []
+    for g in active:
+        c = _get_rw_char(g.get('character', 'rw_free'), user_chars)
+        for k in _INLINE_RW:
+            if k in g and g[k] is not None:
+                c[k] = g[k]
+        chars.append(c)
 
     if len(active) == 1:
         return chars[0]

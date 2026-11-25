@@ -1,6 +1,6 @@
 // ─── kalman-trace.js ──────────────────────────────────────────────────────────
 // Kalman belief-state trace visualization + shared tick/color utilities.
-// Must load before interp-media.js and golems.js (provides _niceTickInterval).
+// Must load before golems.js (provides _niceTickInterval).
 // Depends on: state.js (interpState)
 
 // ─── Trace constants ──────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@
 // Use DIM_RANGES_DEFAULT from state.js as the canonical trace ranges
 const DIM_RANGES = DIM_RANGES_DEFAULT;
 
-// Greyscale palette for concerto export — 12 shades from white to dark grey,
+// Greyscale palette for concerto export — shades from white to dark grey,
 // one per Kalman state dimension. Used instead of DIM_COLORS when
 // _concertoGreyscaleMode is true. Editor stays colorful; only the concerto
 // render (video export) uses this palette.
@@ -20,8 +20,34 @@ var _concertoDimY = 1;
 const _GREY_PALETTE = [
   '#ffffff', '#e8e8e8', '#d0d0d0', '#b8b8b8',
   '#a0a0a0', '#888888', '#707070', '#585858',
-  '#404040', '#282828', '#181818', '#101010',
+  '#404040', '#282828', '#181818', '#101010', '#c0c0c0',
 ];
+// The dimensions you hear with the current settings: the mix dims that are
+// on (filter resonance goes with the filter, width only on stereo audio), and
+// the per-event ones (timing, attack, release) when the score has events.
+function _audibleDims(data) {
+  const on = new Set(interpState.mix_dims || ['gain_db']);
+  if (on.has('filter_cutoff')) on.add('filter_resonance');
+  const hasEvents = !data || data.n_events == null || data.n_events > 0;
+  if (hasEvents) ['timing_offset_ms', 'attack_shape', 'release_shape'].forEach(d => on.add(d));
+  else on.delete('pitch_dev_cents');
+  const mono = (state.channels || 1) < 2 && !(state.tracks || []).some(t => (t.channels || 1) > 1);
+  if (mono) on.delete('stereo_width');
+  return on;
+}
+
+// Fixed vertical scale per dimension: its full range (the physical limits),
+// so a small wobble looks small. Filter cutoff on a log scale.
+function _dimScale(d) {
+  const lim = (interpState.v2config.v2 || {}).physical_limits;
+  const [lo, hi] = (lim && lim[d] && lim[d].length >= 2) ? lim[d].map(Number) : DIM_RANGES[d];
+  if (DIM_NAMES[d] === 'filter_cutoff') {
+    const a = Math.log(Math.max(lo, 1)), b = Math.log(Math.max(hi, lo + 1));
+    return v => Math.max(0, Math.min(1, (Math.log(Math.max(v, 1)) - a) / (b - a)));
+  }
+  return v => (hi > lo) ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
+}
+
 function _dimColor(d) {
   return _concertoGreyscaleMode
     ? _GREY_PALETTE[d % _GREY_PALETTE.length]
@@ -42,7 +68,7 @@ var _lastTraceData  = null;
 let _lastLayout     = null;   // { padL, padT, plotW, plotH, W, H, t0, totalDur }
 let _hoverX         = -1;     // mouse x in canvas px, -1 = no hover
 
-// ─── Shared utilities (used by interp-media.js, golems.js) ────────────────────
+// ─── Shared utilities (used by golems.js) ──────────────────────────────────
 function _niceTickInterval(dur, pxWidth) {
   const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300];
   for (const c of candidates) {
@@ -67,8 +93,13 @@ function _traceStatus(msg) {
   if (vs && msg) vs.textContent = msg;
 }
 
-async function fetchAndDrawTrace() {
+// opts.seed: draw the trace of this seed (Play passes the seed its render used,
+// so the trace shows the performance you heard)
+let _traceGen = 0;
+async function fetchAndDrawTrace(opts) {
+  opts = opts || {};
   if (!interpState.scorePath) { _traceStatus('⚠ load a score first (Interpreter → score path)'); return; }
+  const gen = ++_traceGen;
   const btn     = document.getElementById('interp-trace-btn');
   const walksEl = document.getElementById('interp-walks');
   const nWalks  = walksEl ? Math.max(1, Math.min(20, parseInt(walksEl.value) || 1)) : 1;
@@ -82,22 +113,27 @@ async function fetchAndDrawTrace() {
       interpState.v2config.v2.trace_step = parseFloat(_stepEl.value) || 0;
     }
     const _seedEl = document.getElementById('interp-seed');
-    if (_seedEl && _seedEl.value.trim()) interpState.v2config.seed = parseInt(_seedEl.value);
+    if (opts.seed != null) interpState.v2config.seed = opts.seed;
+    else if (_seedEl && _seedEl.value.trim()) interpState.v2config.seed = parseInt(_seedEl.value);
     else interpState.v2config.seed = null;
+    const _audioEl = document.getElementById('interp-audio-path');
+    const path   = (_audioEl && _audioEl.value.trim()) || state.filePath || '';
     const interp = { golems: interpState.golems, v2config: interpState.v2config };
     let data;
     if (nWalks > 1) {
-      const body = { score_path: interpState.scorePath, interp, n_walks: nWalks };
+      const body = { score_path: interpState.scorePath, path, interp, n_walks: nWalks };
       const res  = await fetch('/multitrace', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       data = await res.json();
       if (data.error) { _traceStatus('error: ' + (data.detail || data.error)); return; }
+      if (gen !== _traceGen) return;               // a newer trace was requested
       data.trace = data.walks[0];
     } else {
-      const body = { score_path: interpState.scorePath, interp };
+      const body = { score_path: interpState.scorePath, path, interp };
       const res  = await fetch('/trace', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       data = await res.json();
       if (data.error) { _traceStatus('error: ' + (data.detail || data.error)); return; }
     }
+    if (gen !== _traceGen) return;                 // a newer trace was requested
     _lastTraceData = data;
     // Lock in the seed that produced this trace so the next Preview uses
     // identical random draws → audio envelope matches timeline visual.
@@ -163,10 +199,10 @@ function drawKalmanTrace(data) {
   });
   ctx.setLineDash([]);
 
-  // Y-axis labels
+  // Y-axis labels: each dimension spans its own full range (hover for values)
   ctx.fillStyle = '#555';
   ctx.font      = '9px Courier New';
-  [[0, '0'], [0.5, '.5'], [1, '1']].forEach(([frac, label]) => {
+  [[0, 'min'], [1, 'max']].forEach(([frac, label]) => {
     var y = padT + plotH * (1 - frac);
     ctx.fillText(label, 4, y + 3);
   });
@@ -181,36 +217,38 @@ function drawKalmanTrace(data) {
     ctx.fillText(t.toFixed(0) + 's', x + 2, H - 5);
   }
 
-  // Per-dim: bold mean line (music-driven structure) + faint sample dots (stochasticity)
-  // Only draw dimensions that are actually wired (mix_dims + per-event dims).
-  var _activeDims = new Set([
-    ...(interpState.mix_dims || ['gain_db']),
-    'timing_offset_ms', 'attack_shape', 'release_shape',  // always per-event
-  ]);
+  // Per-dim: bold mean line (music-driven structure) + faint sample dots
+  // (stochasticity). Only the dimensions you hear are drawn.
+  var _activeDims = _audibleDims(data);
   var _activeDimIndices = [];
   for (let d = 0; d < D; d++) {
     if (_activeDims.has(DIM_NAMES[d])) _activeDimIndices.push(d);
   }
 
-  // Auto-scale each dim to its OBSERVED range so tiny variations are visible.
   for (const d of _activeDimIndices) {
     var col      = _dimColor(d);
     var [r, g, b] = _hexToRgb(col);
+    var normOf = _dimScale(d);              // fixed: the dimension's full range
 
-    // Find observed min/max across the FULL trace (not the progressive-reveal
-    // slice) so the Y axis stays stable throughout concerto video rendering.
-    var oMin = +Infinity, oMax = -Infinity;
-    for (const step of data.trace) {
-      if (step.mu     && step.mu[d]     != null) { oMin = Math.min(oMin, step.mu[d]);     oMax = Math.max(oMax, step.mu[d]); }
-      if (step.sample && step.sample[d] != null) { oMin = Math.min(oMin, step.sample[d]); oMax = Math.max(oMax, step.sample[d]); }
+    // Other walks (walks > 1): their plans, faint, behind this one
+    if (data.walks && data.walks.length > 1) {
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.22)`;
+      ctx.lineWidth   = 1;
+      for (let w = 1; w < data.walks.length; w++) {
+        var wt = data.walks[w];
+        if (_concertoMaxT < Infinity) wt = wt.slice(0, _upperBoundTrace(wt, _concertoMaxT));
+        ctx.beginPath();
+        var wFirst = true;
+        for (const st of wt) {
+          var wv = st.mu ? st.mu[d] : null;
+          if (wv == null) continue;
+          var wx = padL + ((st.t - t0) / totalDur) * plotW;
+          var wy = padT + plotH * (1 - normOf(wv));
+          if (wFirst) { ctx.moveTo(wx, wy); wFirst = false; } else ctx.lineTo(wx, wy);
+        }
+        ctx.stroke();
+      }
     }
-    if (!isFinite(oMin) || !isFinite(oMax)) { oMin = 0; oMax = 1; }
-    // Pad 10% so lines don't touch the edges; if flat, give a small synthetic span
-    var span = oMax - oMin;
-    if (span < 1e-9) span = Math.max(Math.abs(oMax), 1) * 0.1;
-    var pad = span * 0.1;
-    var lo = oMin - pad, hi = oMax + pad;
-    var normOf = v => (hi > lo) ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
 
     // Bold mean line (μ) — shows how markings drive the filter
     ctx.strokeStyle = `rgba(${r},${g},${b},0.9)`;
@@ -219,7 +257,8 @@ function drawKalmanTrace(data) {
     var first = true;
     for (let i = 0; i < trace.length; i++) {
       var step = trace[i];
-      var v    = step.mu ? step.mu[d] : 0;
+      var v    = step.mu ? step.mu[d] : null;
+      if (v == null) continue;                       // older trace without this dim
       var x    = padL + ((step.t - t0) / totalDur) * plotW;
       var y    = padT + plotH * (1 - normOf(v));
       if (first) { ctx.moveTo(x, y); first = false; }
@@ -239,22 +278,24 @@ function drawKalmanTrace(data) {
     }
   }
 
-  // Compact legend (top-right, 2 cols) — only active dims
+  // Compact legend (top-right, 2 cols): every dimension; the ones not
+  // heard with the current settings are greyed out (outlined square)
   var legCols = 2;
   var legW    = 92;
   var legRowH = 11;
   var legX    = W - padR - legW * legCols;
   var legY    = padT + 2;
   ctx.font = '8px Courier New';
-  _activeDimIndices.forEach((d, li) => {
+  for (let d = 0; d < D; d++) {
+    var heard = _activeDims.has(DIM_NAMES[d]);
     var col = _dimColor(d);
-    var cx  = legX + (li % legCols) * legW;
-    var cy  = legY + Math.floor(li / legCols) * legRowH;
-    ctx.fillStyle = col;
-    ctx.fillRect(cx, cy, 7, 7);
-    ctx.fillStyle = 'rgba(200,200,200,0.65)';
+    var cx  = legX + (d % legCols) * legW;
+    var cy  = legY + Math.floor(d / legCols) * legRowH;
+    if (heard) { ctx.fillStyle = col; ctx.fillRect(cx, cy, 7, 7); }
+    else { ctx.strokeStyle = 'rgba(120,120,120,0.5)'; ctx.lineWidth = 1; ctx.strokeRect(cx + 0.5, cy + 0.5, 6, 6); }
+    ctx.fillStyle = heard ? 'rgba(200,200,200,0.75)' : 'rgba(120,120,120,0.45)';
     ctx.fillText(DIM_LABELS[d], cx + 10, cy + 7);
-  });
+  }
 
   // Concerto export renders must not contain editor UI (hover tooltip,
   // live playback cursor); the live concerto view hides the hover too.
@@ -314,7 +355,7 @@ function drawKalmanTrace(data) {
     ctx.fillText(`t = ${step.t.toFixed(2)}s`, ttX + 5, ttY + 10);
     _activeDimIndices.forEach((d, li) => {
       var col = _dimColor(d);
-      var v = step.sample ? step.sample[d] : (step.mu ? step.mu[d] : 0);
+      var v = (step.sample && step.sample[d] != null) ? step.sample[d] : ((step.mu && step.mu[d]) || 0);
       ctx.fillStyle = col;
       ctx.fillRect(ttX + 5, ttY + 15 + li * 10, 5, 5);
       ctx.fillStyle = '#aaa';

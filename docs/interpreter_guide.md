@@ -1,307 +1,229 @@
 # Opus One — Interpreter Guide (for musicians)
 
-This is a guide for using the **Interpreter**, the part of the program that plays your score expressively. You don't need any technical background. If you know what "play this passage louder", "hold that chord longer", or "give it a darker sound" means, you know enough.
+This guide is for using the **Interpreter**, the part of the program that plays your score expressively. You don't need any technical background. If you know what "play this passage louder", "push forward into the crescendo" or "give it a darker sound" means, you know enough.
+
+For how the engine works underneath, and the score and `config.yaml` settings, see [v2.md](v2.md).
 
 ---
 
-## What the Interpreter does, in one sentence
+## What the Interpreter does
 
-You give it a score and an audio file. It plays back the audio as if a performer were interpreting the score — with gentle or wild expressive variations. Every time you press play, you get a slightly different performance.
-
----
-
-## The three things you're working with
-
-1. **The audio file** (base track) — the raw sound material. Could be a drone, a recording, a bed of noise, whatever. This is what will be *shaped*.
-
-2. **The score** — a YAML file that tells the performer what's where: samples, dynamic markings (p, mf, ff), phrases, tempos. Already created in the Composer and exported as `.yaml`.
-
-3. **The golems** — these are the performers you create inside the Interpreter. You place them on a timeline and configure their personality. Each golem plays a region of the piece in its own way.
+You give it a score and audio. It plays the audio as a performer interpreting the score would: louder and softer as the markings ask, with its own timing, touch, colour, space and rubato. Every run is a slightly different performance, unless you fix the seed.
 
 ---
 
-## Step-by-step: your first interpretation
+## What you're working with
 
-### 1. Open the Interpreter
+1. **The audio**: the sound material that gets shaped. It can be a recording, a drone, stems, or the samples your score triggers.
+2. **The score**: a `.yaml` file made in the Composer, with events (samples placed in time), dynamic markings (p, mf, ff, crescendo…), phrases and tempo changes.
+3. **The golems**: the performers. You place them on a timeline and give each one a personality. Each golem plays its stretch of the piece in its own way; where golems overlap, their personalities blend.
 
-There are three workspace tabs at the very top of the app: **Composer**, **Interpreter**, **Conductor**. Click **Interpreter**.
+---
 
-### 2. Load your score
+## Your first interpretation
 
-At the top of the Interpreter there's a row of inputs. The first one says "click to select score…". Click it, pick your `.yaml` file, then click **Load**.
+1. **Open the Interpreter.** Click the **Interpreter** tab at the top.
+2. **Load the score.** In the top bar, pick your score `.yaml`. The markings and phrases appear on the score overview.
+3. **Load the audio**, if the score doesn't name it already.
+4. **Make a golem.** In the left sidebar click **+ New Golem**. You get a **Kalman** golem with the **lyrical** preset covering the first quarter of the piece (at most 30 s).
+5. **Place it.** On the golem strip, drag the middle to move it and the edges to resize it. For a first test, cover the whole piece.
+6. **Choose what it shapes.** In the top bar, the **mix dims** checkboxes choose which of the golem's decisions you hear (see [Mix dims](#mix-dims-what-the-golem-is-allowed-to-shape)). Start with **gain**, then add more.
+7. **Play.** Set the play mode to **Interp** and press **▶ Play**. The trace of that performance appears in the bottom panel, with a yellow cursor following the playback.
+8. **Change things while it plays.** Edit the golem, tick a mix dim or move a marking: the playing performance re-renders half a second after your last edit. **← Undo** / **→ Redo** work for all of it.
+9. **Hear another performance.** Clear the **seed** box and press Play again.
 
-If it worked, you'll see the dynamics markings and any phrases drawn on the score overview.
-
-### 3. Load your audio
-
-Right next to the score row, find the **audio** input. Click it, pick your `.wav` or audio file, click **Load**. The waveform appears at the top of the main view.
-
-If the score already knows which audio belongs to it, this might auto-fill.
-
-### 4. (Optional) Load score images
-
-If you have reference images — a PDF page, a diagram, notes — you can load them via **Score Img** and **Meta Img**. They're just visual aids; they don't affect the sound.
-
-### 5. Create your first golem
-
-Look at the left sidebar. Near the top you'll see **+ New Golem**. Click it.
-
-A new golem appears:
-- on the **golem timeline** (the thin strip above the waveform),
-- in the **golem editor** (in the left sidebar, where you configure it).
-
-It defaults to a **Kalman** golem with the **lyrical** preset, covering the first 25% of the audio.
-
-### 6. Place the golem
-
-On the golem timeline strip, you can:
-- **Drag its middle** to move it.
-- **Drag its left/right edge** to resize it.
-
-For a first test, make it cover the whole piece. Drag the left edge to 0s, drag the right edge to the end.
-
-### 7. Trace it
-
-At the bottom, click **◈ Trace**. This runs the golem silently and draws what it decided to do across all 12 "dimensions" (more on this below). A big timeline appears in the bottom panel.
-
-You now see, visually, what the performer intends to do.
-
-### 8. Play it
-
-Top right corner, click **▶ Play**. The audio renders and plays with the golem's expressive shaping applied.
-
-A yellow dashed cursor on the timeline tracks the playback. Loud moments in the audio correspond to the gain line moving up. Quiet moments correspond to it going down.
-
-### 9. Try another run
-
-Make sure the **seed** field (top bar) is empty. Click **Trace** again → you get a different expressive plan. Click **Play** → you hear a different performance of the same piece.
-
-Every run is unique. That's the point.
+The play modes in the Interpreter are:
+- **Raw**: the source audio, untouched.
+- **Score**: the score exactly as written, with no golems and no random variation.
+- **Interp**: the golems' performance.
 
 ---
 
 ## The three golem types
 
-You pick a golem type from the three buttons at the top of the golem editor (**Kalman** / **Random Walk** / **Discrete**). Each behaves very differently:
+Pick a type with the buttons at the top of the golem editor.
 
-### Kalman — the "musical performer"
+### Kalman: the musical performer
 
-Reads your score's dynamics markings (p, mf, ff, sfz, etc.) and responds to them like a real trained musician. Has memory: if it was loud a moment ago, it knows that, and drifts smoothly rather than jumping randomly.
+It reads the score's markings and responds like a trained musician: it follows the dynamics, anticipates the next marking, has momentum (it was loud a moment ago, so it doesn't jump), and adds its own expression around what's written. This is what most pieces want.
 
-**Use Kalman when:** you want the golem to *interpret* the score. Crescendos rise, ff moments push loud, p moments pull back, phrases are shaped musically. It's the "default" behavior most pieces will want.
+| Preset | Character |
+|---|---|
+| **dramatic** | Big contrasts and sudden jumps; dark, roomy, punchy; plays a little over the marking; loose timing; strong rubato |
+| **lyrical** | Smooth and singing; bright, soft attacks, long releases; free rubato |
+| **sparse** | Quiet (under the marking), stable and dry; percussive attacks; narrow; tight timing; little rubato |
+| **turbulent** | Wild and unstable, with occasional extreme moments; loud, dark resonant filter, some drive; wide |
+| **disciplined** | Follows the markings closely and steadily; tight timing; almost strict tempo |
+| **impressionist** | Loose about the markings; soft attacks, long tails, lots of space; wide; the freest rubato |
+| **impulsive** | No momentum, sudden outliers; sharp attacks, bright, some drive; loose timing |
+| **volatile** | Flips between two states; quick transitions; some drive; wide |
+| **sight_reading** | Doesn't anticipate: reacts to each marking as it arrives; loose timing |
+| **memorised** | Knows what's coming and prepares early; steady and smooth |
 
-Presets: `dramatic` (bold, punchy), `lyrical` (smooth, singing), `sparse` (quiet, minimal), `turbulent` (wild, unstable).
+### Random Walk: the drifter
 
-### Random Walk — the "drifter"
+It ignores the markings and wanders through its dimensions by its own rules (step size, drift, pull back home). It gives stochastic texture rather than interpretation; good for drones and sound art.
 
-Ignores the score's dynamics markings entirely. Just wanders through the 12 dimensions according to its step size and distribution. Pure stochastic texture.
+Presets:
+- **rw_free**: wanders freely.
+- **rw_drift_up** and **drift_down**: rise or sink steadily.
+- **rw_reverting** and **anchored**: wander, but are pulled back home (anchored more strongly).
+- **breathing**: swells slowly, about every 8 s.
+- **free_improv**: big steps.
+- **dream**: tiny, slow steps.
+- **erratic**: big, sudden jumps.
 
-**Use Random Walk when:** you want unpredictable, noisy, experimental textures that don't follow the score's written dynamics. Good for drone pieces, sound art, chaos.
+### Discrete: a fixed colour
 
-Presets: `rw_free`, `breathing`, `dream`, `erratic`, `free_improv`, `anchored`, etc. Try `rw_free` first, then experiment.
+It holds every dimension at values you set, for its whole range: "this passage is loud, dark, very wet, narrow". There is no movement and no randomness.
 
-### Discrete — the "fixed timbre block"
-
-Sets all 12 dimensions to specific values you choose, holds them constant for the whole region. No movement, no randomness.
-
-**Use Discrete when:** you want a fixed character for a section — e.g. "this whole passage is loud, dark, heavy reverb, narrow stereo". You set each dimension's value explicitly.
+Where different types overlap, **Kalman wins**. Random Walk and Discrete apply only where every active golem has that type.
 
 ---
 
 ## Presets and tuning
 
-Once you pick a golem type, you can apply a **style preset** (like `lyrical` or `turbulent`) by clicking the buttons that appear. The preset sets all the golem's internal parameters at once.
+Clicking a preset sets all of the golem's settings at once. Two sliders adjust it:
 
-Then two sliders let you fine-tune:
+- **Intensity**: how strongly the preset's character shows. 0 is neutral, 1 is the preset, 2 is exaggerated.
+- **Smoothness**: above 1 the performer commits and glides; below 1 it hesitates and jitters.
 
-- **Intensity**: how strongly the preset's character shows. 0 = neutral (almost no variation), 1 = preset, 2 = amplified (more extreme).
-- **Smoothness**: how much the performer "commits" vs "hesitates" between moments. Higher = smoother, more stable. Lower = jittery, more jumpy.
+The editor's lettered sections hold everything else. The ones musicians reach for most:
 
-For a first pass, leave both at 1.0. Play with them later.
-
----
-
-## The 12 dimensions (what the golem is deciding)
-
-At every moment, the golem decides 12 things simultaneously. Most you'll never need to touch directly — they're just there, being shaped by the preset. But knowing what they are helps you read the timeline.
-
-| Dimension | What it controls |
-|---|---|
-| **Gain dB** | Overall loudness |
-| **Brightness** | How bright/dark the sound is (treble content) |
-| **Timing ms** | Micro-timing: push-early or drag-late |
-| **Attack** | How sharp onsets are |
-| **Release** | How long tails linger |
-| **Reverb** | Sense of space / wetness |
-| **Filter cutoff** | Frequency at which highs get cut |
-| **Filter Q** | How resonant the filter is |
-| **Stereo width** | Narrow vs wide stereo image |
-| **Overdrive** | Saturation / distortion amount |
-| **Pitch cents** | Micro-pitch detuning |
-| **Dyn center** | Slow-moving baseline loudness level |
-
-Each one has a color on the timeline. You can hover over the timeline to see the exact values at any moment.
+- **B: Process noise**
+  - **Q×**: how much it wanders between markings.
+  - **Timing looseness**: how loosely notes are placed in time.
+  - **Rubato**: how much it bends the tempo.
+- **C: Observation**: how closely it follows the markings (obs weight).
+- **D: Lookahead**
+  - **λ**: how well it knows the piece (0.2 = sight-reading, 0.95 = memorised).
+  - **Transition lead**: how early it starts moving toward the next marking.
+  - **Transition shape**: the curve of that move (sigmoid, ramp, exponential, step).
+- **F: Distribution**: the kind of randomness. Gaussian is even; Laplace and Cauchy have jumps and outliers; bimodal flips between two states. **Tame outliers** caps the wildest values.
+- **H: Envelope and blending**: **weight**, **fade in / fade out** (to cross-fade between golems) and the fade curve.
+- **I: Starting values**: where each dimension starts. Blank means the preset's own resting value.
 
 ---
 
-## The timeline (what you're looking at in the bottom panel)
+## The 13 dimensions: what a golem decides
 
-After pressing **◈ Trace**, the bottom panel shows the 12 dimensions as colored lines over time. Think of it as the performer's plan, written out.
+At every moment a golem decides 13 things at once. The preset shapes all of them. Which ones you **hear** depends on the mix dims (below); the per-note ones are heard whenever the score has events.
 
-- **Bold colored lines**: the mean (what the performer is going to do, broadly).
-- **Small dots around the lines**: individual random decisions moment-by-moment.
-- **Dashed horizontal lines**: 0%, 25%, 50%, 75%, 100% of each dimension's range.
-- **Grey vertical lines**: time ticks in seconds.
-- **Yellow dashed vertical line (during play)**: where you are in the audio.
-
-**Tip**: hover your mouse anywhere on the timeline. A cyan line appears with a tooltip showing the exact values at that instant. Useful for understanding what's happening at a specific moment you're hearing.
-
----
-
-## Base modulation (how the golem shapes the base track itself)
-
-This is important. By default, the golem's shaping is applied to every sample *event* triggered by the score. But if your base track is a continuous drone or recording, you'll want the golem to also shape the base audio itself.
-
-In the left sidebar, under **base modulation**, there's a dropdown:
-
-- **off** — only events are shaped. The base track plays raw. Use if events carry most of the sound.
-- **gain** — the base's loudness breathes with the golem's gain decisions.
-- **gain+center** (default) — loudness breathes, plus a slow underlying dynamic drift. Recommended starting point.
-- **timbre** — no loudness change, but brightness and filter sweep the base. Gives timbral motion without volume changes.
-- **full** — everything: gain + center + brightness + filter. Maximum expressivity.
-- **custom…** — opens a gear popup where you pick each dimension individually.
-
-**If your base track is a drone, noise, or continuous recording, start with "gain+center" or "full".**
+| Dimension | What you hear | Heard when |
+|---|---|---|
+| **Gain** | Loudness, following the markings and hairpins | `gain` ticked |
+| **Brightness** | Treble up or down (a shelf around 4 kHz, ±8 dB) | `brightness` ticked |
+| **Timing** | Each note a little early or late (typically 9–20 ms; up to ±50) | always, on events |
+| **Attack** | Each note's onset: short and percussive (low) to a slow swell (high) | always, on events |
+| **Release** | Each note's end: held then cut (low) to a long decaying tail (high) | always, on events |
+| **Reverb** | Reverb added on top: 0 none, 1 as loud as the original | `reverb` ticked |
+| **Filter cutoff** | A low-pass filter sweeping with the performance | `filter` ticked |
+| **Filter Q** | Resonance of that filter: a peak at the cutoff | `filter` ticked |
+| **Stereo width** | 0 mono, 0.5 as recorded, 1 twice as wide | `width` ticked (stereo audio only) |
+| **Overdrive** | Saturation: 0 clean, 0.3 clearly driven, 1 fully saturated | `drive` ticked |
+| **Pitch** | Each note a few cents sharp or flat (typically ±3–5) | `pitch` ticked, on events |
+| **Dynamic centre** | A compressor's threshold: low values squeeze loud and soft together | `dynamics` ticked |
+| **Tempo** | Rubato: presses forward in crescendos, holds back in decrescendos, broadens into phrase ends | `tempo` ticked |
 
 ---
 
-## The seed — reproducibility
+## Mix dims: what the golem is allowed to shape
 
-The **seed** field in the top bar controls randomness.
+The **mix dims** checkboxes in the top bar decide which of the golem's decisions reach the sound. They act on the whole mix: the source audio and the events together. So even a score with no events, just a recording, gets shaped by the golems.
 
-- **Empty** → every Trace generates new randomness. Different every time.
-- **A number (e.g. 42)** → same trace, same audio, every time.
+- **gain** (on by default): the golem carries the dynamics. With golems active it replaces the score's dynamics curve.
+- **brightness, filter, reverb**: colour and space. How strongly these follow the dynamics (brighter, more open and wetter when louder) is set by **pull** in the top bar: 0 means they wander freely, 1 means they track the dynamics strictly.
+- **width**: stereo image. It is dimmed when the audio is mono.
+- **drive, pitch, dynamics**: grit, intonation, compression.
+- **tempo**: rubato. The playback stretches with it and the cursor follows. It works together with the score's own tempo changes.
 
-After clicking Trace, the seed field auto-fills with the seed that was used. That way, the audio you play next will **match** exactly what's on the timeline. If you want another variation, clear the seed field and Trace again.
-
-**To share a specific run with someone**: save the interpretation (see below) — the seed is stored.
-
----
-
-## Saving and loading your work
-
-The golems you've placed + their configuration + the seed = an **interpretation**. You can save it as a `.yaml` file.
-
-Top bar:
-
-- **name** field: what to call the interpretation.
-- **↓ Save**: writes an interpretation file to `interpretations/`.
-- **↑ Load**: load a previously-saved interpretation.
-
-You can iterate: save "version 1", change things, save "version 2", compare.
+Start with gain. Add one at a time and listen to what each brings.
 
 ---
 
-## Exporting audio
+## The trace: the performance, drawn
 
-Also top bar: **↓ WAV** button. Renders the current interpretation and saves it to `output/<name>.wav`. Uses the `name` field you set.
+The bottom panel shows the performance over time, one colour per dimension:
 
-The export popup has a **Loudness** setting: leave the level as performed (default), match the loaded audio, or reach a target (−14 / −16 / −23 LUFS). The **Safety brake** checkbox (ticked by default) keeps peaks below −1 dB. The same options are in the Concerto Download popup. See [Loudness and the safety brake](editor.md#loudness-and-the-safety-brake).
+- Only the dimensions you **hear** are drawn. In the legend (top right) the others are greyed out, so you can see what is available but off.
+- Each dimension uses its **full range** from bottom to top: gain from −40 to +6 dB, the filter from 20 Hz to 20 kHz (log scale), tempo ±30 %, and so on. A small wobble looks small.
+- **Bold lines** show the plan (the performer's intention). **Dots** show the actual choices, note by note and step by step.
+- **Hover** to see the exact values at any moment. During playback a **yellow cursor** shows where you are.
+- **◈ Trace** draws the trace without playing. Set **walks** above 1 to draw several performances at once (seeds n, n+1, …): the first in bold, the others faint, so you can see how much they vary.
+- **↓ PNG** saves the picture.
 
-If you want a bunch of different takes: press WAV, change the seed (or clear it), press Trace, press WAV again. You'll get multiple distinct renders.
-
----
-
-## The right panel — visualizations
-
-Right side of the Interpreter, there's a dropdown with different views of what the golem is doing. The list changes depending on which golem types you have active.
-
-- For Kalman: posterior gaussians, Kalman gain, innovation, salience, etc.
-- For Random Walk: step histogram, drift trajectory.
-- For Discrete: fixed state bars.
-- Always available: phase portrait, state trajectory, correlation web, distribution shape.
-
-You don't need these to make the piece work — they're for understanding what's going on under the hood. Ignore them for a first pass.
+After you press Play, the trace is the performance you heard.
 
 ---
 
-## PNG export of the timeline
+## The seed: the same performance again
 
-Bottom bar: **↓ PNG** button. Saves the current timeline as an image. Good for comparing the shapes of different runs side by side.
+- **Empty seed box**: every Play is a new performance.
+- **A number**: the same performance every time.
+
+After Play or Trace, the box fills with the seed that was used, so the next Play repeats that performance while you adjust other things. Clear the box for a new one.
 
 ---
 
-## Common situations and what to do
+## Saving, loading and exporting
 
-### "It sounds too wild / too extreme"
+- **↓ Save** (with a **name**) writes an *interpretation* to `interpretations/`. It holds the golems, the engine settings, the mix dims, pull, trace step, seed, and which score it belongs to.
+- **Load** an interpretation: its score is loaded too, and everything is restored as saved.
+- **↓ WAV** renders the interpretation to `output/<name>.wav`. The export popup sets the **loudness**: leave it as performed, match the source, or reach a target (−14 / −16 / −23 LUFS). It also has a **safety brake** that keeps peaks under −1 dB. Exporting the whole piece keeps the reverb and fade tails. See [Loudness and the safety brake](editor.md#loudness-and-the-safety-brake).
+- **Concerto** turns a performance into a score video; see [editor.md](editor.md).
 
-- Try a gentler preset: `lyrical` instead of `turbulent`, `anchored` instead of `erratic`.
-- Lower the **Intensity** slider (in the preset controls) to 0.5 or less.
-- In the golem editor, expand **Section F (Distribution)** and turn on **Tame outliers (σ cap)**. Set the cap to 2 or 2.5. This prevents the wildest random values.
+One score can have many interpretations: `calm.yaml`, `stormy.yaml`…
 
-### "It sounds too tame / too normal"
+---
 
-- Try a more extreme preset (`dramatic`, `turbulent`, `erratic`).
-- Raise the **Intensity** slider to 1.5 or 2.
-- Set base modulation to **full**.
+## Common situations
+
+### "It sounds too wild"
+- Choose a calmer preset: lyrical, disciplined or memorised; anchored or dream for random walks.
+- Lower **Intensity**, or turn on **Tame outliers** (section F) with a cap of 2–2.5.
+- Raise **obs weight** (section C) so it follows the markings more closely.
+
+### "It sounds too tame"
+- Choose dramatic, turbulent, impulsive or volatile; erratic or free_improv for random walks.
+- Raise **Intensity**, **Q×** or **Timing looseness**.
+- Tick more mix dims: filter, reverb, drive, tempo.
 
 ### "Every run sounds the same"
+- Clear the **seed** box. It fills after each run, so every Play after that repeats the performance until you clear it.
+- Check the play mode is **Interp**, not Score.
 
-- Check the **seed** field is EMPTY.
-- Check base modulation is NOT "off" (otherwise the base plays identically each time, only events vary).
+### "I can't hear the timing, attack or pitch"
+- These act on the score's **events**. A score that is only a recording has none; use the mix dims instead.
 
-### "Audio doesn't match what I see on the timeline"
+### "The rubato is too much / too little"
+- Change **Rubato** (section B): 0 is strict, 1 is the default amount, 2 is very free. Disciplined uses 0.3; impressionist uses 1.6.
+- Rubato needs shape to respond to: hairpins, changes of dynamics and **phrases**. Mark your phrases in the Composer, and the tempo broadens into each phrase end.
 
-- Make sure you clicked **◈ Trace** first, THEN **▶ Play**. Trace locks in the seed; Play reuses it. If you reloaded the page or changed something in between, Trace again.
+### "My golems fight each other"
+- Overlapping Kalman golems blend by **weight** and fades. Use **fade in / fade out** (section H) for smooth hand-overs.
+- A Kalman golem overlapping a random walk wins. Give each its own region.
 
-### "I have multiple golems and they're fighting"
-
-- Golems in overlapping ranges blend if they're the same type (Kalman + Kalman). Their `weight` field controls who wins.
-- If you mix types (Kalman + RW on the same region), the Kalman wins. If you want RW, make sure no Kalman golems cover that region.
-- Use **fade_in** and **fade_out** (in the golem editor, Section H) to smooth transitions between different-character golems.
-
-### "I want to hear the score's written dynamics"
-
-- Use a **Kalman** golem. It reads markings and responds to them.
-- **Random Walk** ignores markings by design.
-- **Discrete** just holds a fixed state.
-
-### "I want to freeze a specific take and keep tweaking"
-
-- After Trace, copy the seed number from the top bar.
-- Save the interpretation. The seed is preserved.
-- Later, load it back. Clicking Trace will give the same trajectory; clicking Play will give the same audio.
+### "I want the score exactly as written"
+- Use play mode **Score**. Golems are off and there's no random variation.
 
 ---
 
-## The workflow, in brief
+## The loop, in brief
 
-1. Open Interpreter.
-2. Load score and audio.
-3. Click **+ New Golem**, pick a type and preset.
-4. Drag it on the timeline to cover the range you want.
-5. Set base modulation (start with **gain+center**).
-6. Click **◈ Trace** → look at the timeline.
-7. Click **▶ Play** → listen.
-8. Don't like it? → clear seed, Trace again, Play again.
-9. Like it? → **↓ Save** (preserves seed), **↓ WAV** (exports audio).
-
-That's the whole loop. Repeat with different golem types, presets, and base-modulation settings until you find something you love.
+1. Load score (and audio).
+2. **+ New Golem**, pick a preset, drag it into place.
+3. Tick the mix dims you want.
+4. **▶ Play** in **Interp** mode; look at the trace.
+5. Adjust while it plays; **← Undo** if you go too far.
+6. Clear the seed for another performance, or keep it to refine this one.
+7. **↓ Save** the interpretation; **↓ WAV** to export.
 
 ---
 
-## A few musical intuitions to keep in mind
+## A few intuitions
 
-- **Kalman = interpreter**: listens to the score, responds musically.
-- **Random Walk = improviser**: has its own ideas, ignores the score's instructions.
-- **Discrete = sustained color**: holds a single character for a section.
-
-- **Base modulation** is how much the golem shapes the raw audio material. Off = only events. Full = everything breathes.
-
-- **Seed** is reproducibility. Empty = surprise me. Fixed number = give me that exact take.
-
-- **The timeline** is the performer's plan, not just a picture. What you see is what you'll hear.
-
----
-
-Have fun. Every run is a different performance.
+- **Kalman interprets, Random Walk improvises, Discrete holds a colour.**
+- **Mix dims are the performer's hands**: what it is allowed to touch.
+- **Pull** decides whether colour follows the dynamics or wanders on its own.
+- **The seed is the take**: empty means "surprise me", a number means "that one again".
+- **The trace is the performance**: what you see is what you heard.

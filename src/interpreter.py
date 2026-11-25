@@ -30,9 +30,11 @@ import numpy as np
 
 from src.kalman      import build_F, build_Q_aug, build_Sigma0, predict, update
 from src.drama       import compute_drama, compute_future_pull
-from src.envelope    import DYNAMIC_LEVELS
+from src.envelope    import (DYNAMIC_LEVELS, build_dynamics_envelope, marking_level,
+                             _is_crescendo, _is_decrescendo)
 from src.observation import build_window_obs, lookup_HR, encode_marking
-from src.character   import (character_at, make_AR_matrices,
+from src.character   import (character_at, make_AR_matrices, home_values, Q_BASE_DEFAULT,
+                              _golem_fade_weight,
                               rw_character_at, D, BUILTIN as _KALMAN_BUILTIN,
                               _RW_DEFAULT,
                               DIM_NAMES, DIM_RANGES as _CHAR_DIM_RANGES,
@@ -234,13 +236,16 @@ def _total_duration(events: list, score: dict) -> float:
     # Also consider the audio file duration so the trace extends to
     # the end of the piece even if there are no events after some point.
     # The Kalman filter free-runs (no observations) in the gap.
-    base_track = score.get('base_track', '')
-    if base_track and os.path.exists(base_track):
-        try:
-            import soundfile as sf
-            last = max(last, sf.info(base_track).duration)
-        except Exception:
-            pass
+    # The source audio: base_track, or each track at its start offset
+    import soundfile as sf
+    sources = [(score.get('base_track', ''), 0.0)]
+    sources += [(tk.get('path', ''), float(tk.get('from', 0) or 0)) for tk in score.get('tracks', []) or []]
+    for path, offset in sources:
+        if path and os.path.exists(path):
+            try:
+                last = max(last, offset + sf.info(path).duration)
+            except Exception:
+                pass
     return max(last, 1.0)
 
 
@@ -363,9 +368,10 @@ def _rw_step(x_prev: np.ndarray, char: dict, rng, t: float = 0.0,
     if omega_step_scale is not None and omega is not None:
         step = step * (float(omega_step_scale) ** float(omega))
 
-    # Per-dim mean reversion with optional non-zero target
+    # Per-dim mean reversion, toward the home values unless a target is given
+    # (reverting toward 0 pulled the filter cutoff to 20 Hz and width to mono)
     mr = _pad_dims(char.get('mr_dims'), [float(char.get('mean_reversion', 0.0))] * D)
-    mr_target = _pad_dims(char.get('mr_target'), [0.0] * D)
+    mr_target = _pad_dims(char.get('mr_target'), [_CHAR_DIM_DEFAULTS[k] for k in OUTPUT_KEYS])
 
     # Build dist kwargs
     dkw = _dist_kwargs_from_config(dist_cfg)
@@ -440,8 +446,8 @@ def _sample_posterior(rng, mu: np.ndarray, Sig: np.ndarray,
         # Per-dimension distribution
         noise = np.empty(D)
         for i in range(D):
-            d_i = dist_dims[i] if i < len(dist_dims) else dist
-            noise[i] = float(_sample_noise(rng, 1, d_i, std[i:i+1], **dkw))
+            d_i = (dist_dims[i] if i < len(dist_dims) else None) or dist   # blank = the golem's
+            noise[i] = float(np.ravel(_sample_noise(rng, 1, d_i, std[i:i+1], **dkw))[0])
         draw = mu + noise
     elif dist == 'gaussian':
         draw = rng.multivariate_normal(mu, Sig_s)
@@ -452,8 +458,9 @@ def _sample_posterior(rng, mu: np.ndarray, Sig: np.ndarray,
     # Outlier clamp: enforce |draw - mu| <= cap * std per dimension
     if clip_sigma_dims is not None or clip_sigma is not None:
         if clip_sigma_dims is not None:
+            # 0 (or less) = no cap for that dimension, as the editor says
             caps = np.array([float(clip_sigma_dims[i])
-                             if i < len(clip_sigma_dims) else 999.0
+                             if i < len(clip_sigma_dims) and float(clip_sigma_dims[i]) > 0 else 999.0
                              for i in range(D)], dtype=float)
         else:
             caps = np.full(D, float(clip_sigma))
@@ -462,19 +469,94 @@ def _sample_posterior(rng, mu: np.ndarray, Sig: np.ndarray,
     return draw
 
 
+# ── Older (shorter) per-dimension vectors ─────────────────────────────────────
+# Golems saved when the state had 12 dims (before tempo) carry 12-long vectors;
+# pad them with each setting's neutral value so they keep working.
+def _pad_golem_vectors(g: dict) -> dict:
+    if not isinstance(g, dict):
+        return g
+    is_rw = g.get('type') == 'random_walk'
+    if is_rw:
+        from src.character import _RW_DEFAULT, RW_BUILTIN as _RWB
+        rw_char = _RWB.get(g.get('character', ''), _RW_DEFAULT)
+    k_char = _KALMAN_BUILTIN.get(g.get('character', ''), {})
+    neutral = {
+        'A1_dims':         float(g.get('A1', k_char.get('A1', 0.7))),
+        'A2_dims':         float(g.get('A2', k_char.get('A2', 0.2))),
+        'Q_base':          Q_BASE_DEFAULT,
+        'obs_weight_dims': 1.0, 'fp_mask': 0.0, 'fp_scale': 1.0,
+        'inflate_dims':    1.0, 'clip_sigma_dims': 0.0,
+        'mr_target':       [_CHAR_DIM_DEFAULTS[k] for k in OUTPUT_KEYS],
+        'drift':           0.0, 'mr_dims': 0.0,
+    }
+    if is_rw:
+        neutral['step_size'] = rw_char.get('step_size') or _RW_DEFAULT['step_size']
+    out = None
+    for k, fill in neutral.items():
+        v = g.get(k)
+        if isinstance(v, (list, tuple)) and 0 < len(v) < D and not isinstance(v[0], (list, tuple)):
+            fills = fill if isinstance(fill, (list, tuple)) else [fill] * D
+            out = out or dict(g)
+            out[k] = list(v) + list(fills[len(v):D])
+    dd = (g.get('dist_config') or {}).get('dist_dims')
+    if isinstance(dd, list) and len(dd) < D:
+        out = out or dict(g)
+        out['dist_config'] = dict(g['dist_config'], dist_dims=dd + [''] * (D - len(dd)))
+    return out or g
+
+
+# ── Tempo (rubato) targets ────────────────────────────────────────────────────
+_TEMPO_PRESS = 6.0       # % faster at full press (dynamics rising ≥ 4 dB/s)
+_TEMPO_BROADEN = 15.0    # % slower at the very end of a phrase
+_TEMPO_BROADEN_S = 2.0   # the broadening starts this long before a phrase end
+_TEMPO_PULL = 0.5        # how strongly tempo follows its target per step
+_TEMPO_LEAD = 0.3        # s: the target is read this far ahead (the state lags)
+
+
+def _tempo_shape_fn(score: dict, total_dur: float, events: list = ()):
+    """t → rubato target in % for rubato 1: presses forward while the
+    dynamics rise (crescendos, approaching a louder marking), holds back while
+    they fall, and broadens into each phrase end and the end of the piece."""
+    dyn = [d for d in score.get('dynamics', []) if not d.get('muted')]
+    n = int(total_dur * 100) + 2
+    press = np.zeros(n)
+    if dyn:
+        lvl = build_dynamics_envelope(n, 100, dyn)
+        db = 20.0 * np.log10(np.maximum(lvl, 1e-3))
+        k = 150                                           # 1.5 s smoothing
+        sm = np.convolve(np.pad(db, (k // 2, k - k // 2 - 1), mode='edge'), np.ones(k) / k, mode='valid')
+        slope = np.gradient(sm) * 100.0                   # dB per second
+        press = np.clip(slope / 4.0, -1.0, 1.0)
+    # phrase ends, and the last note of the piece
+    last = max((float(e['t']) for e in events), default=float(total_dur))
+    ends = sorted({float(p['to']) for p in score.get('phrases', []) if p.get('to') is not None
+                   and not p.get('muted')} | {last})
+
+    def at(t):
+        t = t + _TEMPO_LEAD
+        p = float(press[min(n - 1, max(0, int(round(t * 100))))])
+        b = 0.0
+        for e in ends:
+            if e - _TEMPO_BROADEN_S <= t <= e:
+                b = max(b, ((t - (e - _TEMPO_BROADEN_S)) / _TEMPO_BROADEN_S) ** 2)
+        return _TEMPO_PRESS * p - _TEMPO_BROADEN * b
+    return at
+
+
 # ── State → event ─────────────────────────────────────────────────────────────
 
 def _apply_state(ev: dict, x: np.ndarray) -> dict:
     """Map golem state onto per-event fields.
 
-    Only timing_offset_ms, attack_shape, and release_shape are per-event.
-    All other dims are applied to the combined mix in a single pass
-    by _apply_state_to_mix in mixer.py.
+    timing_offset_ms, attack_shape, release_shape and pitch_dev_cents are
+    per-event (pitch only heard with its mix dim on). All other dims are
+    applied to the combined mix in a single pass by _apply_state_to_mix.
     """
     ev = dict(ev)
     ev['timing_offset_ms'] = float(x[2])
     ev['attack_shape']     = float(np.clip(x[3], 0.0, 1.0))
     ev['release_shape']    = float(np.clip(x[4], 0.0, 1.0))
+    ev['pitch_dev_cents']  = float(np.clip(x[10], -50.0, 50.0))
     return ev
 
 
@@ -501,7 +583,8 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
     # ── Config ────────────────────────────────────────────────────────────────
     v2cfg = config.get('v2', {})
 
-    Q_base_diag  = v2cfg.get('Q_base', [4.0, 0.01, 25.0, 0.01, 0.01])
+    Q_base_diag  = list(v2cfg.get('Q_base', Q_BASE_DEFAULT))
+    Q_base_diag += Q_BASE_DEFAULT[len(Q_base_diag):D]          # older 12-value configs
     lambda_      = float(v2cfg.get('lambda', 0.7))
     eta          = float(v2cfg.get('eta', 0.3))
     xi           = float(v2cfg.get('xi', 0.05))
@@ -549,10 +632,12 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
 
     # ── Score data ────────────────────────────────────────────────────────────
     events    = sorted(copy.deepcopy(score.get('events', [])), key=lambda e: e['t'])
-    golems    = score.get('golems', [])
+    golems    = [_pad_golem_vectors(g) for g in score.get('golems', [])]
     total_dur = _total_duration(events, score)
 
-    if not events:
+    # Without events there is nothing to enrich — but golems still shape the
+    # source audio through the mix dims, so they still need a trace
+    if not events and not golems:
         return (events, []) if return_trace else events
 
     # ── Dynamic markings ──────────────────────────────────────────────────────
@@ -564,7 +649,43 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
         marking_pairs = [(0.0, 'mp')]
 
     markings_list = [p[1] for p in marking_pairs]
+    # The level each marking sets: subito_p / subito_f / fp land at p / f / p;
+    # sfz (an accent) keeps the level before it
+    _mark_lv = []
+    for _m in markings_list:
+        _lv = marking_level(_m)
+        _mark_lv.append(_lv if _lv is not None else (_mark_lv[-1] if _mark_lv else 0.65))
     boundaries    = _phrase_boundary_indices(score, marking_pairs)
+
+    # ── Hairpins (crescendo / decrescendo ranges) ─────────────────────────────
+    # The same level curve as the Composer's dynamics envelope (ramp to the
+    # next point marking, or ×2.5 / ×0.4 without one; hold until the next
+    # point marking). Inside a hairpin and its hold, the golem's gain and
+    # timbre targets follow this curve.
+    _hp_spans, _hp_env = [], None
+    _dyn_live = [d for d in score.get('dynamics', []) if not d.get('muted')]
+    _hairpins = [d for d in _dyn_live if d.get('from') is not None and d.get('to') is not None
+                 and (_is_crescendo(str(d.get('mark') or d.get('marking') or ''))
+                      or _is_decrescendo(str(d.get('mark') or d.get('marking') or '')))]
+    if _hairpins:
+        _hp_env = build_dynamics_envelope(int(total_dur * 100) + 2, 100, _dyn_live)
+        _pt_times = sorted(float(d['t']) for d in _dyn_live if 't' in d)
+        for d in _hairpins:
+            t0, t1 = float(d['from']), float(d['to'])
+            nxt = [pt for pt in _pt_times if pt > t1 + 1e-6]
+            _hp_spans.append((t0, nxt[0] if nxt else total_dur + 1.0))
+    _lv_sorted = sorted(DYNAMIC_LEVELS.items(), key=lambda kv: kv[1])
+    _LV = [v for _, v in _lv_sorted]
+    _RK = [encode_marking(k) for k, _ in _lv_sorted]
+
+    _tempo_shape = _tempo_shape_fn(score, total_dur, events)
+
+    def _hairpin_level(t):
+        """(level, encoded dynamic) inside a hairpin or its hold, else None."""
+        if _hp_env is None or not any(a <= t < b for a, b in _hp_spans):
+            return None
+        lvl = float(_hp_env[min(len(_hp_env) - 1, int(round(t * 100)))])
+        return lvl, float(np.interp(lvl, _LV, _RK))
 
     # ── Pre-rendering pass ────────────────────────────────────────────────────
     drama_vals_raw = compute_drama(markings_list, boundaries, drama_weights)
@@ -577,23 +698,39 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
     # Temporal ω smoothing
     drama_vals   = _smooth_drama(drama_vals_raw, omega_smooth_alpha)
     future_pulls = compute_future_pull(markings_list, drama_vals, lambda_, K=K_look)
+    _fp_by_lam   = {round(lambda_, 4): future_pulls}
+
+    def _future_pulls_for(lam_val):
+        """Future pull with a golem's own λ (familiarity), cached per value."""
+        key = round(float(lam_val), 4)
+        if key not in _fp_by_lam:
+            _fp_by_lam[key] = compute_future_pull(markings_list, drama_vals, key, K=K_look)
+        return _fp_by_lam[key]
 
     # ── Initialise filter ─────────────────────────────────────────────────────
-    # Apply per-character cold-start bias from the first (dominant) golem,
-    # then overlay any per-golem cold_start_bias override from the golem dict.
-    cold_biased = dict(cold_outputs)
-    if golems:
-        from src.character import BUILTIN as _CHAR_BUILTIN
-        _first_char = golems[0].get('character', '')
-        _bias = _CHAR_BUILTIN.get(_first_char, {}).get('cold_start_bias', {})
-        cold_biased.update(_bias)
-        # Per-golem override wins
-        _golem_bias = golems[0].get('cold_start_bias')
-        if isinstance(_golem_bias, dict):
-            cold_biased.update(_golem_bias)
+    # Start from the home values of the golem(s) active at the start of the
+    # piece (blended by their faded weights); gain starts at the first
+    # marking's level plus the character's offset.
+    def _home_at(t):
+        """Home values at time t: the active Kalman golems' homes, blended by
+        their faded weights (gain_db as an offset from the marking)."""
+        act = [g for g in golems if g.get('type', 'kalman') not in ('random_walk', 'discrete')
+               and g.get('from', 0) <= t < g.get('to', total_dur)]
+        ws = [_golem_fade_weight(g, t, total_dur) for g in act]
+        if not act or sum(ws) <= 0:
+            h = dict(cold_outputs) if not golems else {}
+            base = home_values('')
+            base.update({k: v for k, v in h.items() if k != 'gain_db'})
+            return np.array([base[k] for k in OUTPUT_KEYS], dtype=float)
+        tot = sum(ws)
+        vec = np.zeros(D)
+        for g, w in zip(act, ws):
+            hv = home_values(g.get('character', ''), all_user_chars, g)
+            vec += (w / tot) * np.array([hv[k] for k in OUTPUT_KEYS], dtype=float)
+        return vec
 
-    mu0     = np.array([cold_biased.get(k, _CHAR_DIM_DEFAULTS.get(k, 0.0))
-                        for k in OUTPUT_KEYS], dtype=float)
+    mu0     = _home_at(0.0)
+    mu0[0]  = 20.0 * np.log10(max(_mark_lv[0], 0.01)) + mu0[0]
     X_mu    = np.concatenate([mu0, mu0])
     X_Sigma = build_Sigma0(np.array(Q_base_diag, dtype=float))
 
@@ -639,13 +776,20 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
         if golem_type == 'random_walk':
             # ── Random Walk branch ────────────────────────────────────────────
             rw_char   = rw_character_at(t, golems, total_dur, all_user_chars)
+            # The global limits and clip method (Global Settings), unless the
+            # golem sets its own
+            if physical_limits is not None:
+                rw_char.setdefault('physical_limits', physical_limits)
+            rw_char.setdefault('clip_method', clip_method)
             # Golem-level overrides
             _rw_active = [g for g in golems if g.get('type') == 'random_walk'
                           and g.get('from', 0) <= t < g.get('to', total_dur)]
             if _rw_active:
-                _dom = max(_rw_active, key=lambda g: float(g.get('weight', 1.0)))
-                for _k in ('distribution', 'walk_mode', 'student_df', 'breath_period',
-                           'breath_amp', 'step_size', 'drift', 'mr_dims', 'boundary_mode',
+                _dom = max(_rw_active, key=lambda g: _golem_fade_weight(g, t, total_dur))
+                # Blended settings (step size, drift, mean reversion, …) come from
+                # rw_character_at; only settings that don't blend come from the
+                # dominant golem
+                for _k in ('walk_mode', 'student_df', 'breath_period', 'breath_amp',
                            'mr_target', 'omega_step_scale', 'correlation',
                            'physical_limits', 'clip_method', 'dist_config'):
                     if _k in _dom:
@@ -681,11 +825,13 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             _disc_state = np.array([_CHAR_DIM_DEFAULTS.get(k, 0.0)
                                     for k in OUTPUT_KEYS], dtype=float)
             if _disc_active:
-                _dom = max(_disc_active, key=lambda g: float(g.get('weight', 1.0)))
+                _dom = max(_disc_active, key=lambda g: _golem_fade_weight(g, t, total_dur))
                 _st = _dom.get('state', {})
                 for i, k in enumerate(OUTPUT_KEYS):
                     if k in _st:
                         _disc_state[i] = float(_st[k])
+            _disc_state = _apply_boundary(_disc_state, 'clip', custom_limits=physical_limits,
+                                          clip_method=clip_method)
             # Update the filter state so transitions to/from discrete are smooth
             X_mu[:D] = _disc_state
             x_clipped = _disc_state
@@ -729,16 +875,12 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             _trans_shape  = 'sigmoid'
 
             if _k_active:
-                _dom = max(_k_active, key=lambda g: float(g.get('weight', 1.0)))
-                # Merge inline Kalman params from dominant golem
-                for _ui_k, _char_k in (
-                    ('A1', 'A1'), ('A2', 'A2'), ('Q_scale', 'Q_scale'), ('R_scale', 'R_scale'),
-                    ('lam', 'lam'), ('obs_weight', 'obs_weight'), ('drama_curve', 'drama_curve'),
-                    ('sample_dist', 'sample_dist'), ('rw_scatter', 'rw_scatter'),
-                    ('distribution', 'sample_dist'), ('student_df', 'student_df'),
-                ):
-                    if _ui_k in _dom:
-                        char[_char_k] = _dom[_ui_k]
+                _dom = max(_k_active, key=lambda g: _golem_fade_weight(g, t, total_dur))
+                # The golems' own settings are already in `char`, blended by
+                # their faded weights (character_at); only settings that don't
+                # blend come from the dominant golem.
+                if 'rw_scatter' in _dom:
+                    char['rw_scatter'] = _dom['rw_scatter']
 
                 # New per-golem params
                 if 'innov_decay' in _dom:
@@ -763,8 +905,10 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                     _clip_sigma = float(_dom['clip_sigma'])
                 if 'clip_sigma_dims' in _dom and _dom['clip_sigma_dims'] is not None:
                     _clip_sigma_dims = [float(x) for x in _dom['clip_sigma_dims']]
-                if 'dist_config' in _dom and _dom['dist_config']:
-                    _dist_cfg = _dom['dist_config'] if isinstance(_dom['dist_config'], dict) else {}
+                # The character's own distribution settings, then the golem's
+                _dist_cfg = dict(char.get('dist_config') or {})
+                if isinstance(_dom.get('dist_config'), dict):
+                    _dist_cfg.update(_dom['dist_config'])
 
                 # dist_config may override sample_dist
                 if _dist_cfg.get('dist'):
@@ -829,40 +973,29 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                 vol = 0.0
 
             Q_t = Q_base_eff * Q_scl * max(drama_curved, 0.15) * (1.0 + eta * vol)
+            _ts = float(char.get('timing_scale', 1.0))   # how loose this character's timing is
+            if _ts != 1.0:
+                Q_t = Q_t.copy()
+                Q_t[2, 2] *= _ts
             Q_t = np.maximum(Q_t, np.diag(np.array(Q_base_diag, dtype=float)) * 1e-4)
             Q_aug_t = build_Q_aug(Q_t)
 
             # Future pull vector — honours fp_mask and fp_scale if set
-            fp_scalar = future_pulls[m_idx]
+            fp_scalar = _future_pulls_for(lam)[m_idx]      # the golem's own λ
             fp_vec    = np.zeros(D)
-            if _fp_mask is not None and _fp_scale_vec is not None:
+            if _fp_mask is not None or _fp_scale_vec is not None:
                 for i in range(D):
-                    mask_i  = _fp_mask[i] if i < len(_fp_mask) else 0.0
-                    scale_i = _fp_scale_vec[i] if i < len(_fp_scale_vec) else 1.0
+                    mask_i  = (_fp_mask[i] if i < len(_fp_mask) else 0.0) if _fp_mask is not None else 1.0
+                    default_scale = 7.0 if i == 0 else 1.0
+                    scale_i = ((_fp_scale_vec[i] if i < len(_fp_scale_vec) else 1.0)
+                               if _fp_scale_vec is not None else default_scale)
                     fp_vec[i] = fp_scalar * mask_i * scale_i
-            elif _fp_scale_vec is not None:
-                for i in range(D):
-                    scale_i = _fp_scale_vec[i] if i < len(_fp_scale_vec) else 1.0
-                    fp_vec[i] = fp_scalar * scale_i
             else:
                 # Default: gain_db only
                 fp_vec[0] = fp_scalar * 7.0
 
             X_mu_bar, X_Sigma_bar = predict(X_mu, X_Sigma, F, Q_aug_t,
                                             future_pull=fp_vec, xi=_xi_eff)
-
-            # Character equilibrium: keep the AR(2) process anchored to the
-            # golem character's target values rather than decaying to 0.
-            # For stable AR(2): x_steady = (1-A1-A2)*target + A1*x[t-1] + A2*x[t-2]
-            # The equilibrium correction is (1-A1-A2) * target added per step.
-            if _k_active:
-                _dom_char_name = max(_k_active,
-                                     key=lambda g: float(g.get('weight', 1.0))).get('character', '')
-                _char_eq_dict  = _KALMAN_BUILTIN.get(_dom_char_name, {}).get('cold_start_bias', {})
-                if _char_eq_dict:
-                    _mu_eq  = np.array([_char_eq_dict.get(k, 0.0) for k in OUTPUT_KEYS], dtype=float)
-                    _remain = np.maximum(1.0 - np.diag(A1_mat) - np.diag(A2_mat), 0.0)
-                    X_mu_bar[:D] += _remain * _mu_eq
 
             # Direct target pull from dynamics marking level.
             # The marking defines WHERE each dim should be; the Kalman controls
@@ -875,7 +1008,7 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             # golem's transition_blend. Subito markings bypass blending entirely.
 
             _cur_name = marking_pairs[m_idx][1] if marking_pairs else 'mf'
-            _cur_lin  = DYNAMIC_LEVELS.get(_cur_name, 0.65)
+            _cur_lin  = _mark_lv[m_idx] if marking_pairs else 0.65
             _cur_dyn  = encode_marking(_cur_name)
 
             # Look ahead to next marking
@@ -901,13 +1034,27 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                         _blend = _transition_shape_fn(_frac, _trans_shape)
 
             # Blended targets
-            _nxt_lin = DYNAMIC_LEVELS.get(_nxt_name, 0.65)
+            _nxt_lin = _mark_lv[m_idx + 1] if m_idx + 1 < len(_mark_lv) else _cur_lin
             _nxt_dyn = encode_marking(_nxt_name)
             _eff_lin = _cur_lin + _blend * (_nxt_lin - _cur_lin)
             _eff_dyn = _cur_dyn + _blend * (_nxt_dyn - _cur_dyn)
+            _hp = _hairpin_level(t)
+            if _hp is not None:                  # inside a hairpin: follow its ramp
+                _eff_lin, _eff_dyn = _hp
+
+            _target_db = float(20.0 * np.log10(max(_eff_lin, 0.01)))
+
+            # Home values: the AR(2) process relaxes toward them instead of
+            # toward zero — for every character, and with no golem at all.
+            # For a stable AR(2), adding (1 − A1 − A2)·home per step makes
+            # `home` its resting point. Gain rests at the marking's level plus
+            # the character's offset, so quiet passages aren't pulled up.
+            _home_vec    = _home_at(t)
+            _home_vec[0] = _target_db + _home_vec[0]
+            _remain = np.maximum(1.0 - np.diag(A1_mat) - np.diag(A2_mat), 0.0)
+            X_mu_bar[:D] += _remain * _home_vec
 
             # dim 0: gain_db
-            _target_db = float(20.0 * np.log10(max(_eff_lin, 0.01)))
             _pull_strength = float(obs_w) * 0.45
             X_mu_bar[0] += (_target_db - X_mu_bar[0]) * _pull_strength
 
@@ -919,6 +1066,11 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
             X_mu_bar[5] += (_reverb_target - X_mu_bar[5]) * _timbral_pull
             _cutoff_target = (0.3 + _eff_dyn * 0.6) * 20000.0   # 6 kHz (ppp) → 18 kHz
             X_mu_bar[6] += (_cutoff_target - X_mu_bar[6]) * _timbral_pull
+
+            # dim 12: tempo — rubato toward the phrase / dynamics shape,
+            # scaled by the character's rubato
+            _tempo_target = float(char.get('rubato', 1.0)) * _tempo_shape(t)
+            X_mu_bar[12] += (_tempo_target - X_mu_bar[12]) * _TEMPO_PULL   # phrasing, not marking trust
 
             y    = build_window_obs(markings_list, m_idx, N)
             H, R = lookup_HR(markings_list, m_idx, N, windows_table, augmented_d=2*D)
@@ -948,17 +1100,15 @@ def interpret(score: dict, config: dict, return_trace: bool = False) -> list:
                 Sig_cur += (1e-8 - eigvals.min()) * np.eye(D)
 
             # Build dist kwargs from dist_config
-            dkw = _dist_kwargs_from_config(_dist_cfg)
-            dkw['mixture_p']    = float(char.get('mixture_p', dkw['mixture_p']))
-            dkw['mixture_scale'] = float(char.get('mixture_scale', dkw['mixture_scale']))
-            dkw['student_df']   = float(char.get('student_df', dkw['student_df']))
+            dkw = _dist_kwargs_from_config({**{k: char[k] for k in ('mixture_p', 'mixture_scale', 'student_df')
+                                               if k in char}, **_dist_cfg})
 
             # Per-dimension distribution override
             _dist_dims = _dist_cfg.get('dist_dims')
 
             x_sample  = _sample_posterior(rng, mu_cur, Sig_cur,
-                                          sample_dist, mixture_p, mixture_scale,
-                                          student_df=float(char.get('student_df', 3.0)),
+                                          sample_dist, dkw['mixture_p'], dkw['mixture_scale'],
+                                          student_df=dkw['student_df'],
                                           inflate=_inflate, inflate_dims=_inflate_dims,
                                           dist_kwargs=dkw, dist_dims=_dist_dims,
                                           clip_sigma=_clip_sigma,

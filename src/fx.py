@@ -509,7 +509,7 @@ def _filter(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
     resonance = np.clip(_resolve(fx.get('resonance', 0), 0), 0, 1)
     ftype     = fx.get('filter_type', fx.get('type_', 'lp')).lower()
 
-    # Map resonance 0–1 to Q 0.5–12
+    # Bandpass width: resonance 0–1 → Q 0.5–12 (low/high pass: src/resfilter.py)
     q = 0.5 + resonance * 11.5
 
     btype_map = {'lp': 'low', 'hp': 'high', 'bp': 'band',
@@ -524,7 +524,9 @@ def _filter(clip: np.ndarray, sr: int, fx: dict) -> np.ndarray:
             high = min(sr / 2 - 1, cutoff + bw)
             sos = butter(2, [low, high], btype='band', fs=sr, output='sos')
         else:
-            sos = butter(2, cutoff, btype=btype, fs=sr, output='sos')
+            # resonant low/high pass (resonance used to do nothing here)
+            from src.resfilter import resonant_filter
+            return resonant_filter(as_frames(clip), sr, float(cutoff), float(resonance), btype)
         return sosfilt(sos, as_frames(clip), axis=0).astype(np.float32)
     except Exception:
         return clip

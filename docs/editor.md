@@ -474,7 +474,7 @@ Right-click on any annotation on either canvas — a sample boundary, event mark
 | **← Undo** | — | Removes the last action |
 | **→ Redo** | — | Re-applies the last undone action |
 
-Undo/redo history is stored in memory and lost when you refresh the page or load a new file. Note: Golem edits in the Interpreter workspace do not participate in undo/redo — delete and re-add as needed.
+Undo/redo history is stored in memory and lost when you refresh the page or load a new file. It covers the Interpreter too: golems, mix dims, pull, Global Settings and trace step. While Mix, Score or Interp is playing, every edit (and every undo/redo) re-renders it half a second after the last change.
 
 ---
 
@@ -551,97 +551,44 @@ It updates automatically as you draw.
 
 ## Interpreter workspace
 
-The Interpreter is where you configure **how** the score is performed. It is separate from the Composer so that the same composition can be performed with different expressive characters without changing a note.
+The Interpreter is where you set **how** the score is performed. It is separate from the Composer, so the same composition can be performed by different characters without changing a note. The full walk-through is the [Interpreter guide](interpreter_guide.md); the engine and its settings are in [v2.md](v2.md).
 
 ### Layout
 
-```
-┌────────────────────────┬──────────────────────────────────────────────┐
-│  score                 │                                              │
-│  [path/to/score.yaml]  │  golem timeline canvas                       │
-│  [ Load ]              │  ┌──────────────────────────────────────────┐│
-│  status: loaded        │  │ ████ lyrical ████  ████ dramatic ████    ││
-├────────────────────────┤  └──────────────────────────────────────────┘│
-│  v2 parameters         │                                              │
-│  engine: [V2 Golems▾]  │  Golem list                                  │
-│  λ:  [0.7]             │  0.0s – 30.0s  [lyrical  ▾]  [✕]           │
-│  seed: [rand]          │  30.0s – 60.0s [dramatic ▾]  [✕]           │
-│  ▶ advanced            │  from:[   ] – to:[   ] [lyrical▾]  [+ Add]  │
-├────────────────────────┤  dramatic (volatile) · lyrical (smooth) …   │
-│  save / load           ├──────────────────────────────────────────────┤
-│  name: [untitled_interp│  audio: [path/to/audio.wav]                  │
-│  [↓ Save] [↑ Load]     │  [▶ Preview] [▶ Source]                     │
-│  [path/to/interp.yaml] │                                              │
-└────────────────────────┴──────────────────────────────────────────────┘
-```
+- **Top bar**:
+  - the score, its images and the audio;
+  - **seed**, **step** (trace step), **name**, **↓ Save**, load interpretation, **↓ WAV**;
+  - the **mix dims** checkboxes (gain, brightness, filter, reverb, width, drive, pitch, dynamics, tempo) and **pull**.
+- **Left sidebar**: **+ New Golem**, the golem list, the **golem editor** (type, presets, Intensity / Smoothness, sections A–I) and **Global Settings**.
+- **Middle**: the golem strip (drag to move, drag edges to resize) above the waveform and score overview.
+- **Bottom**: the trace of the performance, with **walks**, **◈ Trace** and **↓ PNG**.
+- **Right**: the visualisation panel.
 
-### Typical workflow
+### Playing
 
-1. In the Composer, draw your score and click **↓ Export YAML**
-2. Switch to the **Interpreter** tab
-3. Enter the path to your exported `.yaml` score in the **score** field and click **Load**
-4. Set the **audio** path to your source audio file
-5. Add Golem ranges on the **canvas timeline** (drag to create) or using the add row below it
-6. Adjust **V2 parameters** in the sidebar as needed
-7. Click **▶ Preview** to hear the interpretation
-8. Click **↓ Save** to save the interpretation as `interpretations/{name}.yaml`
+The play-mode menu has three modes:
+- **Raw**: the source audio.
+- **Score**: the score as written, with no golems or random variation.
+- **Interp**: the golems' performance.
 
-You can save multiple named interpretations of the same score and load them back at any time.
+After Play, the trace shows that performance and the seed box holds its seed; clear the box for a new performance. Edits made while playing re-render shortly after, and undo/redo covers golems and Interpreter settings.
 
-### Golems — piece characters
+### Golems
 
-A **Golem** assigns a musical personality to a time range of the piece. Each Golem has:
-- **from / to** — start and end time in seconds (matching the score's timeline)
-- **character** — one of four built-in personalities:
-
-| Character | Behaviour |
-|-----------|-----------|
-| **dramatic** | Volatile — high contrast, sharp dynamics, wide expression |
-| **lyrical** | Smooth — gradual changes, flowing phrasing |
-| **sparse** | Literal — stays close to the written score, minimal added expression |
-| **turbulent** | Unpredictable — irregular phrasing, sudden shifts |
-
-**Adding Golems:**
-- **Drag** on the timeline canvas to create a new Golem range, then set its character from the dropdown
-- Or use the add row below the list: enter from/to times, choose a character, click **+ Add**
-
-**Editing Golems:**
-- Change the from/to values or character directly in the list rows — updates the canvas immediately
-- Click **✕** to delete a Golem
-
-Overlapping Golems blend linearly by time weight — the canvas shows them as coloured blocks.
-
-### V2 parameters
-
-| Parameter | What it does |
-|-----------|-------------|
-| **engine** | `V2 Golems` uses the Kalman expressive engine. `V1` renders without interpretation (same as Composer ▶ Mix). |
-| **λ (lambda)** | How well the performer "knows" the piece. `0.9` = knows it well (smooth, confident). `0.3` = sight-reading (more variable, reactive). Default: `0.7`. |
-| **seed** | Integer seed for reproducible renders. Leave blank for a different result each time. |
-
-**Advanced parameters** (click "▶ advanced" to expand):
-
-| Parameter | What it does |
-|-----------|-------------|
-| **A1, A2** | AR(2) momentum coefficients — how strongly the previous two states influence the current one. `A1 + A2` must be < 1 for stability. |
-| **η (eta)** | Volatility mixing weight — how much dramatic events amplify process noise. |
-| **ξ (xi)** | Future pull scaling — how much upcoming dynamic marks shape current expression. |
-| **window** | How many past dynamic marks the engine considers when updating its state. |
+A golem gives a time range a performer: **Kalman** (follows the markings; 10 presets), **Random Walk** (wanders on its own; 9 presets) or **Discrete** (holds fixed values). Overlapping Kalman golems blend by weight and fades. See the [Interpreter guide](interpreter_guide.md#the-three-golem-types).
 
 ### Save / Load interpretation
 
-An interpretation file stores the Golem ranges, V2 parameters, and the associated score path together. It is saved separately from the score YAML, in `interpretations/`.
+An interpretation (`interpretations/<name>.yaml`) stores:
+- the golems;
+- the engine settings, mix dims, pull, trace step and seed;
+- the score it belongs to.
 
-- Click **↓ Save** to write `interpretations/{name}.yaml`
-- Enter a path in the load field and click **↑ Load** to restore a saved interpretation
+Loading one loads its score and restores everything. One score can have many interpretations.
 
-This means one score can have many named interpretations: `lyrical_interp.yaml`, `dramatic_interp.yaml`, etc.
+### Scores with golems
 
-### Backward compatibility
-
-Scores exported by older versions of the editor may contain a `golems:` key inside the YAML. When you **Import YAML** in the Composer workspace, any embedded Golems are automatically transferred to the Interpreter — the Composer itself no longer owns them.
-
-See [v2.md](v2.md) for the full V2 Kalman engine documentation.
+A score saved from the Composer keeps any `golems:` and `mix_dims:` it carries. When you **Import YAML** in the Composer, embedded golems are transferred to the Interpreter.
 
 ---
 

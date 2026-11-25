@@ -1391,7 +1391,10 @@ function _snapshotTracks() {
 function _snapshotState() {
   return JSON.stringify({ samples: state.samples, dynamics: state.dynamics, events: state.events, tempo: state.tempo, baseFx: state.baseFx, fxRanges: state.fxRanges, fxGlobal: state.fxGlobal, silenceStart: state.silenceStart, silenceEnd: state.silenceEnd, phrases: state.phrases, noteRel: state.noteRel, articulations: state.articulations, duckBase: state.duckBase, duckKey: state.duckKey, autoMix: state.autoMix,
     tracks: _snapshotTracks(),
-    golems: (typeof interpState !== 'undefined') ? interpState.golems : undefined });
+    golems: (typeof interpState !== 'undefined') ? interpState.golems : undefined,
+    // the Interpreter's mix dims and engine settings, so they are undoable too
+    interp: (typeof interpState !== 'undefined')
+      ? { mix_dims: interpState.mix_dims, v2config: interpState.v2config } : undefined });
 }
 
 function _applySnapshot(snap) {
@@ -1406,6 +1409,18 @@ function _applySnapshot(snap) {
   if (s.golems && typeof interpState !== 'undefined') {
     interpState.golems = s.golems;
     if (typeof _selectedGolemIdx !== 'undefined') _selectedGolemIdx = null;
+  }
+  if (s.interp && typeof interpState !== 'undefined') {
+    interpState.mix_dims = s.interp.mix_dims || ['gain_db'];
+    interpState.v2config = s.interp.v2config || interpState.v2config;
+    document.querySelectorAll('.mix-dim-cb').forEach(cb => { cb.checked = interpState.mix_dims.includes(cb.dataset.dim); });
+    if (typeof _lastTraceData !== 'undefined' && _lastTraceData) drawKalmanTrace(_lastTraceData);
+    const v2 = interpState.v2config.v2 || {};
+    const tp = document.getElementById('interp-timbral-pull');
+    if (tp && v2.timbral_pull != null) tp.value = v2.timbral_pull;
+    const st = document.getElementById('interp-trace-step');
+    if (st && v2.trace_step != null) st.value = v2.trace_step;
+    if (typeof _populateGlobalSettings === 'function') _populateGlobalSettings();
   }
   state.samples = s.samples;
   state.dynamics = s.dynamics;
@@ -1424,11 +1439,22 @@ function _applySnapshot(snap) {
   if (s.autoMix)  Object.assign(state.autoMix,  s.autoMix);
   _updateBaseFxLabel();
   _updateOutputFxLabel();
+  scheduleReRender();                      // undo / redo is heard too
+}
+
+// An edit made while the Mix / Score / Interp render is playing re-renders it
+// (shortly after, so a burst of edits renders once). Every edit calls
+// pushHistory just before changing anything, so that is where it is scheduled.
+let _reRenderTimer = null;
+function scheduleReRender() {
+  clearTimeout(_reRenderTimer);
+  _reRenderTimer = setTimeout(() => { _reRenderTimer = null; _autoReRender(); }, 500);
 }
 
 // Record the current state before an edit. Drags pass the snapshot taken when
 // they started, so a whole drag is one undo step (and a plain click is none).
 function pushHistory(snap) {
+  scheduleReRender();
   state.history.push(snap || _snapshotState());
   if (state.history.length > 50) state.history.shift();
   redoStack.length = 0;

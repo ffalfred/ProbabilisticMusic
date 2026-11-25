@@ -273,7 +273,9 @@ async function _doExportYaml(outputPath) {
       ...(v.include ? { include: v.include } : {}) };
   }
   const score = {
+    ...state.scoreExtras,               // kept as loaded (golems, mix_dims, …)
     output_path: outputPath,
+    ...(state.tracks.length <= 1 && state.filePath ? { base_track: state.filePath } : {}),
     samples: samplesClean,
     dynamics: state.dynamics.map(d => {
       // Export using 'marking' field (Kalman engine format)
@@ -383,6 +385,7 @@ document.getElementById("import-btn").addEventListener("click", async () => {
     state.baseFx        = sc.base_fx || [];
     state.fxRanges      = zonesFromScore(sc);
     outputSettingsFromScore(sc);
+    state.scoreExtras   = scoreExtrasFrom(sc);
     Object.assign(state.duckBase, { enabled: false, amount_db: -6,  attack: 0.01, release: 0.30 }, sc.duck_base || {});
     Object.assign(state.duckKey,  { enabled: false, key: "",  amount_db: -10, attack: 0.01, release: 0.30 }, sc.duck_key || {});
     Object.assign(state.autoMix,  { enabled: false, mode: "sqrt" }, sc.auto_mix || {});

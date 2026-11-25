@@ -127,6 +127,27 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(d1['seed'], 11)
         self.assertTrue(np.array_equal(a1, a2))
 
+    def test_trace_is_the_performance_that_was_played(self):
+        # Play with no seed draws one; the trace of that seed (and the played
+        # audio's length) must be the trace the render used
+        golems = self.score['golems']
+        d = self._post('/preview', {'path': self.audio, 'score_path': self.score_path,
+                                    'interp': {'golems': golems, 'v2config': {}}})
+        played = server._last_preview_trace
+        t = self._post('/trace', {'score_path': self.score_path, 'path': self.audio,
+                                  'interp': {'golems': golems, 'v2config': {'seed': d['seed']}}})
+        self.assertEqual(t['effective_seed'], d['seed'])
+        self.assertEqual(len(t['trace']), len(played))
+        np.testing.assert_allclose([s['sample'] for s in t['trace']], [s['sample'] for s in played])
+
+    def test_multitrace_starts_at_your_seed(self):
+        m = self._post('/multitrace', {'score_path': self.score_path, 'path': self.audio, 'n_walks': 3,
+                                       'interp': {'golems': self.score['golems'], 'v2config': {'seed': 40}}})
+        self.assertEqual(m['seeds'], [40, 41, 42])
+        t = self._post('/trace', {'score_path': self.score_path, 'path': self.audio,
+                                  'interp': {'golems': self.score['golems'], 'v2config': {'seed': 40}}})
+        np.testing.assert_allclose([s['sample'] for s in m['walks'][0]], [s['sample'] for s in t['trace']])
+
     def test_empty_golem_list_overrides_score_golems(self):
         self._post('/preview', {'path': self.audio, 'score_path': self.score_path,
                                 'interp': {'golems': []}})
@@ -135,7 +156,7 @@ class ServerTests(unittest.TestCase):
 
     def test_trace_reports_all_dimensions(self):
         d = self._post('/trace', {'score_path': self.score_path, 'interp': {}})
-        self.assertEqual(len(d['dimensions']), 12)
+        self.assertEqual(len(d['dimensions']), 13)              # 12 + tempo
 
     def test_composer_export_is_what_mix_plays(self):
         # The Composer exports its current state, rendered like its Mix

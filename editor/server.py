@@ -1481,6 +1481,10 @@ def trace():
             score = yaml.safe_load(f) or {}
         if "golems" in interp:
             score["golems"] = interp["golems"]
+        # The audio that was played (as /preview does): it sets the piece's
+        # length, and with it the filter's time grid
+        if data.get("path"):
+            score["base_track"] = data["path"]
 
         config = _load_server_config(data.get("_config") or interp.get("v2config"))
         config["engine"] = "v2"
@@ -1507,6 +1511,8 @@ def trace():
             "dimensions": list(DIM_NAMES),
             "markings":   markings,
             "effective_seed": (config.get("v2") or {}).get("_effective_seed"),
+            # per-event dims (timing, attack, release, pitch) are heard only on events
+            "n_events":   sum(1 for e in score.get("events", []) if not e.get("muted")),
         })
     except Exception as e:
         import traceback
@@ -1527,11 +1533,15 @@ def multitrace():
             score = yaml.safe_load(f) or {}
         if "golems" in interp:
             score["golems"] = interp["golems"]
+        if data.get("path"):
+            score["base_track"] = data["path"]
 
         base_config = _load_server_config(data.get("_config") or interp.get("v2config"))
         base_config["engine"] = "v2"
-        score = _apply_phrase_tempo(score)
+        # Walk k uses seed + k: walk 0 is the performance of your seed
+        seed0 = seed_everything(base_config)
         resolve_score(score)
+        score = _apply_phrase_tempo(score)
 
         from src.interpreter import interpret
 
@@ -1540,7 +1550,8 @@ def multitrace():
         markings = []
         total_dur = 1.0
 
-        for seed in range(n_walks):
+        seeds = [seed0 + k for k in range(n_walks)]
+        for seed in seeds:
             # v2.seed takes priority over seed, so set it there; copy the v2
             # dict so walks don't share state.
             cfg = dict(base_config)
@@ -1558,9 +1569,12 @@ def multitrace():
         markings.sort(key=lambda m: m["t"])
         return jsonify({
             "walks":      walks,
+            "seeds":      seeds,
+            "effective_seed": seeds[0],
             "total_dur":  total_dur,
             "dimensions": list(DIM_NAMES),
             "markings":   markings,
+            "n_events":   sum(1 for e in score.get("events", []) if not e.get("muted")),
         })
     except Exception as e:
         import traceback
@@ -1570,8 +1584,30 @@ def multitrace():
 _TABLE_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "transition_table.yaml")
 
 # Built-in character names — never overwritten or deleted via the API
-_KALMAN_BUILTIN = {'dramatic', 'lyrical', 'sparse', 'turbulent'}
-_RW_BUILTIN     = {'rw_free', 'rw_drift_up', 'rw_reverting'}
+from src.character import BUILTIN as _CHAR_BUILTIN, RW_BUILTIN as _CHAR_RW_BUILTIN
+from src.interpreter import _PRESET_TRANSITION_DEFAULTS
+_KALMAN_BUILTIN = set(_CHAR_BUILTIN)
+_RW_BUILTIN     = set(_CHAR_RW_BUILTIN)
+
+
+@app.route("/golem_presets", methods=["GET"])
+def golem_presets():
+    """The built-in golem presets, in the editor's format — one definition
+    (src/character.py) for the editor, scores and the engine."""
+    kal = {}
+    for name, c in _CHAR_BUILTIN.items():
+        p = {k: c[k] for k in ('A1', 'A2', 'Q_scale', 'R_scale', 'lam', 'obs_weight', 'drama_curve',
+                               'timing_scale', 'rubato', 'cold_start_bias') if k in c}
+        p['distribution'] = c.get('sample_dist', 'gaussian')
+        if 'student_df' in c:
+            p['df'] = c['student_df']
+        p.update((c.get('dist_config') or {}))
+        p['transition_blend'], p['transition_shape'] = \
+            _PRESET_TRANSITION_DEFAULTS.get(name, (0.5, 'sigmoid'))
+        kal[name] = p
+    rw = {name: {k: v for k, v in c.items() if v is not None and k not in ('correlation',)}
+          for name, c in _CHAR_RW_BUILTIN.items()}
+    return jsonify({"kalman": kal, "random_walk": rw})
 
 
 def _load_table() -> dict:

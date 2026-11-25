@@ -132,12 +132,15 @@ def _filter(clip, sr, fx, apply_one):
     btype = {'lp': 'low', 'hp': 'high', 'bp': 'band', 'lowpass': 'low',
              'highpass': 'high', 'bandpass': 'band'}.get(ftype, 'low')
 
+    if btype != 'band':
+        # resonant low/high pass, smooth sweeps (src/resfilter.py)
+        from src.resfilter import resonant_filter
+        return resonant_filter(clip, sr, cut, res, btype, block=FILTER_BLOCK)
+
     def sos_at(i):
         c, q = cut[i], 0.5 + res[i] * 11.5
-        if btype == 'band':
-            bw = c * 0.3 / max(q, 0.5)
-            return butter(2, [max(20, c - bw), min(sr / 2 - 1, c + bw)], btype='band', fs=sr, output='sos')
-        return butter(2, c, btype=btype, fs=sr, output='sos')
+        bw = c * 0.3 / max(q, 0.5)
+        return butter(2, [max(20, c - bw), min(sr / 2 - 1, c + bw)], btype='band', fs=sr, output='sos')
 
     out = np.empty_like(clip, dtype=np.float32)
     zi = None
